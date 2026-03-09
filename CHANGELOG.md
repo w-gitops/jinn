@@ -5,6 +5,9 @@
 ### 🐛 Bug Fixes
 - Remove `@jinn/web` workspace dependency from published package — was causing `unsupported URL type "workspace:"` error on `npm i -g jinn-cli` (web UI is embedded as static files during build, not a runtime dependency)
 
+### 🔧 Improvements
+- Claude engine now runs with `--dangerously-skip-permissions` — prevents sessions from hanging on tool approval prompts in headless mode
+
 ## [0.1.0] - 2026-03-09
 
 First release of the Jinn AI gateway platform.

@@ -17,9 +17,6 @@ importers:
 
   packages/jimmy:
     dependencies:
-      '@jinn/web':
-        specifier: workspace:*
-        version: link:../web
       '@slack/bolt':
         specifier: ^4.3.0
         version: 4.6.0(@types/express@5.0.6)
