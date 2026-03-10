@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.2.0] - 2026-03-10
+
+### ✨ Features
+- Connector abstraction layer — connectors declare capabilities (threading, reactions, edits, attachments) and health status
+- `replyMessage()` vs `sendMessage()` split — proper thread-aware message routing
+- CronConnector — cron jobs are now message sources routed through SessionManager (unified flow)
+- Slack config options — `shareSessionInChannel`, `allowFrom` whitelist, `ignoreOldMessagesOnBoot`
+- Transport state tracking — new `transportState` field + queue depth visibility
+- In-chat slash commands — `/cron list|run|enable|disable`, `/model <name>`, `/doctor`
+- Runtime cron control — trigger/enable/disable jobs without restart
+- Web UI: Slack settings toggles for new config options
+- Web UI: Transport visibility — connector name, queue depth, transport state badges
+
+### 🔧 Improvements
+- Unified message routing — all sources flow through `SessionManager.route()` with uniform `IncomingMessage`
+- Cron runner simplified — ~35% code reduction by delegating to SessionManager
+- Capability-aware decorations — reactions/edits conditional on connector capabilities
+- Config token masking — Slack tokens masked in `GET /api/config`
+- Session queue monitoring — `getPendingCount()` and `getTransportState()`
+
+### 🏗️ Infrastructure
+- Build pipeline — web UI bundled into gateway dist
+- Test suite — threads, queue, and registry tests using Node.js native test runner
+- DB migration — auto-adds connector/transport columns, backfills from legacy fields
+
+### 💥 Breaking Changes
+- `Connector` interface expanded with new required methods: `replyMessage()`, `getCapabilities()`, `getHealth()`, `reconstructTarget()`
+- `IncomingMessage` and `Session` types have new required fields
+- `GET /api/connectors` response shape changed from `string[]` to objects with capabilities
+- `startScheduler()` now takes `SessionManager` instead of engine map
+- `sendMessage()` no longer posts to threads — use `replyMessage()`
+
 ## [0.1.1] - 2026-03-09
 
 ### 🐛 Bug Fixes

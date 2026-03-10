@@ -7,7 +7,7 @@ const program = new Command();
 program
   .name("jinn")
   .description("Lightweight AI gateway daemon")
-  .version("0.1.1")
+  .version("0.2.0")
   .option("-i, --instance <name>", "Target a specific instance (default: jinn)");
 
 // Pre-parse to set JINN_HOME before any module imports resolve paths
