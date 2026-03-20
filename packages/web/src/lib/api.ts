@@ -83,6 +83,13 @@ async function put<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
+interface UploadedFile {
+  id: string
+  filename: string
+  size: number
+  mimetype: string | null
+}
+
 export const api = {
   getStatus: () => get<Record<string, unknown>>("/api/status"),
   getSessions: () => get<Record<string, unknown>[]>("/api/sessions"),
@@ -166,4 +173,11 @@ export const api = {
     post<{ status: string }>(`/api/sessions/${sessionId}/queue/resume`, {}),
   getSessionTranscript: (id: string) =>
     get<TranscriptEntry[]>(`/api/sessions/${id}/transcript`),
+  uploadFile: async (file: File): Promise<UploadedFile> => {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await fetch(`${BASE}/api/files`, { method: 'POST', body: form })
+    if (!res.ok) throw new Error(await extractErrorMessage(res))
+    return res.json()
+  },
 };

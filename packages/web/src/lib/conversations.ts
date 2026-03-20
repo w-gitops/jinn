@@ -13,6 +13,10 @@ export interface MediaAttachment {
   duration?: number
   waveform?: number[]
   size?: number
+  /** Server-side file ID after upload (set by chat-pane before sending) */
+  fileId?: string
+  /** Original File object for upload (not serialized) */
+  file?: File
 }
 
 export interface Message {
