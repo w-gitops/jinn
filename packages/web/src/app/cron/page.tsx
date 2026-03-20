@@ -1,7 +1,7 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
-import { api } from "@/lib/api"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { api, type Employee } from "@/lib/api"
 import { describeCron, formatDuration } from "@/lib/cron-utils"
 import { PageLayout, ToolbarActions } from "@/components/page-layout"
 import { useBreadcrumbs } from "@/context/breadcrumb-context"
@@ -9,6 +9,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Skeleton } from "@/components/ui/skeleton"
 import { WeeklySchedule } from "@/components/crons/weekly-schedule"
 import { PipelineGraph } from "@/components/crons/pipeline-graph"
+import { EmployeeAvatar } from "@/components/ui/employee-avatar"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -44,6 +45,10 @@ type Filter = "all" | "enabled" | "disabled"
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
+
+function titleCase(slug: string): string {
+  return slug.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")
+}
 
 function timeAgo(dateStr: string | null | undefined): string {
   if (!dateStr) return "never"
@@ -156,6 +161,23 @@ export default function CronPage() {
   const [updatedAgo, setUpdatedAgo] = useState("just now")
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
   const [triggeringId, setTriggeringId] = useState<string | null>(null)
+  const [employeeMap, setEmployeeMap] = useState<Map<string, Employee>>(new Map())
+
+  // Fetch employee display names
+  useEffect(() => {
+    api.getOrg().then(async (org) => {
+      const map = new Map<string, Employee>()
+      await Promise.all(
+        org.employees.map(async (name: string) => {
+          try {
+            const emp = await api.getEmployee(name)
+            map.set(name, emp)
+          } catch { /* skip */ }
+        }),
+      )
+      setEmployeeMap(map)
+    }).catch(() => {})
+  }, [])
 
   const refresh = useCallback(() => {
     setError(null)
@@ -205,6 +227,18 @@ export default function CronPage() {
     if (filter === "disabled") return !j.enabled
     return true
   })
+
+  // Group filtered jobs by employee
+  const groupedByEmployee = useMemo(() => {
+    const groups = new Map<string, CronJob[]>()
+    for (const job of filtered) {
+      const key = job.employee || "_unassigned"
+      const list = groups.get(key) || []
+      list.push(job)
+      groups.set(key, list)
+    }
+    return groups
+  }, [filtered])
 
   return (
     <PageLayout>
@@ -308,7 +342,7 @@ export default function CronPage() {
                   })}
                 </div>
 
-                {/* Job list */}
+                {/* Job list grouped by employee */}
                 {filtered.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-[200px] text-[var(--text-secondary)] gap-[var(--space-2)]">
                     <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--text-tertiary)] mb-[var(--space-2)]">
@@ -319,188 +353,199 @@ export default function CronPage() {
                     </span>
                   </div>
                 ) : (
-                  <div className="rounded-[var(--radius-md)] overflow-hidden bg-[var(--material-regular)] border border-[var(--separator)]">
-                    {filtered.map((job, idx) => {
-                      const isExpanded = expandedId === job.id
+                  <div className="flex flex-col gap-[var(--space-3)]">
+                    {Array.from(groupedByEmployee.entries()).map(([empKey, empJobs]) => {
+                      const empData = empKey !== "_unassigned" ? employeeMap.get(empKey) : null
+                      const displayName = empData?.displayName || (empKey === "_unassigned" ? "Unassigned" : titleCase(empKey))
 
                       return (
-                        <div key={job.id}>
-                          {idx > 0 && (
-                            <div className="h-px bg-[var(--separator)] mx-[var(--space-4)]" />
-                          )}
-
-                          {/* Row */}
-                          <div
-                            role="button"
-                            tabIndex={0}
-                            aria-expanded={isExpanded}
-                            onClick={() => setExpandedId(isExpanded ? null : job.id)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault()
-                                setExpandedId(isExpanded ? null : job.id)
-                              }
-                            }}
-                            className="flex items-center cursor-pointer min-h-[48px] px-[var(--space-4)] transition-[background] duration-150 ease-in-out"
-                            style={{
-                              borderLeft: `3px solid ${job.enabled ? "var(--system-green)" : "transparent"}`,
-                            }}
-                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--fill-secondary)" }}
-                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "" }}
-                          >
-                            {/* Status dot */}
-                            <span
-                              className="w-2 h-2 rounded-full shrink-0"
-                              style={{
-                                background: job.enabled ? "var(--system-green)" : "var(--text-tertiary)",
-                              }}
-                            />
-
-                            {/* Name + schedule */}
-                            <div className="min-w-0 flex-1 ml-3 flex flex-col">
-                              <span className="truncate text-[length:var(--text-footnote)] font-semibold text-[var(--text-primary)]">
-                                {job.name}
-                              </span>
-                              <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
-                                {describeCron(job.schedule)}
-                              </span>
-                            </div>
-
-                            {/* Metadata badges */}
-                            <div className="flex items-center shrink-0 gap-[var(--space-2)] ml-auto">
-                              {job.employee && (
-                                <span className="text-[length:var(--text-caption1)] px-2 py-px rounded-xl bg-[color-mix(in_srgb,var(--system-blue)_15%,transparent)] text-[var(--system-blue)]">
-                                  {job.employee}
-                                </span>
-                              )}
-                              {job.engine && (
-                                <span className="text-[length:var(--text-caption1)] px-2 py-px rounded-xl bg-[var(--fill-tertiary)] text-[var(--text-tertiary)]">
-                                  {job.engine}
-                                </span>
-                              )}
-
-                              {/* Enable/disable toggle */}
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  toggleEnabled(job)
-                                }}
-                                aria-label={job.enabled ? "Disable job" : "Enable job"}
-                                className="relative inline-flex items-center w-9 h-5 rounded-[10px] border-none cursor-pointer shrink-0 transition-[background] duration-200 ease-in-out"
-                                style={{
-                                  background: job.enabled ? "var(--system-green)" : "var(--fill-tertiary)",
-                                }}
-                              >
-                                <span
-                                  className="block w-3.5 h-3.5 rounded-full bg-white transition-transform duration-200 ease-in-out"
-                                  style={{
-                                    transform: job.enabled ? "translateX(18px)" : "translateX(3px)",
-                                  }}
-                                />
-                              </button>
-
-                              {/* Chevron */}
-                              <span
-                                className="text-[length:var(--text-footnote)] text-[var(--text-tertiary)] transition-transform duration-200 ease-in-out inline-block"
-                                style={{
-                                  transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)",
-                                }}
-                              >
-                                &#8250;
-                              </span>
-                            </div>
+                        <div key={empKey}>
+                          {/* Group header */}
+                          <div className="flex items-center gap-[var(--space-2)] mb-[var(--space-2)]">
+                            {empKey !== "_unassigned" && <EmployeeAvatar name={empKey} size={20} />}
+                            <span className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-secondary)]">
+                              {displayName}
+                            </span>
+                            <span className="text-[length:var(--text-caption2)] text-[var(--text-quaternary)]">
+                              {empJobs.length} job{empJobs.length !== 1 ? "s" : ""}
+                            </span>
                           </div>
 
-                          {/* Expanded detail */}
-                          {isExpanded && (
-                            <div className="px-[var(--space-4)] pb-[var(--space-4)] ml-[3px]">
-                              <div className="grid grid-cols-[auto_1fr] gap-x-[var(--space-4)] gap-y-[var(--space-1)] mt-[var(--space-2)] mb-[var(--space-3)]">
-                                <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">Schedule</span>
-                                <div>
-                                  <div className="text-[length:var(--text-caption1)] text-[var(--text-secondary)]">
-                                    {describeCron(job.schedule)}
-                                  </div>
-                                  <div className="text-[length:var(--text-caption2)] font-[family-name:var(--font-mono)] text-[var(--text-tertiary)] mt-0.5">
-                                    {job.schedule}
-                                    {job.timezone && <span className="ml-2">({job.timezone})</span>}
-                                  </div>
-                                </div>
+                          {/* Jobs in group */}
+                          <div className="rounded-[var(--radius-md)] overflow-hidden bg-[var(--material-regular)] border border-[var(--separator)]">
+                            {empJobs.map((job, idx) => {
+                              const isExpanded = expandedId === job.id
 
-                                <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">Status</span>
-                                <span
-                                  className="text-[length:var(--text-caption1)] font-medium"
-                                  style={{
-                                    color: job.enabled ? "var(--system-green)" : "var(--text-tertiary)",
-                                  }}
-                                >
-                                  {job.enabled ? "Enabled" : "Disabled"}
-                                </span>
-
-                                {job.engine && (
-                                  <>
-                                    <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">Engine</span>
-                                    <span className="text-[length:var(--text-caption1)] text-[var(--text-secondary)]">{job.engine}</span>
-                                  </>
-                                )}
-
-                                {job.model && (
-                                  <>
-                                    <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">Model</span>
-                                    <span className="text-[length:var(--text-caption1)] text-[var(--text-secondary)] font-[family-name:var(--font-mono)]">{job.model}</span>
-                                  </>
-                                )}
-
-                                {job.employee && (
-                                  <>
-                                    <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">Employee</span>
-                                    <span className="text-[length:var(--text-caption1)] text-[var(--text-secondary)]">{job.employee}</span>
-                                  </>
-                                )}
-                              </div>
-
-                              {/* Trigger button */}
-                              <div className="mb-[var(--space-3)]">
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    setTriggeringId(job.id)
-                                    api.triggerCronJob(job.id)
-                                      .then(() => {
-                                        setTimeout(refresh, 2000)
-                                      })
-                                      .catch(() => {})
-                                      .finally(() => {
-                                        setTimeout(() => setTriggeringId(null), 2000)
-                                      })
-                                  }}
-                                  disabled={triggeringId === job.id}
-                                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-[var(--radius-sm)] border border-[var(--separator)] text-[length:var(--text-caption1)] font-semibold transition-all duration-200 ease-in-out"
-                                  style={{
-                                    background: triggeringId === job.id ? "var(--fill-tertiary)" : "var(--material-regular)",
-                                    color: triggeringId === job.id ? "var(--system-green)" : "var(--text-secondary)",
-                                    cursor: triggeringId === job.id ? "default" : "pointer",
-                                  }}
-                                >
-                                  {triggeringId === job.id ? (
-                                    <>
-                                      <span className="text-sm">&#10003;</span>
-                                      Triggered
-                                    </>
-                                  ) : (
-                                    <>
-                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                                        <polygon points="5,3 19,12 5,21" />
-                                      </svg>
-                                      Run Now
-                                    </>
+                              return (
+                                <div key={job.id}>
+                                  {idx > 0 && (
+                                    <div className="h-px bg-[var(--separator)] mx-[var(--space-4)]" />
                                   )}
-                                </button>
-                              </div>
 
-                              {/* Run history */}
-                              <RecentRuns jobId={job.id} />
-                            </div>
-                          )}
+                                  {/* Row */}
+                                  <div
+                                    role="button"
+                                    tabIndex={0}
+                                    aria-expanded={isExpanded}
+                                    onClick={() => setExpandedId(isExpanded ? null : job.id)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter" || e.key === " ") {
+                                        e.preventDefault()
+                                        setExpandedId(isExpanded ? null : job.id)
+                                      }
+                                    }}
+                                    className="flex items-center cursor-pointer min-h-[48px] px-[var(--space-4)] transition-[background] duration-150 ease-in-out"
+                                    style={{
+                                      borderLeft: `3px solid ${job.enabled ? "var(--system-green)" : "transparent"}`,
+                                    }}
+                                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--fill-secondary)" }}
+                                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "" }}
+                                  >
+                                    {/* Status dot */}
+                                    <span
+                                      className="w-2 h-2 rounded-full shrink-0"
+                                      style={{
+                                        background: job.enabled ? "var(--system-green)" : "var(--text-tertiary)",
+                                      }}
+                                    />
+
+                                    {/* Name + schedule */}
+                                    <div className="min-w-0 flex-1 ml-3 flex flex-col">
+                                      <span className="truncate text-[length:var(--text-footnote)] font-semibold text-[var(--text-primary)]">
+                                        {job.name}
+                                      </span>
+                                      <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
+                                        {describeCron(job.schedule)}
+                                      </span>
+                                    </div>
+
+                                    {/* Metadata badges */}
+                                    <div className="flex items-center shrink-0 gap-[var(--space-2)] ml-auto">
+                                      {job.engine && (
+                                        <span className="text-[length:var(--text-caption1)] px-2 py-px rounded-xl bg-[var(--fill-tertiary)] text-[var(--text-tertiary)]">
+                                          {job.engine}
+                                        </span>
+                                      )}
+
+                                      {/* Enable/disable toggle */}
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          toggleEnabled(job)
+                                        }}
+                                        aria-label={job.enabled ? "Disable job" : "Enable job"}
+                                        className="relative inline-flex items-center w-9 h-5 rounded-[10px] border-none cursor-pointer shrink-0 transition-[background] duration-200 ease-in-out"
+                                        style={{
+                                          background: job.enabled ? "var(--system-green)" : "var(--fill-tertiary)",
+                                        }}
+                                      >
+                                        <span
+                                          className="block w-3.5 h-3.5 rounded-full bg-white transition-transform duration-200 ease-in-out"
+                                          style={{
+                                            transform: job.enabled ? "translateX(18px)" : "translateX(3px)",
+                                          }}
+                                        />
+                                      </button>
+
+                                      {/* Chevron */}
+                                      <span
+                                        className="text-[length:var(--text-footnote)] text-[var(--text-tertiary)] transition-transform duration-200 ease-in-out inline-block"
+                                        style={{
+                                          transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)",
+                                        }}
+                                      >
+                                        &#8250;
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  {/* Expanded detail */}
+                                  {isExpanded && (
+                                    <div className="px-[var(--space-4)] pb-[var(--space-4)] ml-[3px]">
+                                      <div className="grid grid-cols-[auto_1fr] gap-x-[var(--space-4)] gap-y-[var(--space-1)] mt-[var(--space-2)] mb-[var(--space-3)]">
+                                        <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">Schedule</span>
+                                        <div>
+                                          <div className="text-[length:var(--text-caption1)] text-[var(--text-secondary)]">
+                                            {describeCron(job.schedule)}
+                                          </div>
+                                          <div className="text-[length:var(--text-caption2)] font-[family-name:var(--font-mono)] text-[var(--text-tertiary)] mt-0.5">
+                                            {job.schedule}
+                                            {job.timezone && <span className="ml-2">({job.timezone})</span>}
+                                          </div>
+                                        </div>
+
+                                        <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">Status</span>
+                                        <span
+                                          className="text-[length:var(--text-caption1)] font-medium"
+                                          style={{
+                                            color: job.enabled ? "var(--system-green)" : "var(--text-tertiary)",
+                                          }}
+                                        >
+                                          {job.enabled ? "Enabled" : "Disabled"}
+                                        </span>
+
+                                        {job.engine && (
+                                          <>
+                                            <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">Engine</span>
+                                            <span className="text-[length:var(--text-caption1)] text-[var(--text-secondary)]">{job.engine}</span>
+                                          </>
+                                        )}
+
+                                        {job.model && (
+                                          <>
+                                            <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">Model</span>
+                                            <span className="text-[length:var(--text-caption1)] text-[var(--text-secondary)] font-[family-name:var(--font-mono)]">{job.model}</span>
+                                          </>
+                                        )}
+                                      </div>
+
+                                      {/* Trigger button */}
+                                      <div className="mb-[var(--space-3)]">
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            setTriggeringId(job.id)
+                                            api.triggerCronJob(job.id)
+                                              .then(() => {
+                                                setTimeout(refresh, 2000)
+                                              })
+                                              .catch(() => {})
+                                              .finally(() => {
+                                                setTimeout(() => setTriggeringId(null), 2000)
+                                              })
+                                          }}
+                                          disabled={triggeringId === job.id}
+                                          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-[var(--radius-sm)] border border-[var(--separator)] text-[length:var(--text-caption1)] font-semibold transition-all duration-200 ease-in-out"
+                                          style={{
+                                            background: triggeringId === job.id ? "var(--fill-tertiary)" : "var(--material-regular)",
+                                            color: triggeringId === job.id ? "var(--system-green)" : "var(--text-secondary)",
+                                            cursor: triggeringId === job.id ? "default" : "pointer",
+                                          }}
+                                        >
+                                          {triggeringId === job.id ? (
+                                            <>
+                                              <span className="text-sm">&#10003;</span>
+                                              Triggered
+                                            </>
+                                          ) : (
+                                            <>
+                                              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                                                <polygon points="5,3 19,12 5,21" />
+                                              </svg>
+                                              Run Now
+                                            </>
+                                          )}
+                                        </button>
+                                      </div>
+
+                                      {/* Run history */}
+                                      <RecentRuns jobId={job.id} />
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
                         </div>
                       )
                     })}

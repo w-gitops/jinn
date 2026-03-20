@@ -8,6 +8,7 @@ import { SettingsProvider, DocumentTitle } from "@/app/settings-provider"
 import { NotificationProvider } from "@/components/notifications/notification-provider"
 import { useQueryInvalidation } from '@/hooks/use-query-invalidation'
 import { BreadcrumbProvider } from '@/context/breadcrumb-context'
+import { EmojiFavicon } from '@/components/emoji-favicon'
 
 function QueryInvalidationBridge() {
   useQueryInvalidation()
@@ -23,6 +24,7 @@ export function ClientProviders({ children }: { children: ReactNode }) {
             <NotificationProvider>
               {children}
               <DocumentTitle />
+              <EmojiFavicon />
               <QueryInvalidationBridge />
             </NotificationProvider>
           </SettingsProvider>

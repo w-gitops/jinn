@@ -499,7 +499,7 @@ export function ChatSidebar({
             className={cn(
               "group relative flex w-full items-center gap-2.5 border-l-2 px-4 py-2 text-left transition-colors",
               parentSessions
-                ? "pl-[67px]"
+                ? "pl-12"
                 : "pl-6",
               sessionIsActive
                 ? "border-l-[var(--accent)] bg-[var(--fill-secondary)]"
@@ -698,7 +698,7 @@ export function ChatSidebar({
         {isExpanded && sessionCount > 5 && !fullyExpanded[empName] ? (
           <button
             onClick={() => setFullyExpanded((prev) => ({ ...prev, [empName]: true }))}
-            className="w-full cursor-pointer px-4 pb-2 pl-[67px] text-left text-[10px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--text-secondary)]"
+            className="w-full cursor-pointer px-4 pb-2 pl-12 text-left text-[10px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--text-secondary)]"
           >
             +{sessionCount - 5} more
           </button>
@@ -709,8 +709,8 @@ export function ChatSidebar({
 
   return (
     <div className="flex h-full flex-col border-r border-border bg-[var(--sidebar-bg)]">
-      <div className="shrink-0 border-b border-border bg-[var(--material-thick)] px-4 pb-3 pt-4">
-        <div className="mb-3 flex items-center justify-between gap-3">
+      <div className="shrink-0 border-b border-border bg-[var(--material-thick)] px-4 pb-3 pt-3">
+        <div className="mb-2 flex items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-bold tracking-[-0.03em] text-foreground">Chats</h2>
             <p className="text-xs text-muted-foreground">Sessions, employees, and cron runs</p>
