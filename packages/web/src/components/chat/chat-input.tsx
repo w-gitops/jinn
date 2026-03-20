@@ -136,8 +136,12 @@ export function ChatInput({
   })
 
   // Consume files dropped onto the chat area by the parent
+  const consumedRef = useRef<File[] | undefined>(undefined)
   useEffect(() => {
     if (!droppedFiles || droppedFiles.length === 0) return
+    // Guard against React Strict Mode double-firing the effect
+    if (consumedRef.current === droppedFiles) return
+    consumedRef.current = droppedFiles
     ;(async () => {
       const newAttachments: MediaAttachment[] = []
       for (const file of droppedFiles) {
