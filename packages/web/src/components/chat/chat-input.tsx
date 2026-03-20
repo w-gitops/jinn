@@ -39,6 +39,10 @@ interface ChatInputProps {
   skillsVersion?: number
   /** WebSocket events from useGateway — needed for STT download progress */
   events?: Array<{ event: string; payload: unknown }>
+  /** Files dropped onto the chat area (from parent drag & drop) */
+  droppedFiles?: File[]
+  /** Called after droppedFiles have been consumed as pending attachments */
+  onDroppedFilesConsumed?: () => void
 }
 
 /* ── File to MediaAttachment ─────────────────────────────── */
@@ -91,7 +95,8 @@ async function fileToAttachment(file: File): Promise<MediaAttachment> {
     url: dataUrl,
     name: file.name,
     mimeType: file.type,
-    size: dataUrl.length,
+    size: file.size,
+    file,
   }
 }
 
@@ -106,6 +111,8 @@ export function ChatInput({
   onStatusRequest,
   skillsVersion,
   events,
+  droppedFiles,
+  onDroppedFilesConsumed,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -127,6 +134,19 @@ export function ChatInput({
       setValue((prev) => prev ? prev + ' ' + text : text)
     }
   })
+
+  // Consume files dropped onto the chat area by the parent
+  useEffect(() => {
+    if (!droppedFiles || droppedFiles.length === 0) return
+    ;(async () => {
+      const newAttachments: MediaAttachment[] = []
+      for (const file of droppedFiles) {
+        newAttachments.push(await fileToAttachment(file))
+      }
+      setPendingAttachments((prev) => [...prev, ...newAttachments])
+      onDroppedFilesConsumed?.()
+    })()
+  }, [droppedFiles, onDroppedFilesConsumed])
 
   // Load employees for @mention (with full details)
   useEffect(() => {

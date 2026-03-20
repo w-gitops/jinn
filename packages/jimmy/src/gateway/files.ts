@@ -141,16 +141,19 @@ async function saveFile(result: UploadResult, context: ApiContext): Promise<File
 /** Handle POST /api/files — multipart upload */
 async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, context: ApiContext): Promise<void> {
   return new Promise((resolve) => {
-    const busboy = Busboy({ headers: req.headers });
+    const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+    const busboy = Busboy({ headers: req.headers, limits: { fileSize: MAX_FILE_SIZE } });
     let filename = "";
     let fileBuffer: Buffer | null = null;
     let customPath: string | null = null;
     let open = false;
+    let fileTruncated = false;
 
     busboy.on("file", (_fieldname: string, file: NodeJS.ReadableStream, info: { filename: string }) => {
       filename = info.filename;
       const chunks: Buffer[] = [];
       file.on("data", (chunk: Buffer) => chunks.push(chunk));
+      (file as NodeJS.EventEmitter).on("limit", () => { fileTruncated = true; });
       file.on("end", () => { fileBuffer = Buffer.concat(chunks); });
     });
 
@@ -160,6 +163,11 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
     });
 
     busboy.on("finish", async () => {
+      if (fileTruncated) {
+        badRequest(res, `File exceeds ${MAX_FILE_SIZE / 1024 / 1024} MB limit`);
+        resolve();
+        return;
+      }
       if (!fileBuffer || !filename) {
         badRequest(res, "No file provided");
         resolve();

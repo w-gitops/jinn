@@ -339,24 +339,37 @@ export function ChatPane({
       setLoading(true)
 
       try {
+        // Upload any attached files to the server in parallel and collect file IDs
+        let attachmentIds: string[] | undefined
+        if (media && media.length > 0) {
+          const uploadPromises = media
+            .filter((att) => att.file)
+            .map((att) => api.uploadFile(att.file!))
+          if (uploadPromises.length > 0) {
+            const uploaded = await Promise.all(uploadPromises)
+            attachmentIds = uploaded.map((u) => u.id)
+          }
+        }
+
         let sid = sessionId
 
         // Handle stub session (onboarding)
         if (sid && isStubSession && getOnboardingPrompt) {
           onStubCleared?.()
           const onboardingPrompt = getOnboardingPrompt(message)
-          await api.sendMessage(sid, { message: onboardingPrompt })
+          await api.sendMessage(sid, { message: onboardingPrompt, attachments: attachmentIds })
           onRefresh?.()
         } else if (!sid) {
           const session = (await api.createSession({
             source: 'web',
             prompt: message,
+            attachments: attachmentIds,
           })) as Record<string, unknown>
           sid = String(session.id)
           onSessionCreated?.(sid)
           onRefresh?.()
         } else {
-          await api.sendMessage(sid, { message, interrupt: interrupt || undefined })
+          await api.sendMessage(sid, { message, interrupt: interrupt || undefined, attachments: attachmentIds })
           onRefresh?.()
         }
       } catch (err) {
@@ -435,6 +448,45 @@ export function ChatPane({
     intermediateStartRef.current = -1
   }, [])
 
+  // Drag & drop state
+  const [dragOver, setDragOver] = useState(false)
+  const [droppedFiles, setDroppedFiles] = useState<File[]>()
+  const dragCounter = useRef(0)
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounter.current++
+    if (e.dataTransfer.types.includes('Files')) {
+      setDragOver(true)
+    }
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounter.current--
+    if (dragCounter.current === 0) {
+      setDragOver(false)
+    }
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }, [])
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounter.current = 0
+    setDragOver(false)
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length > 0) {
+      setDroppedFiles(files)
+    }
+  }, [])
+
   return (
     <div
       style={{
@@ -443,9 +495,51 @@ export function ChatPane({
         flex: 1,
         overflow: 'hidden',
         background: 'var(--bg)',
+        position: 'relative',
       }}
       onClick={onFocus}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
     >
+      {/* Drop zone overlay */}
+      {dragOver && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 50,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'color-mix(in srgb, var(--bg) 85%, transparent)',
+            backdropFilter: 'blur(4px)',
+            transition: 'opacity 150ms ease-in-out',
+          }}
+        >
+          <div
+            style={{
+              border: '2px dashed var(--accent)',
+              borderRadius: 'var(--radius-lg)',
+              padding: '48px 64px',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '12px',
+            }}
+          >
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+            <span style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-body)' }}>
+              Drop files here
+            </span>
+          </div>
+        </div>
+      )}
       {/* Messages / CLI transcript */}
       {viewMode === 'cli' && sessionId ? (
         <CliTranscript sessionId={sessionId} />
@@ -473,6 +567,8 @@ export function ChatPane({
           onStatusRequest={handleStatusRequest}
           skillsVersion={skillsVersion}
           events={events}
+          droppedFiles={droppedFiles}
+          onDroppedFilesConsumed={() => setDroppedFiles(undefined)}
         />
       )}
     </div>

@@ -23,6 +23,7 @@ import {
   getQueueItems,
   cancelAllPendingQueueItems,
   listAllPendingQueueItems,
+  getFile,
 } from "../sessions/registry.js";
 import {
   CONFIG_PATH,
@@ -32,6 +33,7 @@ import {
   SKILLS_DIR,
   LOGS_DIR,
   TMP_DIR,
+  FILES_DIR,
 } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { getSttStatus, downloadModel, transcribe as sttTranscribe, resolveLanguages, WHISPER_LANGUAGES } from "../stt/stt.js";
@@ -140,12 +142,12 @@ function dispatchWebSessionRun(
   engine: Engine,
   config: JinnConfig,
   context: ApiContext,
-  opts?: { delayMs?: number; queueItemId?: string },
+  opts?: { delayMs?: number; queueItemId?: string; attachments?: string[] },
 ): void {
   const run = async () => {
     await context.sessionManager.getQueue().enqueue(session.sessionKey || session.sourceRef, async () => {
       context.emit("session:started", { sessionId: session.id });
-      await runWebSession(session, prompt, engine, config, context);
+      await runWebSession(session, prompt, engine, config, context, opts?.attachments);
     }, opts?.queueItemId);
   };
 
@@ -199,6 +201,29 @@ async function readJsonBody(req: HttpRequest, res: ServerResponse): Promise<{ ok
     badRequest(res, "Invalid JSON in request body");
     return { ok: false };
   }
+}
+
+/** Resolve an array of file IDs to local filesystem paths for engine consumption. */
+function resolveAttachmentPaths(fileIds: unknown): string[] {
+  if (!Array.isArray(fileIds)) return [];
+  const paths: string[] = [];
+  for (const id of fileIds) {
+    if (typeof id !== "string" || !id.trim()) continue;
+    const meta = getFile(id);
+    if (!meta) {
+      logger.warn(`Attachment file not found: ${id}`);
+      continue;
+    }
+    const filePath = path.join(FILES_DIR, meta.id, meta.filename);
+    if (fs.existsSync(filePath)) {
+      paths.push(filePath);
+    } else if (meta.path && fs.existsSync(meta.path)) {
+      paths.push(meta.path);
+    } else {
+      logger.warn(`Attachment file missing on disk: ${id} (${meta.filename})`);
+    }
+  }
+  return paths;
 }
 
 function json(res: ServerResponse, data: unknown, status = 200): void {
@@ -596,11 +621,13 @@ export async function handleApiRequest(
       });
       session.status = "running";
 
+      const attachmentPaths = resolveAttachmentPaths(body.attachments);
+
       const queueSessionKey = session.sessionKey || session.sourceRef || session.id;
       const queueItemId = enqueueQueueItem(session.id, queueSessionKey, prompt);
       context.emit("queue:updated", { sessionId: session.id, sessionKey: queueSessionKey });
 
-      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId });
+      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined });
 
       return json(res, serializeSession(session, context), 201);
     }
@@ -675,11 +702,13 @@ export async function handleApiRequest(
       // Clear any pending cancellation so the new message runs normally.
       context.sessionManager.getQueue().clearCancelled(session.sessionKey || session.sourceRef || session.id);
 
+      const attachmentPaths = resolveAttachmentPaths(body.attachments);
+
       const sessionKey = session.sessionKey || session.sourceRef || session.id;
       const queueItemId = enqueueQueueItem(session.id, sessionKey, prompt);
       context.emit("queue:updated", { sessionId: session.id, sessionKey });
 
-      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId });
+      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined });
 
       return json(res, { status: "queued", sessionId: session.id });
     }
@@ -1769,6 +1798,7 @@ async function runWebSession(
   engine: Engine,
   config: JinnConfig,
   context: ApiContext,
+  attachments?: string[],
 ): Promise<void> {
   const currentSession = getSession(session.id);
   if (!currentSession) {
@@ -1841,6 +1871,7 @@ async function runWebSession(
       model: currentSession.model ?? engineConfig.model,
       effortLevel,
       cliFlags: employee?.cliFlags,
+      attachments: attachments?.length ? attachments : undefined,
       sessionId: currentSession.id,
       onStream: (delta) => {
         const now = Date.now();
