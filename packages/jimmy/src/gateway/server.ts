@@ -12,6 +12,7 @@ import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSes
 import { SessionManager } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
+import { GeminiEngine } from "../engines/gemini.js";
 import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
 import { ensureFilesDir } from "./files.js";
 import { initStt } from "../stt/stt.js";
@@ -131,9 +132,11 @@ export async function startGateway(
   // Set up engines
   const claudeEngine = new ClaudeEngine();
   const codexEngine = new CodexEngine();
-  const engines = new Map<string, InstanceType<typeof ClaudeEngine> | InstanceType<typeof CodexEngine>>();
+  const geminiEngine = new GeminiEngine();
+  const engines = new Map<string, InstanceType<typeof ClaudeEngine> | InstanceType<typeof CodexEngine> | InstanceType<typeof GeminiEngine>>();
   engines.set("claude", claudeEngine);
   engines.set("codex", codexEngine);
+  engines.set("gemini", geminiEngine);
 
   // Derive connector names from config
   const connectorNames: string[] = [];

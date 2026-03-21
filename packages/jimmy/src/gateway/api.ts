@@ -325,6 +325,7 @@ export async function handleApiRequest(
           default: config.engines.default,
           claude: { model: config.engines.claude.model, available: true },
           codex: { model: config.engines.codex.model, available: true },
+          ...(config.engines.gemini ? { gemini: { model: config.engines.gemini.model, available: true } } : {}),
         },
         sessions: { total: sessions.length, running, active: running },
         connectors,
@@ -1854,7 +1855,9 @@ async function runWebSession(
 
     const engineConfig = currentSession.engine === "codex"
       ? config.engines.codex
-      : config.engines.claude;
+      : currentSession.engine === "gemini"
+        ? config.engines.gemini ?? config.engines.claude
+        : config.engines.claude;
     const effortLevel = resolveEffort(engineConfig, currentSession, employee);
 
     let lastHeartbeatAt = 0;
