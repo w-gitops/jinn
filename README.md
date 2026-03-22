@@ -150,14 +150,17 @@ git clone https://github.com/hristo2612/jinn.git
 cd jinn
 pnpm install
 pnpm setup   # one-time: builds all packages and creates ~/.jinn
-pnpm dev     # starts gateway (:7777) + Next.js dev server (:3000) with hot reload
+pnpm dev     # starts gateway + Next.js dev server with hot reload
 ```
 
-`pnpm dev` starts two servers: the **gateway daemon** on `:7777` (API, WebSocket,
-connectors) and the **Next.js dev server** on `:3000` (web dashboard with hot
-reload). The gateway auto-restarts when you edit TypeScript source files via
-Node's built-in `--watch` mode. Both servers must be running for the dashboard
-to work.
+Open [http://localhost:3000](http://localhost:3000) to use the web dashboard.
+
+`pnpm dev` starts two servers behind the scenes: the **gateway daemon** on
+`:7777` (API, WebSocket, connectors) and the **Next.js dev server** on `:3000`
+(web dashboard with hot reload). Next.js rewrites proxy `/api/*` and `/ws`
+requests from `:3000` to the gateway, so you only need to visit `:3000`. The
+gateway auto-restarts when you edit backend source files via Node's built-in
+`--watch` mode.
 
 > **Prerequisites:** Node.js 22+, pnpm 10+, and the
 > [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`).

@@ -24,9 +24,8 @@ Thanks for your interest in contributing. This guide covers the basics.
    ```bash
    pnpm dev
    ```
-   This starts the gateway on `:7777` (auto-restarts on source changes) and the
-   Next.js dev server on `:3000` (hot reload). Both must be running for the
-   web dashboard to work.
+   Then open [http://localhost:3000](http://localhost:3000). The Next.js dev
+   server proxies API requests to the gateway on `:7777` automatically.
 
 ## Submitting Pull Requests
 
