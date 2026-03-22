@@ -375,6 +375,39 @@ export function ChatSidebar({
   }
 
   async function handleDelete(sessionId: string) {
+    // Compute next session to select before removing
+    let nextSelectId: string | null = null
+    if (selectedId === sessionId) {
+      // Build a flat ordered list of all visible session IDs
+      const allVisible: string[] = []
+      const addGroup = (items: FlatItem[]) => {
+        for (const item of items) {
+          const empName = item.employeeName!
+          const empSessions = item.sessions || []
+          // Always add the latest session (employee row click selects it)
+          if (empSessions.length === 1) {
+            allVisible.push(empSessions[0].id)
+          } else if (expanded[empName]) {
+            const visible = fullyExpanded[empName] ? empSessions : empSessions.slice(0, 5)
+            for (const s of visible) allVisible.push(s.id)
+          } else {
+            // Collapsed — only the latest session is reachable
+            if (empSessions.length > 0) allVisible.push(empSessions[0].id)
+          }
+        }
+      }
+      addGroup(pinnedFlat)
+      addGroup(unpinnedFlat)
+      for (const s of sortedCron) allVisible.push(s.id)
+
+      const idx = allVisible.indexOf(sessionId)
+      if (idx !== -1) {
+        // Prefer next item, then previous
+        if (idx + 1 < allVisible.length) nextSelectId = allVisible[idx + 1]
+        else if (idx - 1 >= 0) nextSelectId = allVisible[idx - 1]
+      }
+    }
+
     try {
       await deleteSessionMutation.mutateAsync(sessionId)
       setPinnedSessions((prev) => {
@@ -385,8 +418,13 @@ export function ChatSidebar({
         return next
       })
       startTransition(() => {
-        if (onDelete) onDelete(sessionId)
-        else if (selectedId === sessionId) onNewChat()
+        if (nextSelectId) {
+          onSelect(nextSelectId)
+        } else if (onDelete) {
+          onDelete(sessionId)
+        } else if (selectedId === sessionId) {
+          onNewChat()
+        }
       })
     } catch {}
   }
@@ -532,7 +570,7 @@ export function ChatSidebar({
             className={cn(
               "group relative flex w-full items-center gap-2.5 border-l-2 px-4 py-2 text-left transition-colors",
               parentSessions
-                ? "pl-12"
+                ? "pl-11"
                 : "pl-6",
               sessionIsActive
                 ? "border-l-[var(--accent)] bg-[var(--fill-secondary)]"
@@ -640,7 +678,7 @@ export function ChatSidebar({
                 <StatusDot
                   color={dotColor}
                   pulse={pulse}
-                  className="absolute -bottom-0.5 -right-0.5 size-2.5 border-2 border-[var(--sidebar-bg)]"
+                  className="absolute -bottom-0.5 -right-0 size-2.5 border-2 border-[var(--sidebar-bg)]"
                 />
               </div>
 
@@ -732,7 +770,7 @@ export function ChatSidebar({
         {isExpanded && sessionCount > 5 && !fullyExpanded[empName] ? (
           <button
             onClick={() => setFullyExpanded((prev) => ({ ...prev, [empName]: true }))}
-            className="w-full cursor-pointer px-4 pb-2 pl-12 text-left text-[10px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--text-secondary)]"
+            className="w-full cursor-pointer px-4 pb-2 pl-11 text-left text-[10px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--text-secondary)]"
           >
             +{sessionCount - 5} more
           </button>
@@ -747,7 +785,7 @@ export function ChatSidebar({
         <div className="mb-2 flex items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-bold tracking-[-0.03em] text-foreground">Chats</h2>
-            <p className="text-xs text-muted-foreground">Sessions, employees, and cron runs</p>
+            <p className="text-xs text-muted-foreground">All conversations</p>
           </div>
           <div className="flex items-center gap-1.5">
             <Button size="sm" className="gap-1.5" onClick={onNewChat} title="New chat (N)">
@@ -780,7 +818,7 @@ export function ChatSidebar({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto py-1">
+      <div className="flex-1 overflow-y-auto">
         {loading ? (
           <div className="px-4 py-8 text-center text-xs text-[var(--text-quaternary)]">
             Loading sessions...
