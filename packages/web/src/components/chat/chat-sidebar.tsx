@@ -515,6 +515,7 @@ export function ChatSidebar({
             {isRenaming ? (
               <input
                 autoFocus
+                maxLength={200}
                 defaultValue={sessionTitle}
                 className={cn(
                   "min-w-0 flex-1 truncate border-none bg-transparent text-xs outline-none ring-1 ring-[var(--accent)] rounded px-0.5",
