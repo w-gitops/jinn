@@ -163,6 +163,8 @@ export async function startGateway(
   // Start connectors
   const connectors: Connector[] = [];
   const connectorMap = new Map<string, Connector>();
+  /** IDs of connectors created from config.connectors.instances[] (vs legacy top-level connectors) */
+  const instanceConnectorIds = new Set<string>();
 
   if (config.connectors?.slack?.appToken && config.connectors?.slack?.botToken) {
     try {
@@ -371,6 +373,7 @@ export async function startGateway(
         }
         connectors.push(connector);
         connectorMap.set(id, connector);
+        instanceConnectorIds.add(id);
         logger.info(`Connector instance "${id}" (type: ${type}, employee: ${employee || "default"}) started`);
       } catch (err) {
         logger.error(`Failed to start connector instance "${id}": ${err instanceof Error ? err.message : err}`);
@@ -397,11 +400,12 @@ export async function startGateway(
 
     // Stop old instance connectors that are no longer in config or need refresh
     for (const [id, connector] of connectorMap.entries()) {
-      // Skip legacy connectors (discord, slack, whatsapp)
-      if (id === "discord" || id === "slack" || id === "whatsapp") continue;
+      // Skip legacy (top-level) connectors — only reload instance-based ones
+      if (!instanceConnectorIds.has(id)) continue;
       try {
         await connector.stop();
         connectorMap.delete(id);
+        instanceConnectorIds.delete(id);
         const idx = connectors.indexOf(connector);
         if (idx >= 0) connectors.splice(idx, 1);
         stopped.push(id);
@@ -477,6 +481,7 @@ export async function startGateway(
           }
           connectors.push(connector);
           connectorMap.set(id, connector);
+          instanceConnectorIds.add(id);
           started.push(id);
           logger.info(`Connector instance "${id}" (type: ${type}, employee: ${employee || "default"}) started`);
         } catch (err) {

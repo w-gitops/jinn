@@ -1354,8 +1354,7 @@ export async function handleApiRequest(
       const connectors = Array.from(context.connectors.entries()).map(([instanceId, connector]) => ({
         name: connector.name,
         instanceId,
-        // Include employee binding if the connector exposes it
-        employee: (connector as any).config?.employee ?? undefined,
+        employee: connector.getEmployee?.() ?? undefined,
         ...connector.getHealth(),
       }));
       return json(res, connectors);

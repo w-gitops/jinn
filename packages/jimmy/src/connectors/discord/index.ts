@@ -83,6 +83,10 @@ export class DiscordConnector implements Connector {
     this.handler = handler;
   }
 
+  getEmployee(): string | undefined {
+    return this.config.employee;
+  }
+
   async start(): Promise<void> {
     this.client.on("ready", () => {
       logger.info(`Discord connector ready as ${this.client.user?.tag}`);

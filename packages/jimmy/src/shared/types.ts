@@ -102,6 +102,8 @@ export interface Connector {
   editMessage(target: Target, text: string): Promise<void>;
   setTypingStatus?(channelId: string, threadTs: string | undefined, status: string): Promise<void>;
   onMessage(handler: (msg: IncomingMessage) => void): void;
+  /** Return the bound employee name, if any */
+  getEmployee?(): string | undefined;
 }
 
 export interface IncomingMessage {
@@ -314,8 +316,8 @@ export interface WhatsAppConnectorConfig {
 export interface ConnectorInstance {
   /** Unique instance ID */
   id: string;
-  /** Connector type: "discord" | "slack" | "whatsapp" */
-  type: "discord" | "slack" | "whatsapp";
+  /** Connector type */
+  type: "discord" | "discord-remote" | "slack" | "whatsapp" | "telegram";
   /** Employee to bind to this connector */
   employee?: string;
   /** Type-specific configuration */
