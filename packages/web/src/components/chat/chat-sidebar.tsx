@@ -1,12 +1,12 @@
 "use client"
 
 import { useEffect, useState, useRef, useCallback, useMemo, startTransition } from "react"
-import { ChevronDown, Clock3, EllipsisVertical, Pin, Plus, Search, Trash2, X } from "lucide-react"
+import { ChevronDown, Clock3, EllipsisVertical, Pencil, Pin, Plus, Search, Trash2, X } from "lucide-react"
 import { api, type Employee } from "@/lib/api"
 import { EmployeeAvatar } from "@/components/ui/employee-avatar"
 import { useSettings } from "@/app/settings-provider"
 import { cleanPreview } from "@/lib/clean-preview"
-import { useSessions, useDeleteSession, useBulkDeleteSessions } from "@/hooks/use-sessions"
+import { useSessions, useUpdateSession, useDeleteSession, useBulkDeleteSessions } from "@/hooks/use-sessions"
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -241,6 +241,7 @@ export function ChatSidebar({
   }
 
   const { data: rawSessions, isLoading: loading } = useSessions()
+  const updateSessionMutation = useUpdateSession()
   const deleteSessionMutation = useDeleteSession()
   const bulkDeleteMutation = useBulkDeleteSessions()
 
@@ -259,6 +260,8 @@ export function ChatSidebar({
 
   const [search, setSearch] = useState("")
   const [hoveredKey, setHoveredKey] = useState<string | null>(null)
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null)
+  const renameCancelledRef = useRef(false)
   const [readSessions, setReadSessions] = useState<Set<string>>(new Set())
   const [pinnedSessions, setPinnedSessions] = useState<Set<string>>(new Set())
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -553,18 +556,21 @@ export function ChatSidebar({
     const sessionDotColor = getStatusDotColor(session, readSessions)
     const sessionIsRunning = session.status === "running"
     const sessionTitle = fixTitle(session.title, session.employee)
+    const displayTitle = cleanPreview(sessionTitle) || sessionTitle
     const sessionTime = formatTime(getSessionActivity(session))
     const isPinned = pinnedSessions.has(session.id)
     const isHovered = hoveredKey === session.id
+    const isRenaming = renamingSessionId === session.id
+    const RowTag = isRenaming ? "div" : "button"
 
     return (
       <ContextMenu key={session.id}>
         <ContextMenuTrigger asChild>
-          <button
-            onClick={() => {
+          <RowTag
+            {...(!isRenaming && { onClick: () => {
               onSelect(session.id)
               onEmployeeSessionsAvailable?.(parentSessions ?? [session])
-            }}
+            }})}
             onMouseEnter={() => setHoveredKey(session.id)}
             onMouseLeave={() => { if (hoveredKey !== `menu:${session.id}`) setHoveredKey(null) }}
             className={cn(
@@ -578,14 +584,47 @@ export function ChatSidebar({
             )}
           >
             <StatusDot color={sessionDotColor} pulse={sessionIsRunning} className="size-1.5" />
-            <span
-              className={cn(
-                "min-w-0 flex-1 truncate text-xs",
-                sessionIsActive ? "font-semibold text-foreground" : "text-[var(--text-secondary)]"
-              )}
-            >
-              {cleanPreview(sessionTitle) || "Untitled"}
-            </span>
+            {isRenaming ? (
+              <input
+                autoFocus
+                maxLength={200}
+                defaultValue={displayTitle}
+                className={cn(
+                  "min-w-0 flex-1 truncate border-none bg-transparent text-xs outline-none ring-1 ring-[var(--accent)] rounded px-0.5",
+                  sessionIsActive ? "font-semibold text-foreground" : "text-[var(--text-secondary)]"
+                )}
+                onFocus={(e) => e.target.select()}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.currentTarget.blur()
+                  } else if (e.key === "Escape") {
+                    renameCancelledRef.current = true
+                    setRenamingSessionId(null)
+                  }
+                }}
+                onBlur={(e) => {
+                  if (renameCancelledRef.current) {
+                    renameCancelledRef.current = false
+                    return
+                  }
+                  const val = e.target.value.trim()
+                  if (val && val !== displayTitle) {
+                    updateSessionMutation.mutate({ id: session.id, data: { title: val } })
+                  }
+                  setRenamingSessionId(null)
+                }}
+              />
+            ) : (
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate text-xs",
+                  sessionIsActive ? "font-semibold text-foreground" : "text-[var(--text-secondary)]"
+                )}
+              >
+                {cleanPreview(sessionTitle) || "Untitled"}
+              </span>
+            )}
             {isPinned ? (
               <Pin className={cn("size-3 shrink-0 text-[var(--accent)]", isHovered && "hidden lg:hidden")} />
             ) : null}
@@ -609,6 +648,12 @@ export function ChatSidebar({
                 onMouseLeave={() => setHoveredKey(null)}
               >
                 <button
+                  onClick={(e) => { e.stopPropagation(); setHoveredKey(null); renameCancelledRef.current = false; setRenamingSessionId(session.id) }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent"
+                >
+                  <Pencil className="size-3" /> Rename
+                </button>
+                <button
                   onClick={(e) => { e.stopPropagation(); togglePin(session.id); setHoveredKey(null) }}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent"
                 >
@@ -623,9 +668,12 @@ export function ChatSidebar({
                 </button>
               </div>
             ) : null}
-          </button>
+          </RowTag>
         </ContextMenuTrigger>
         <ContextMenuContent>
+          <ContextMenuItem onClick={() => { renameCancelledRef.current = false; setRenamingSessionId(session.id) }}>
+            Rename
+          </ContextMenuItem>
           <ContextMenuItem onClick={() => togglePin(session.id)}>
             {isPinned ? "Unpin" : "Pin"}
           </ContextMenuItem>
