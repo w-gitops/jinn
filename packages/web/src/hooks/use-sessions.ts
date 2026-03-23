@@ -42,6 +42,15 @@ export function useSessionQueue(id: string | null) {
   })
 }
 
+export function useUpdateSession() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { title?: string } }) =>
+      api.updateSession(id, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.sessions.all }),
+  })
+}
+
 export function useDeleteSession() {
   const qc = useQueryClient()
   return useMutation({
