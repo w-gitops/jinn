@@ -23,6 +23,12 @@ export function useQueryInvalidation() {
         case 'session:started':
           pendingRef.current.add('sessions')
           break
+        case 'session:updated':
+          pendingRef.current.add('sessions')
+          if (p?.sessionId) {
+            qc.invalidateQueries({ queryKey: queryKeys.sessions.detail(p.sessionId as string) })
+          }
+          break
         case 'session:completed':
         case 'session:error':
         case 'session:deleted':

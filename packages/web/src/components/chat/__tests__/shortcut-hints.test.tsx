@@ -6,6 +6,7 @@ import { render, screen } from '@testing-library/react'
 // Mock all heavy dependencies so we can render ChatSidebar in isolation
 vi.mock('@/hooks/use-sessions', () => ({
   useSessions: () => ({ data: [], isLoading: false }),
+  useUpdateSession: () => ({ mutate: vi.fn() }),
   useDeleteSession: () => ({ mutateAsync: vi.fn() }),
   useBulkDeleteSessions: () => ({ mutateAsync: vi.fn() }),
 }))
