@@ -38,6 +38,8 @@ export function scanOrg(): Map<string, Employee> {
               cliFlags: Array.isArray(data.cliFlags) ? data.cliFlags : undefined,
               effortLevel: typeof data.effortLevel === "string" ? data.effortLevel : undefined,
               alwaysNotify: typeof data.alwaysNotify === "boolean" ? data.alwaysNotify : true,
+              reportsTo: data.reportsTo ?? undefined,
+              mcp: data.mcp ?? undefined,
             };
             registry.set(employee.name, employee);
           }
