@@ -411,11 +411,11 @@ export function ChatInput({
   }
 
   const filteredCommands = slashCommands.filter((c) =>
-    c.name.toLowerCase().startsWith(commandFilter)
+    c.name?.toLowerCase().startsWith(commandFilter)
   )
 
   const filteredEmployees = employees.filter((e) =>
-    e.name.toLowerCase().includes(mentionFilter)
+    e.name?.toLowerCase().includes(mentionFilter)
   )
 
   const hasContent = value.trim().length > 0 || pendingAttachments.length > 0
