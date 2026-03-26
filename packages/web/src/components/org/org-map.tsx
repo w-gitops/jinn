@@ -291,6 +291,8 @@ function buildHierarchyLayout(
 ): { nodes: Node[]; edges: Edge[] } {
   if (employees.length === 0) return { nodes: [], edges: [] }
 
+  const executive = employees.find((e) => e.rank === "executive")
+
   // Compute selected chain for highlighting
   const highlightedNames = new Set<string>()
   if (selectedName) {
@@ -308,31 +310,115 @@ function buildHierarchyLayout(
     addDescendants(selectedName)
   }
 
-  const nodeIds = hierarchy.sorted
-  const edgePairs: [string, string][] = []
+  // Include executive in node list (it's injected client-side, not in hierarchy.sorted)
+  const nodeIds = [...hierarchy.sorted]
+  if (executive && !nodeIds.includes(executive.name)) {
+    nodeIds.unshift(executive.name)
+  }
 
-  for (const name of nodeIds) {
+  const edgePairs: [string, string][] = []
+  const hasParent = new Set<string>()
+
+  for (const name of hierarchy.sorted) {
     const emp = employees.find((e) => e.name === name)
     if (emp?.parentName && nodeIds.includes(emp.parentName)) {
       edgePairs.push([emp.parentName, name])
+      hasParent.add(name)
     }
   }
 
-  const positions = dagreLayout(nodeIds, edgePairs, { nodesep: 60, ranksep: 120 })
+  // Connect top-level nodes (no parent in hierarchy) to executive
+  if (executive) {
+    for (const name of hierarchy.sorted) {
+      if (!hasParent.has(name) && name !== executive.name) {
+        edgePairs.push([executive.name, name])
+      }
+    }
+  }
 
-  // Department bounding boxes for overlays
-  const deptBounds = new Map<string, { minX: number; maxX: number; minY: number; maxY: number }>()
+  const positions = dagreLayout(nodeIds, edgePairs, { nodesep: 80, ranksep: 120 })
+
+  // ── Resolve department bounding-box overlaps ─────────────
+  const deptNodes = new Map<string, string[]>()
   for (const name of nodeIds) {
     const emp = employees.find((e) => e.name === name)
-    const pos = positions.get(name)
-    if (!emp || !pos || !emp.department) continue
-    const bounds = deptBounds.get(emp.department) ?? { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
-    bounds.minX = Math.min(bounds.minX, pos.x)
-    bounds.maxX = Math.max(bounds.maxX, pos.x + NODE_W)
-    bounds.minY = Math.min(bounds.minY, pos.y)
-    bounds.maxY = Math.max(bounds.maxY, pos.y + NODE_H)
-    deptBounds.set(emp.department, bounds)
+    if (!emp?.department) continue
+    const list = deptNodes.get(emp.department) ?? []
+    list.push(name)
+    deptNodes.set(emp.department, list)
   }
+
+  function computeDeptBounds() {
+    const bounds = new Map<
+      string,
+      { minX: number; maxX: number; minY: number; maxY: number }
+    >()
+    for (const [dept, names] of deptNodes) {
+      let minX = Infinity,
+        maxX = -Infinity,
+        minY = Infinity,
+        maxY = -Infinity
+      for (const name of names) {
+        const pos = positions.get(name)
+        if (!pos) continue
+        minX = Math.min(minX, pos.x)
+        maxX = Math.max(maxX, pos.x + NODE_W)
+        minY = Math.min(minY, pos.y)
+        maxY = Math.max(maxY, pos.y + NODE_H)
+      }
+      if (minX !== Infinity) bounds.set(dept, { minX, maxX, minY, maxY })
+    }
+    return bounds
+  }
+
+  // Sort departments left-to-right, then shift any that overlap
+  const initialBounds = computeDeptBounds()
+  const sortedDepts = [...initialBounds.entries()].sort(
+    (a, b) => a[1].minX - b[1].minX,
+  )
+
+  for (let i = 1; i < sortedDepts.length; i++) {
+    const prevBounds = sortedDepts[i - 1][1]
+    const currBounds = sortedDepts[i][1]
+
+    const prevRight = prevBounds.maxX + GROUP_PAD_X
+    const currLeft = currBounds.minX - GROUP_PAD_X
+
+    if (currLeft < prevRight + COL_GAP) {
+      const shift = prevRight + COL_GAP - currLeft
+
+      // Shift this and all subsequent departments to the right
+      for (let j = i; j < sortedDepts.length; j++) {
+        const dept = sortedDepts[j][0]
+        for (const name of deptNodes.get(dept) ?? []) {
+          const pos = positions.get(name)
+          if (pos) pos.x += shift
+        }
+        sortedDepts[j][1].minX += shift
+        sortedDepts[j][1].maxX += shift
+      }
+    }
+  }
+
+  // Re-center executive above all content
+  if (executive) {
+    const execPos = positions.get(executive.name)
+    if (execPos) {
+      let minX = Infinity,
+        maxX = -Infinity
+      for (const [name, pos] of positions) {
+        if (name === executive.name) continue
+        minX = Math.min(minX, pos.x)
+        maxX = Math.max(maxX, pos.x + NODE_W)
+      }
+      if (minX !== Infinity) {
+        execPos.x = (minX + maxX) / 2 - NODE_W / 2
+      }
+    }
+  }
+
+  // Recompute bounds after overlap resolution
+  const deptBounds = computeDeptBounds()
 
   const rfNodes: Node[] = []
 
