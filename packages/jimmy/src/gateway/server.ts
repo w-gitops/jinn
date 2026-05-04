@@ -364,6 +364,7 @@ export async function startGateway(
         botToken: config.connectors.telegram.botToken,
         allowFrom: config.connectors.telegram.allowFrom,
         ignoreOldMessagesOnBoot: config.connectors.telegram.ignoreOldMessagesOnBoot,
+        stt: config.stt,
       });
       telegram.onMessage((msg) => {
         const routeOpts: RouteOptions = {};
@@ -480,7 +481,7 @@ export async function startGateway(
             break;
           }
           case "telegram": {
-            const telegramConfig = { ...typeConfig, id } as any;
+            const telegramConfig = { ...typeConfig, id, stt: config.stt } as any;
             const tg = new TelegramConnector(telegramConfig);
             tg.onMessage((msg) => {
               const routeOpts: RouteOptions = {};
@@ -605,7 +606,7 @@ export async function startGateway(
               break;
             }
             case "telegram": {
-              const telegramConfig = { ...typeConfig, id } as any;
+              const telegramConfig = { ...typeConfig, id, stt: config.stt } as any;
               const tg = new TelegramConnector(telegramConfig);
               tg.onMessage((msg) => {
                 const routeOpts: RouteOptions = {};
