@@ -17,6 +17,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '@/lib/query-keys'
 import { cn } from '@/lib/utils'
 import { Check, Copy, EllipsisVertical, Trash2 } from 'lucide-react'
+import { readViewMode, writeViewMode, type ViewMode } from '@/lib/view-mode'
 
 function getOnboardingPrompt(portalName: string, userMessage: string) {
   return `This is your first time being activated. The user just set up ${portalName} and opened the web dashboard for the first time.
@@ -103,7 +104,18 @@ function ChatPage() {
       })
     }
   }, [])
-  const [viewMode, setViewMode] = useState<'chat' | 'cli'>('chat')
+  const [viewMode, setViewMode] = useState<ViewMode>('chat')
+
+  // Persist view mode per session
+  const setAndPersistViewMode = useCallback((mode: ViewMode) => {
+    setViewMode(mode)
+    if (selectedId) writeViewMode(selectedId, mode)
+  }, [selectedId])
+
+  // Re-read persisted view mode when active session changes
+  useEffect(() => {
+    setViewMode(selectedId ? readViewMode(selectedId) : 'chat')
+  }, [selectedId])
   const [showMoreMenu, setShowMoreMenu] = useState(false)
   const [showSessionPicker, setShowSessionPicker] = useState(false)
   const [copiedField, setCopiedField] = useState<string | null>(null)
@@ -202,7 +214,6 @@ function ChatPage() {
       stubSessionRef.current = false
       setSelectedId(id)
       setMobileView('chat')
-      setViewMode('chat')
       // Open a tab — label will be updated once session meta loads
       chatTabs.openTab({ sessionId: id, label: 'Loading...', status: 'idle', unread: false })
     },
@@ -372,7 +383,6 @@ function ChatPage() {
   useEffect(() => {
     if (chatTabs.activeTab && chatTabs.activeTab.sessionId !== selectedId) {
       setSelectedId(chatTabs.activeTab.sessionId)
-      setViewMode('chat')
       return
     }
 
@@ -441,7 +451,7 @@ function ChatPage() {
       {selectedId && (
         <div className="flex items-center gap-0.5 rounded-full bg-[var(--fill-tertiary)] p-0.5">
           <button
-            onClick={() => setViewMode('chat')}
+            onClick={() => setAndPersistViewMode('chat')}
             className={cn(
               "rounded-full px-2.5 py-1 text-[11px] font-medium transition-all",
               viewMode === 'chat'
@@ -452,7 +462,7 @@ function ChatPage() {
             Chat
           </button>
           <button
-            onClick={() => setViewMode('cli')}
+            onClick={() => setAndPersistViewMode('cli')}
             className={cn(
               "rounded-full px-2.5 py-1 font-mono text-[11px] font-medium transition-all",
               viewMode === 'cli'

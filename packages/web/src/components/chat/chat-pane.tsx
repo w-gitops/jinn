@@ -6,7 +6,7 @@ import { ChatMessages } from '@/components/chat/chat-messages'
 import { ChatInput } from '@/components/chat/chat-input'
 import { ChatEmployeePicker } from '@/components/chat/chat-employee-picker'
 import { QueuePanel } from '@/components/chat/queue-panel'
-import { CliTranscript } from '@/components/chat/cli-transcript'
+import { CliTerminal } from '@/components/cli-terminal'
 import { buildNewSessionParams } from '@/components/chat/new-chat-helpers'
 import type { Employee } from '@/lib/api'
 import type { Message, MediaAttachment } from '@/lib/conversations'
@@ -589,7 +589,7 @@ export function ChatPane({
 
       {/* Messages / CLI transcript */}
       {viewMode === 'cli' && sessionId ? (
-        <CliTranscript sessionId={sessionId} />
+        <CliTerminal sessionId={sessionId} />
       ) : (sessionId || messages.length > 0) ? (
         <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
       ) : null}
