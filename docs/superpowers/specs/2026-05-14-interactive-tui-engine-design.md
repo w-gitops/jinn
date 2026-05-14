@@ -604,9 +604,26 @@ The **step 0 validation spike** must resolve these before the design is locked:
   Alternatively, keep a per-session "avoid leading slash" normalization step in
   `InteractiveClaudeEngine` before calling `os.write(ptyMaster, pasteSeq)`.
   **Every turn must use the FIFO/paste path for follow-ups in a warm PTY.**
-- Confirm `--effort` and `--chrome` work in interactive mode (used on every turn).
-- Confirm the ~100 KB system prompt fits — via `--append-system-prompt` argv, or
-  must move into the `--settings` JSON (ARG_MAX).
+- **RESOLVED** `--effort high` and `--chrome` **work in interactive mode**.
+  Validated 2026-05-14 (claude v2.1.141): both flags accepted, no arg-parse error
+  or crash. PTY banner confirms `Opus 4.7 (1M context) with high effort · Claude
+  Max`; Stop hook fired, `last_assistant_message = "FLAGS_OK"`. The interactive
+  engine's flag list can keep `--chrome` unconditional and `--effort <level>` as
+  today.
+
+- **RESOLVED** ARG_MAX for the ~120 KB system prompt: **both paths work on
+  macOS** (ARG_MAX = 1 048 576 bytes). Validated 2026-05-14 (claude v2.1.141):
+  - **argv**: `--append-system-prompt <120 000-char string>` — Stop fired, no
+    E2BIG, `last_assistant_message = "ARG_OK"`. The 117 KB string fits comfortably
+    in macOS's 1 MB ARG_MAX.
+  - **settings file**: `appendSystemPrompt` key in the per-session `--settings`
+    JSON (120 226-byte file) — Stop fired, `last_assistant_message = "ARG_OK"`.
+    `appendSystemPrompt` is a valid Claude Code settings key.
+
+  **Recommendation**: use the settings-file path regardless (it is also
+  safer for Linux containers where ARG_MAX may be tighter), and keep argv as a
+  fallback. The per-session `--settings` file already must exist for hooks, so
+  folding `appendSystemPrompt` into it adds no new file.
 - **Cost source**: which of transcript `usage` / `~/.claude.json lastCost` is
   reliable per-turn — and is it good enough for `checkBudget`?
 - **Rate-limit source**: does a `Notification` hook, the transcript, or the PTY
