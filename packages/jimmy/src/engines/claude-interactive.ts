@@ -90,10 +90,15 @@ export class TurnResolver {
   }
 }
 
+/** Cap for the per-session PTY scrollback ring buffer (xterm.js reconnect replay). */
+const SCROLLBACK_CAP_BYTES = 262144;
+
 export class InteractiveClaudeEngine implements InterruptibleEngine {
   name = "claude" as const;
   /** Active turn resolvers keyed by Jinn session id. */
   private active = new Map<string, { resolver: TurnResolver; tailer?: TranscriptTailer }>();
+  /** Per-session PTY output streams: scrollback ring buffer + live subscribers. Survives PTY respawn. */
+  private streams = new Map<string, { buffer: string; subscribers: Set<(d: string) => void> }>();
 
   constructor(
     private lifecycle: PtyLifecycleManager,
@@ -200,6 +205,14 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       get killed() { return (proc as any)._exitCode != null; },
       kill: (signal?: string) => { try { proc.kill(signal); } catch { /* already gone */ } },
     } as PtyHandle;
+    // Wire PTY output into the session's scrollback ring buffer + live subscribers.
+    const stream = this.streamFor(jinnSessionId);
+    proc.onData((d) => {
+      stream.buffer = (stream.buffer + d).slice(-SCROLLBACK_CAP_BYTES);
+      for (const cb of stream.subscribers) {
+        try { cb(d); } catch { /* ignore subscriber errors */ }
+      }
+    });
     proc.onExit(() => {
       // PTY exited without a Stop hook (crash / early exit) — settle as interrupted.
       const e = this.active.get(jinnSessionId);
@@ -223,6 +236,51 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     if (/^[/@!]/.test(text)) text = " " + text;
     proc.write(`\x1b[200~${text}\x1b[201~`);
     setTimeout(() => proc.write("\r"), 50); // small delay before submit — see Task 0.1
+  }
+
+  /** Lazily create (or fetch) the output stream entry for a Jinn session id. */
+  private streamFor(sessionId: string): { buffer: string; subscribers: Set<(d: string) => void> } {
+    let stream = this.streams.get(sessionId);
+    if (!stream) {
+      stream = { buffer: "", subscribers: new Set() };
+      this.streams.set(sessionId, stream);
+    }
+    return stream;
+  }
+
+  /** Append-only capped output buffer for the session's current/most-recent PTY (for xterm.js reconnect replay). */
+  getScrollback(sessionId: string): string {
+    return this.streams.get(sessionId)?.buffer ?? "";
+  }
+
+  /** Subscribe to live PTY output for a session. Returns an unsubscribe fn. Survives PTY respawn within the session. */
+  subscribeOutput(sessionId: string, cb: (data: string) => void): () => void {
+    const stream = this.streamFor(sessionId);
+    stream.subscribers.add(cb);
+    return () => { stream.subscribers.delete(cb); };
+  }
+
+  /** Write raw text to the warm PTY as a bracketed-paste + CR (same /@!-guard as injectPrompt). No-op if no warm PTY. */
+  writeStdin(sessionId: string, text: string): void {
+    const handle = this.lifecycle.getWarm(sessionId);
+    if (!handle) return;
+    const proc = (handle as any)._proc as pty.IPty | undefined;
+    if (!proc) return;
+    let payload = text;
+    // Bracketed-paste does NOT neutralize a leading /, @, or ! — prepend a space so
+    // they're treated as a literal message (see injectPrompt).
+    if (/^[/@!]/.test(payload)) payload = " " + payload;
+    proc.write(`\x1b[200~${payload}\x1b[201~`);
+    setTimeout(() => proc.write("\r"), 50);
+  }
+
+  /** Resize the warm PTY. No-op if no warm PTY. */
+  resizePty(sessionId: string, cols: number, rows: number): void {
+    const handle = this.lifecycle.getWarm(sessionId);
+    if (!handle) return;
+    const proc = (handle as any)._proc as pty.IPty | undefined;
+    if (!proc) return;
+    try { proc.resize(cols, rows); } catch { /* PTY gone */ }
   }
 
   kill(sessionId: string, reason = "Interrupted"): void {

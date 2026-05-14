@@ -21,6 +21,7 @@ import { writeGatewayInfo } from "./gateway-info.js";
 import { seedTrust, cleanupSessionSettings } from "../shared/claude-settings.js";
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, JINN_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
 import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
+import { attachPtyWebSocket } from "./pty-ws.js";
 import { ensureFilesDir } from "./files.js";
 import { initStt } from "../stt/stt.js";
 import { startWatchers, stopWatchers, syncSkillSymlinks } from "./watcher.js";
@@ -680,6 +681,10 @@ export async function startGateway(
 
   // WebSocket server
   const wss = new WebSocketServer({ noServer: true });
+  // Dedicated WS server for per-session PTY streams (/ws/pty/:sessionId) — kept
+  // separate from the global broadcast `wss` so its connections aren't added to
+  // the broadcast client set.
+  const ptyWss = new WebSocketServer({ noServer: true });
 
   wss.on("connection", (ws) => {
     wsClients.add(ws);
@@ -697,13 +702,27 @@ export async function startGateway(
   });
 
   server.on("upgrade", (req, socket, head) => {
-    if (req.url === "/ws") {
+    const reqUrl = req.url || "";
+    if (reqUrl === "/ws") {
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit("connection", ws, req);
       });
-    } else {
-      socket.destroy();
+      return;
     }
+    // Dedicated per-session PTY channel: /ws/pty/:sessionId (interactive mode only).
+    const ptyMatch = reqUrl.split("?")[0].match(/^\/ws\/pty\/([^/]+)$/);
+    if (ptyMatch) {
+      const sessionId = decodeURIComponent(ptyMatch[1]);
+      if (claudeEngine instanceof InteractiveClaudeEngine) {
+        ptyWss.handleUpgrade(req, socket, head, (ws) => {
+          attachPtyWebSocket(ws, sessionId, claudeEngine as InteractiveClaudeEngine);
+        });
+      } else {
+        socket.destroy();
+      }
+      return;
+    }
+    socket.destroy();
   });
 
 
@@ -866,8 +885,9 @@ export async function startGateway(
     }
     wsClients.clear();
 
-    // Close WebSocket server
+    // Close WebSocket servers
     await new Promise<void>((resolve) => wss.close(() => resolve()));
+    await new Promise<void>((resolve) => ptyWss.close(() => resolve()));
 
     // Close HTTP server
     await new Promise<void>((resolve, reject) => {
