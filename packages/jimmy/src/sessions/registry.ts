@@ -89,6 +89,7 @@ function rowToSession(row: Record<string, unknown>): Session {
     title: (row.title as string) ?? null,
     parentSessionId: (row.parent_session_id as string) ?? null,
     effortLevel: (row.effort_level as string) ?? null,
+    keepAlive: Boolean(row.keep_alive),
     status: row.status as Session['status'],
     totalCost: (row.total_cost as number) ?? 0,
     totalTurns: (row.total_turns as number) ?? 0,
@@ -170,6 +171,7 @@ export function migrateSessionsSchema(database: Database.Database): void {
     ['total_cost', 'REAL', '0'],
     ['total_turns', 'INTEGER', '0'],
     ['effort_level', 'TEXT'],
+    ['keep_alive', 'INTEGER NOT NULL', '0'],
   ];
 
   for (const [name, type, defaultVal] of missingColumns) {
@@ -272,6 +274,7 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string; porta
     title,
     parentSessionId: opts.parentSessionId ?? null,
     effortLevel: opts.effortLevel ?? null,
+    keepAlive: false,
     status: 'idle',
     totalCost: 0,
     totalTurns: 0,
@@ -308,6 +311,7 @@ export interface UpdateSessionFields {
   lastActivity?: string;
   lastError?: string | null;
   title?: string;
+  keepAlive?: boolean;
 }
 
 export function updateSession(id: string, updates: UpdateSessionFields): Session | undefined {
@@ -354,6 +358,10 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   if (updates.title !== undefined) {
     sets.push('title = ?');
     values.push(updates.title);
+  }
+  if (updates.keepAlive !== undefined) {
+    sets.push('keep_alive = ?');
+    values.push(updates.keepAlive ? 1 : 0);
   }
 
   if (sets.length === 0) return getSession(id);

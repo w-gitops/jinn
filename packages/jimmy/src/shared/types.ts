@@ -155,6 +155,7 @@ export interface Session {
   parentSessionId: string | null;
   status: "idle" | "running" | "error" | "waiting" | "interrupted";
   effortLevel: string | null;
+  keepAlive: boolean;
   totalCost: number;
   totalTurns: number;
   queueDepth?: number;
