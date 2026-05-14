@@ -61,6 +61,8 @@ export interface ApiContext {
   emit: (event: string, payload: unknown) => void;
   connectors: Map<string, import("../shared/types.js").Connector>;
   reloadConnectorInstances?: () => Promise<{ started: string[]; stopped: string[]; errors: string[] }>;
+  hookRegistry?: import("./hook-registry.js").HookRegistry;
+  hookSecret?: string;
 }
 
 export function resumePendingWebQueueItems(context: ApiContext): void {
@@ -1831,6 +1833,23 @@ Handle this as a priority request from a colleague.`;
     if (method === "GET" && pathname === "/api/budgets/events") {
       const { getBudgetEvents } = await import("./budgets.js");
       return json(res, getBudgetEvents());
+    }
+
+    // POST /api/internal/hook — receive Claude Code turn hooks from the relay script
+    if (method === "POST" && pathname === "/api/internal/hook") {
+      if (!context.hookRegistry || !context.hookSecret) {
+        return json(res, { error: "Interactive mode not active" }, 503);
+      }
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const { handleHookPost } = await import("./hook-endpoint.js");
+      const hookBody = _parsed.body as { jinnSessionId?: string; hook?: import("./hook-registry.js").HookPayload };
+      const result = handleHookPost(
+        { reg: context.hookRegistry, secret: context.hookSecret, remoteAddress: req.socket.remoteAddress },
+        req.headers["x-jinn-hook-secret"] as string | undefined,
+        hookBody,
+      );
+      return json(res, { message: result.body }, result.status);
     }
 
     return notFound(res);
