@@ -430,9 +430,19 @@ export async function handleApiRequest(
         if (!trimmed) return badRequest(res, "title must not be empty");
         updates.title = trimmed.slice(0, 200);
       }
+      if (body.keepAlive !== undefined) {
+        if (typeof body.keepAlive !== "boolean") return badRequest(res, "keepAlive must be a boolean");
+        updates.keepAlive = body.keepAlive;
+      }
       if (Object.keys(updates).length === 0) return badRequest(res, "no valid fields to update");
       const updated = updateSession(params.id, updates);
       if (!updated) return notFound(res);
+      if (updates.keepAlive !== undefined) {
+        const engine = context.sessionManager.getEngine("claude");
+        if (engine && "setKeepAlive" in engine) {
+          (engine as { setKeepAlive(sessionId: string, on: boolean): void }).setKeepAlive(params.id, updates.keepAlive);
+        }
+      }
       context.emit("session:updated", { sessionId: params.id });
       return json(res, serializeSession(updated, context));
     }

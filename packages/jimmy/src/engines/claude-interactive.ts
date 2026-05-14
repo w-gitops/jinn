@@ -299,6 +299,11 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     return this.active.has(sessionId);
   }
 
+  /** Toggle KEEP ALIVE for a session — forwards to the PTY lifecycle manager. */
+  setKeepAlive(sessionId: string, on: boolean): void {
+    this.lifecycle.setKeepAlive(sessionId, on);
+  }
+
   /** InterruptibleEngine.isAlive — true if a turn OR a warm PTY exists. */
   isAlive(sessionId: string): boolean {
     return this.active.has(sessionId) || this.lifecycle.getWarm(sessionId) !== undefined;
