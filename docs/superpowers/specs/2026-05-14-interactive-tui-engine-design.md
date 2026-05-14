@@ -26,7 +26,10 @@ endpoint and an optional embedded-TUI web chat.
 - Drive Claude such that it bills against **interactive** subscription limits.
 - Keep every existing surface working: web chat, Slack/Discord/Telegram, cron, org.
 - Preserve structured turn data (final message, tool calls, session id).
-- Optionally give web chat the native streaming TUI experience.
+- Preserve the web UI's per-session **Chat ↔ CLI toggle** — both render the same
+  TUI-backed session, just differently.
+- Keep PTYs warm intelligently so turns and web context-switches stay snappy,
+  without leaking processes.
 
 ## Non-Goals
 
@@ -69,29 +72,38 @@ and a working POC (`claude` v2.1.141, PTY via `script`).
 
 ## Architecture
 
-One engine core, two output consumers.
+One engine core. Every surface — connectors, cron, org, and **both** web UI
+render modes — runs on the same interactive PTY engine. The only thing that
+varies is how the session's output is *consumed*.
 
 ```
                     ┌─────────────────────────────────────────┐
                     │         InteractiveClaudeEngine         │
                     │  spawn real `claude` in a PTY (no -p)    │
                     │  → bills as cc_entrypoint=cli            │
+                    │  PTY lifetime governed by lifecycle mgr  │
                     └────────────┬──────────────┬─────────────┘
                                  │              │
-              headless surfaces  │              │  web chat
-        (connectors, cron, org)  │              │
+            structured channel   │              │  raw PTY byte stream
+        (Stop hook + transcript) │              │  (web "CLI" mode only)
                                  ▼              ▼
                     ┌─────────────────┐  ┌──────────────────────┐
-                    │ Stop hook +     │  │ xterm.js (PTY stdout) │
-                    │ transcript tail │  │ + CSS-overlay textarea│
-                    │ → Jinn's own UI │  │ → native streaming TUI│
-                    └─────────────────┘  └──────────────────────┘
+                    │ Jinn's own UI   │  │ xterm.js              │
+                    │ - connectors    │  │ + CSS-overlay textarea│
+                    │ - cron / org    │  │ → native streaming TUI│
+                    │ - web "Chat"    │  └──────────────────────┘
+                    │   mode          │
+                    └─────────────────┘
                                  │              │
                                  └──────┬───────┘
-                                        ▼
                         Stop hook → POST /api/internal/hook
-                        (turn-end + final message, both surfaces)
+                        (turn-end + final message, all surfaces)
 ```
+
+The web UI's per-session **Chat ↔ CLI toggle** picks the consumer: "Chat" uses
+the same structured channel (Stop hook + transcript tail) that connectors and
+cron use; "CLI" attaches xterm.js to the raw PTY stream. Same session, same
+engine, same `--resume` id underneath.
 
 ### Component: `InteractiveClaudeEngine`
 
@@ -113,13 +125,21 @@ claude --resume <session-id> "<prompt>" --append-system-prompt <sys> ... --setti
 
 Environment: clean env (filter `CLAUDE_CODE_*` / `CLAUDECODE` as today), **do not
 set `CLAUDE_CODE_ENTRYPOINT`** (the binary sets it). Set `CLAUDE_CODE_NO_FLICKER`
-for fullscreen-mode rendering when the consumer is web chat (gives a discrete
-bottom slot — see web chat below).
+**unconditionally** (fullscreen mode → discrete bottom slot). It is harmless for
+the structured channel and means a session can be toggled into CLI mode at any
+time without a respawn.
 
-**Per-turn lifecycle (headless surfaces):** spawn → binary auto-submits the
-positional-arg prompt → engine waits for the `Stop` hook callback → extract
-`last_assistant_message` → kill the PTY. Stateless, mirrors today's `claude -p`
-lifecycle 1:1.
+**Turn execution.** On `run()`, the engine asks the **PTY lifecycle manager**
+(below) for a process for this Jinn session:
+- **No warm PTY** → spawn `claude --resume <id> "<prompt>"` in a PTY; the binary
+  auto-submits the positional-arg prompt.
+- **Warm PTY exists** (KEEP ALIVE or grace period) → inject the prompt into the
+  live PTY's stdin as bracketed-paste + `\r`. No respawn, no `--resume` reload.
+
+Either way the engine waits for the `Stop` hook callback, extracts
+`last_assistant_message`, and hands the PTY back to the lifecycle manager — which
+decides whether to kill it or keep it warm. The default (no KEEP ALIVE, not
+viewed in the web UI) is kill-after-turn, mirroring today's `claude -p` lifecycle.
 
 **`run()` resolution.** The `run()` promise resolves when the gateway receives the
 `Stop` hook POST for this Jinn session. Correlation: each Jinn session gets a
@@ -169,37 +189,69 @@ Block-level granularity. Used by **headless surfaces** to drive Jinn's existing
 not need it for rendering (xterm.js shows the TUI directly) but may use it as a
 non-xterm fallback view.
 
-### Component: web chat — embedded TUI
+### Component: PTY lifecycle manager
 
-For the web chat surface only. A human is actively present, so the native
-streaming TUI is worth showing.
+`packages/jimmy/src/engines/pty-lifecycle.ts`. Gateway-side. Owns every live
+`claude` PTY process keyed by Jinn session id, and decides — on every relevant
+event — whether each PTY should stay alive or be killed.
 
-This is a **separate code path from `engine.run()`** — a persistent
-`InteractiveSession` manager (gateway-side) that reuses the engine's primitives
-(PTY spawn, trust seeding, settings/hook wiring) but is driven by WS events
-rather than a single `run()` call/resolve cycle.
+**A PTY stays alive if ANY of:**
+1. **A turn is in progress** — always alive until the `Stop` hook fires.
+2. **KEEP ALIVE is set** for the session — an explicit per-session opt-in
+   (config field / web UI control). The PTY stays warm after the turn so
+   follow-up turns inject via stdin instead of respawning + `--resume`.
+3. **Grace period** — the session was viewed in the web UI within the last
+   N minutes (default ~5). Keeps recently-viewed chats hot so switching back is
+   instant.
 
-**Gateway side.** A persistent `node-pty` `claude` process per open web chat
-session (spawned with `--resume <id>` and no prompt arg → opens the TUI idle on
-that session). `CLAUDE_CODE_NO_FLICKER` enabled (fullscreen mode → discrete
-bottom slot). PTY stdout streamed over the existing WebSocket to the browser. An
-xterm `serialize`-addon buffer is kept gateway-side for reconnect replay.
-Idle-timeout kills the process; the SessionQueue still serializes turns.
+Otherwise the PTY is killed. The default for a session started by cron, a
+connector, or a one-off web message — no KEEP ALIVE, not currently viewed — is
+**kill once the turn finishes**; the next turn respawns with `--resume`.
 
-**Browser side.** `xterm.js` renders PTY stdout. A native `<textarea>` is
-absolutely positioned over the bottom region of the terminal (CSS overlay),
-covering the TUI's own input box. The user types in the textarea (instant, local
-— no per-keystroke round-trip, which was the lag problem). On send, the message
-goes over the WS; the gateway injects it into PTY stdin as bracketed-paste + `\r`.
+**Events that re-evaluate a PTY's fate:** turn end (`Stop` hook), KEEP ALIVE
+toggled, web UI view/unview, grace-period timer expiry, idle timeout (a hard cap
+even on KEEP ALIVE sessions, e.g. 30 min), gateway shutdown (`killAll`).
 
-**Sizing.** The browser reports viewport cols/rows; the gateway `pty.resize()`s.
-The PTY is sized a few rows **taller** than the visible xterm viewport so the
-bottom slot sits just below the fold — belt-and-suspenders with the CSS overlay.
+**Warm-PTY reuse.** When the engine asks for a process and a warm one exists, it
+is reused (stdin injection). This is what makes KEEP ALIVE and the grace period
+fast — no `--resume` history reload, no TUI re-render flicker between turns.
 
-**Why overlay, not crop:** the input box height varies (multiline, paste refs,
-attachments) and there is no `<Static>` seam in v2.1.87, so fixed-row cropping
-over- or under-crops. The overlay treats the terminal as an opaque black box,
-which is what survives Claude Code version churn.
+### Component: web chat — Chat ↔ CLI toggle
+
+The web UI keeps its existing **per-session Chat ↔ CLI toggle**. Both modes
+render the *same* TUI-backed session; the toggle only changes the consumer. The
+choice is **per-session, persisted in `localStorage`** (keyed by Jinn session id).
+
+**"Chat" mode** — Jinn's own chat UI, the existing component, rendered from the
+structured channel (`Stop` hook + transcript tailer) exactly as connectors and
+cron consume it. No xterm.js. This is the default and the lighter-weight mode.
+
+**"CLI" mode** — `xterm.js` attached to the raw PTY byte stream:
+- *Gateway side.* The session's PTY (kept warm by the lifecycle manager while the
+  chat is viewed) has its stdout streamed over the existing WebSocket. An xterm
+  `serialize`-addon buffer is kept gateway-side for reconnect replay.
+  `CLAUDE_CODE_NO_FLICKER` is enabled for this session (fullscreen mode → discrete
+  bottom slot).
+- *Browser side.* `xterm.js` renders PTY stdout. A native `<textarea>` is
+  absolutely positioned over the bottom region of the terminal (CSS overlay),
+  covering the TUI's own input box. The user types in the textarea (instant,
+  local — no per-keystroke round-trip, which was the lag problem). On send, the
+  message goes over the WS; the gateway injects it into PTY stdin as
+  bracketed-paste + `\r`.
+- *Sizing.* The browser reports viewport cols/rows; the gateway `pty.resize()`s.
+  The PTY is sized a few rows **taller** than the visible xterm viewport so the
+  bottom slot sits just below the fold — belt-and-suspenders with the CSS overlay.
+- *Why overlay, not crop:* the input box height varies (multiline, paste refs,
+  attachments) and there is no `<Static>` seam in v2.1.87, so fixed-row cropping
+  over- or under-crops. The overlay treats the terminal as an opaque black box,
+  which is what survives Claude Code version churn.
+
+**Snappy chat switching.** The web frontend keeps the UI state of recently-viewed
+sessions mounted/cached for a few minutes (both the Chat-mode component state and
+the CLI-mode xterm.js instance), instead of tearing down on every switch. This
+pairs with the lifecycle manager's grace-period keep-alive: switching back to a
+recent chat is instant on both the UI and the process side. After the grace
+window, the cached UI state and the warm PTY are both released.
 
 ### Component: trust pre-seeding
 
@@ -211,20 +263,27 @@ On gateway startup, ensure `~/.claude.json` →
 
 ## Data Flow
 
-**Headless turn (e.g. a Slack message):**
+**Connector / cron turn (e.g. a Slack message):**
 1. `SessionManager.runSession` calls `engine.run(opts)` (unchanged call site).
-2. `InteractiveClaudeEngine` seeds trust, writes the per-session settings file,
-   spawns `claude --resume <id> "<prompt>" … --settings <file>` in a PTY.
+2. The engine seeds trust, writes the per-session settings file, and asks the
+   lifecycle manager for a process: warm PTY → inject prompt via stdin; otherwise
+   spawn `claude --resume <id> "<prompt>" … --settings <file>` in a PTY.
 3. `SessionStart` hook → gateway records transcript path → transcript tailer starts.
 4. Tailer emits `tool_use` / `text` deltas → `onStream` → existing reaction/typing UI.
 5. `Stop` hook → gateway resolves `run()` with `last_assistant_message`.
-6. Engine kills the PTY, returns `EngineResult`. Rest of `runSession` unchanged.
+6. Engine returns `EngineResult`; hands the PTY to the lifecycle manager, which
+   kills it (default) or keeps it warm (KEEP ALIVE). Rest of `runSession` unchanged.
 
 **Web chat turn:**
-1. Persistent PTY already running for the open tab; xterm.js attached.
-2. User sends from the overlay textarea → WS → gateway injects bracketed-paste to stdin.
-3. xterm.js streams the turn live. `Stop` hook → persist `last_assistant_message`
-   to Jinn's DB, update session status.
+1. User sends a message from the web UI. Same `run()` path as above — the
+   lifecycle manager keeps the PTY warm because the session is currently viewed
+   (grace period) and/or KEEP ALIVE is set, so the prompt is injected via stdin.
+2. **Chat mode**: transcript tailer + `Stop` hook drive Jinn's own chat UI.
+   **CLI mode**: xterm.js renders the live PTY stream; the toggle is read from
+   `localStorage`. Both modes observe the same turn.
+3. `Stop` hook → persist `last_assistant_message` to Jinn's DB, update status.
+4. On switch-away, the UI state is cached and the PTY stays warm for the grace
+   window; after it expires both are released.
 
 ## Tradeoffs Accepted
 
@@ -263,11 +322,13 @@ On gateway startup, ensure `~/.claude.json` →
    `engines.claude.mode: "headless" | "interactive"` (default stays `headless`
    until validated).
 2. Land the hook relay script, `/api/internal/hook` endpoint, settings-file
-   writer, and trust pre-seeding.
-3. Switch **headless surfaces** (connectors, cron) to `interactive` — the
-   straightforward `run()` replacement. Validate billing on the Anthropic usage
-   dashboard.
-4. Build the **web chat** embedded-TUI path (persistent PTY, xterm.js, overlay).
+   writer, trust pre-seeding, and the **PTY lifecycle manager** (start with
+   kill-after-turn only — KEEP ALIVE and grace period come in step 4).
+3. Switch **connectors and cron** to `interactive` — the straightforward `run()`
+   replacement. Validate billing on the Anthropic usage dashboard.
+4. Web UI: wire the per-session **Chat ↔ CLI toggle** (localStorage), the CLI
+   mode (xterm.js + overlay), the **KEEP ALIVE** control, the lifecycle manager's
+   **grace-period** keep-alive, and the frontend's recently-viewed UI-state cache.
 5. Keep `ClaudeEngine` (`claude -p`) as a selectable fallback for users who
    prefer API-key billing or if interactive mode regresses.
 
