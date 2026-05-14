@@ -418,16 +418,37 @@ window, the cached UI state and the warm PTY are both released.
 session is allowed to run at all** (`manager.ts:291-314`). If cost is silently 0,
 budget enforcement becomes a no-op.
 
-Plan:
-- Primary: parse `usage` (input/output/cache tokens) from the assistant lines of
-  the **transcript JSONL** and compute cost via Jinn's existing model-cost tables
-  (`gateway/costs.ts`, `additionalModelCostsCache`).
-- Cross-check / fallback: `~/.claude.json` → `projects[<cwd>].lastCost` /
-  `lastModelUsage` (per-project, last run).
-- The interactive `EngineResult` populates `cost` from this and `numTurns: ≥1`.
-- If neither source proves reliable in validation: **explicitly disable budget
-  enforcement in interactive mode with a loud startup warning** — never let it
-  silently pass. This decision must be made before step 3 of the migration.
+**VALIDATED 2026-05-14.** Concrete source and implementation:
+
+- **Primary (chosen): transcript JSONL `assistant` lines.** Every `assistant`-type
+  line carries `message.usage` with the following fields (confirmed across all POC
+  sessions, model `claude-opus-4-7`):
+  - `input_tokens` — fresh non-cached tokens
+  - `output_tokens` — output tokens
+  - `cache_creation_input_tokens` — tokens written into the prompt cache
+  - `cache_read_input_tokens` — tokens read from the prompt cache
+  - `server_tool_use.web_search_requests` — web search count
+  - `service_tier`, `speed`, `iterations` (internal, not needed for cost)
+
+  Sum these across all `assistant` lines in the turn, **deduplicated by
+  `message.message.id`** (required: when `--effort high` is set, thinking mode
+  produces two `assistant` lines with the same `message.id` — one with a
+  `thinking` block and one with the `text` block; they carry identical `usage`,
+  so the second must be skipped). Compute cost via Jinn's existing model-cost
+  tables (`gateway/costs.ts`, `additionalModelCostsCache`) using the `message.model`
+  field on the assistant line.
+
+- **`~/.claude.json` `lastCost` / `lastModelUsage` / `lastTotalInputTokens` etc.:
+  UNRELIABLE for Jinn's use case.** These fields are populated only when the
+  interactive `claude` process exits *gracefully* (via `/exit` or Ctrl+D). When
+  Jinn kills the process after the `Stop` hook fires (SIGTERM or SIGKILL), these
+  fields remain zero from the previous normal exit. **Do not use as primary or
+  fallback.** They exist in `~/.claude.json` under `projects[cwd]` but will
+  always be stale in Jinn's kill-after-turn model.
+
+- The interactive `EngineResult` populates `cost` from the transcript-parsed
+  usage and `numTurns: ≥1`. The transcript is available at `transcript_path` from
+  the `SessionStart` hook payload and is appended before the `Stop` hook fires.
 
 Note `runWebSession` never calls `accumulateSessionCost` today (only the manager's
 `runSession` does) — web-session cost surfaces only via the `session:completed`
@@ -442,15 +463,43 @@ on `claude -p`'s structured `rate_limit_event` JSON**, which interactive mode
 never emits. Left alone, the entire rate-limit machinery silently goes dark —
 sessions just hang or error.
 
-The interactive engine must reconstruct an `EngineRateLimitInfo` so the existing
-`manager.ts` / `api.ts` wait-retry-fallback logic keeps working unchanged. Source
-options, to be settled in validation:
-- Tail the transcript JSONL for the rate-limit assistant/system marker.
-- Scan the PTY byte stream for the TUI's rate-limit banner.
-- A `Notification` hook may carry usage-limit events — check.
+**VALIDATED 2026-05-14.** Concrete mechanism: the **`StopFailure` hook**.
 
-Until this is built, interactive mode must at minimum surface a rate-limited turn
-as a clear `error` (not a hang) so the watchdog and UI behave.
+When an API error (rate limit, auth failure, billing error, etc.) ends a turn,
+Claude Code fires **`StopFailure` instead of `Stop`**. The hook payload carries:
+```json
+{
+  "hook_event_name": "StopFailure",
+  "error": "rate_limit",          // enum: rate_limit | authentication_failed |
+                                  //   billing_error | invalid_request |
+                                  //   server_error | max_output_tokens | unknown
+  "error_details": "...",         // optional human-readable details
+  "last_assistant_message": "..."  // optional partial response
+}
+```
+(Source: `free-code/src/utils/hooks/hooksConfigManager.ts:100-115`,
+`free-code/src/entrypoints/sdk/coreSchemas.ts:529-537`,
+`free-code/src/utils/hooks.ts:3594-3627`.)
+
+This is structured, reliable, and requires no transcript scanning or PTY banner
+parsing. The Jinn hook-relay settings file must register a `StopFailure` hook
+alongside `Stop`. The hook endpoint (`/api/internal/hook`) routes `StopFailure`
+events to reconstruct an `EngineRateLimitInfo` and reject `run()` with a
+rate-limit error — matching the contract Jinn's `manager.ts` wait-retry loop
+already handles.
+
+**`Notification` hook does NOT fire for rate-limit events.** It fires only for
+desktop "turn complete" notifications when the interactive TUI is backgrounded
+(idle >6 s before completion). It is not a rate-limit signal and was not needed.
+PTY banner scanning and transcript scanning were also evaluated and rejected:
+neither provides a structured, parseable rate-limit signal without fragile
+regex over terminal escape sequences or an undocumented transcript entry type.
+
+**Implementation note:** register `StopFailure` in the per-session settings file
+alongside `Stop`. The existing hook-relay script can forward both. The endpoint
+checks `hook_event_name` and routes accordingly. No existing `manager.ts` /
+`api.ts` wait-retry logic changes are needed — the engine simply must resolve
+`run()` with an error whose shape matches `detectRateLimit`'s expected input.
 
 ### Component: configuration
 
@@ -624,10 +673,23 @@ The **step 0 validation spike** must resolve these before the design is locked:
   safer for Linux containers where ARG_MAX may be tighter), and keep argv as a
   fallback. The per-session `--settings` file already must exist for hooks, so
   folding `appendSystemPrompt` into it adds no new file.
-- **Cost source**: which of transcript `usage` / `~/.claude.json lastCost` is
-  reliable per-turn — and is it good enough for `checkBudget`?
-- **Rate-limit source**: does a `Notification` hook, the transcript, or the PTY
-  banner give a usable rate-limit signal?
+- **RESOLVED** **Cost source**: transcript JSONL `assistant` lines are the
+  reliable source. Every `assistant` line carries `message.usage` with
+  `input_tokens`, `output_tokens`, `cache_creation_input_tokens`,
+  `cache_read_input_tokens` (confirmed 2026-05-14, claude v2.1.141, all POC
+  sessions). Compute cost via `message.model` + `gateway/costs.ts`. Deduplicate
+  by `message.message.id` — thinking-mode turns produce two `assistant` lines
+  (thinking block + text block) with the same `message.id` and identical usage.
+  `~/.claude.json` `lastCost`/`lastModelUsage` fields are UNRELIABLE: they are
+  zero whenever claude is killed (SIGTERM or SIGKILL after the Stop hook), which
+  is Jinn's normal pattern. Do not use.
+- **RESOLVED** **Rate-limit source**: the **`StopFailure` hook** is the concrete
+  mechanism (not `Notification`, not transcript scanning, not PTY banner parsing).
+  `StopFailure` fires instead of `Stop` when an API error ends the turn; its
+  payload carries `error: "rate_limit"` (or other error type). Register
+  `StopFailure` in the per-session settings file alongside `Stop`. The `Notification`
+  hook does not fire on rate-limit events — it is a desktop notification hook
+  for backgrounded turns and was not fired in any POC session.
 - Confirm the `Stop` hook fires on user-interrupted turns (`kill()` path); if not,
   the watchdog + `kill()`-settles-resolver is the only safety net.
 - Confirm `--settings` hooks never trigger a blocking "review hooks" prompt under
