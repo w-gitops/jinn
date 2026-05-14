@@ -25,6 +25,12 @@ export const TMP_DIR = path.join(JINN_HOME, "tmp");
 export const MODELS_DIR = path.join(JINN_HOME, "models");
 export const STT_MODELS_DIR = path.join(JINN_HOME, "models", "whisper");
 export const PID_FILE = path.join(JINN_HOME, "gateway.pid");
+/** Gateway connection info (port + hook secret + pids) for hook-relay discovery. */
+export const GATEWAY_INFO_FILE = path.join(JINN_HOME, "gateway.json");
+/** Per-session Claude Code --settings files. */
+export const CLAUDE_SETTINGS_DIR = path.join(JINN_HOME, "tmp", "settings");
+/** The hook-relay script written once at boot. */
+export const HOOK_RELAY_SCRIPT = path.join(JINN_HOME, "hook-relay.mjs");
 export const CLAUDE_SKILLS_DIR = path.join(JINN_HOME, ".claude", "skills");
 export const AGENTS_SKILLS_DIR = path.join(JINN_HOME, ".agents", "skills");
 export const TEMPLATE_DIR = path.join(__dirname, "..", "..", "..", "template");
