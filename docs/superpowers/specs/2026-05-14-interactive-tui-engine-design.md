@@ -578,10 +578,32 @@ path.
 
 The **step 0 validation spike** must resolve these before the design is locked:
 
-- Confirm `claude --resume <id> "<prompt>"` auto-submits the prompt (POC tested
-  fresh sessions only).
-- Confirm bracketed-paste injection reliably submits follow-up turns in a warm
-  process (paste-mode should neutralize `/`,`@`,`!` prefixes — verify).
+- **RESOLVED** `claude --resume <id> "<prompt>"` **auto-submits the prompt**.
+  Validated 2026-05-14 (claude v2.1.141): `Stop` hook fired in ~3s,
+  `last_assistant_message = "RESUME_OK"`, same `session_id` as the original
+  session — history resumed correctly. The spawn path (no warm PTY) works as
+  designed.
+
+- **RESOLVED (with CRITICAL caveat)** Bracketed-paste injection submits follow-up
+  turns for prompts that do **not** start with `/`. Validated: injecting
+  `\x1b[200~Reply with exactly PASTE_OK\x1b[201~\r` into a live PTY via
+  `pty.openpty()` + `os.write()` fired `Stop` in ~9s,
+  `last_assistant_message = "PASTE_OK"`.
+
+  **HOWEVER: bracketed-paste mode does NOT neutralize a leading `/`.**
+  Injecting `\x1b[200~/Reply with exactly SLASH_OK\x1b[201~\r` triggered the
+  TUI's slash-command handler — output: `Unknown command: /Reply` + `Args from
+  unknown skill: with exactly SLASH_OK`. The turn was never submitted and
+  `Stop` did not fire. Paste-mode does NOT protect `/`, `@`, or `!` prefixes.
+
+  **Design implication**: the engine MUST pre-process every user prompt before
+  PTY injection to escape or strip a leading `/`, `@`, or `!`. A safe approach
+  is to prefix such prompts with a zero-width space (U+200B) or a Unicode
+  invisible character, or to wrap in a double bracketed-paste with the prefix
+  character sent separately as a literal keystroke before the paste region.
+  Alternatively, keep a per-session "avoid leading slash" normalization step in
+  `InteractiveClaudeEngine` before calling `os.write(ptyMaster, pasteSeq)`.
+  **Every turn must use the FIFO/paste path for follow-ups in a warm PTY.**
 - Confirm `--effort` and `--chrome` work in interactive mode (used on every turn).
 - Confirm the ~100 KB system prompt fits — via `--append-system-prompt` argv, or
   must move into the `--settings` JSON (ARG_MAX).
