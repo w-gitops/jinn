@@ -1,18 +1,25 @@
 import http from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee } from "../shared/types.js";
-import { loadConfig } from "../shared/config.js";
+import { loadConfig, normalizeClaudeEngineConfig } from "../shared/config.js";
 import { configureLogger, logger } from "../shared/logger.js";
 import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
+import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
+import { PtyLifecycleManager } from "../engines/pty-lifecycle.js";
 import { CodexEngine } from "../engines/codex.js";
 import { GeminiEngine } from "../engines/gemini.js";
+import { HookRegistry } from "./hook-registry.js";
+import { writeGatewayInfo } from "./gateway-info.js";
+import { seedTrust, cleanupSessionSettings } from "../shared/claude-settings.js";
+import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, JINN_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
 import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
 import { ensureFilesDir } from "./files.js";
 import { initStt } from "../stt/stt.js";
@@ -129,11 +136,70 @@ export async function startGateway(
     logger.info(`Recovered ${recoveredQueue} in-flight queue item(s) from previous run — reset to pending`);
   }
 
-  // Set up engines
-  const claudeEngine = new ClaudeEngine();
+  // Resolve gateway port/host early so boot artifacts (gateway.json) can record it.
+  const port = config.gateway.port || 7777;
+  const host = config.gateway.host || "127.0.0.1";
+
+  // Normalize claude engine config (idempotent — loadConfig already normalized it)
+  const claudeCfg = normalizeClaudeEngineConfig(config.engines.claude);
+
+  // Write gateway connection info (port + hook secret + pid) for hook-relay discovery.
+  const gatewayInfo = writeGatewayInfo(GATEWAY_INFO_FILE, { port, pid: process.pid });
+
+  // Hook registry — shared by the interactive engine and the internal hook route.
+  const hookRegistry = new HookRegistry();
+
+  // Set up engines — Claude engine selection depends on configured mode.
+  let claudeEngine: ClaudeEngine | InteractiveClaudeEngine;
+  let claudeLifecycle: PtyLifecycleManager | null = null;
+  if (claudeCfg.mode === "interactive") {
+    // Copy the hook-relay asset next to JINN_HOME so spawned Claude PTYs can find it.
+    // At runtime server.ts lives at dist/src/gateway/; the asset stays uncompiled in
+    // packages/jimmy/assets/. Try the known candidate locations and use the first one
+    // that exists.
+    const relayCandidates = [
+      path.join(__dirname, "..", "..", "..", "assets", "hook-relay.mjs"), // dist/src/gateway -> packages/jimmy/assets
+      path.join(__dirname, "..", "..", "assets", "hook-relay.mjs"), // src/gateway -> packages/jimmy/assets
+      path.join(__dirname, "..", "assets", "hook-relay.mjs"), // dist/assets fallback
+    ];
+    try {
+      const relaySrc = relayCandidates.find((p) => fs.existsSync(p));
+      if (relaySrc) {
+        fs.copyFileSync(relaySrc, HOOK_RELAY_SCRIPT);
+      } else {
+        logger.warn(`hook-relay.mjs asset not found in any candidate location; interactive Claude hooks may not work`);
+      }
+    } catch (err) {
+      logger.warn(`Failed to copy hook-relay.mjs: ${err instanceof Error ? err.message : err}`);
+    }
+
+    // Seed trust for the Jinn project dir so interactive Claude doesn't prompt.
+    try {
+      seedTrust(path.join(os.homedir(), ".claude.json"), JINN_HOME);
+    } catch (err) {
+      logger.warn(`Failed to seed Claude trust: ${err instanceof Error ? err.message : err}`);
+    }
+
+    claudeLifecycle = new PtyLifecycleManager({
+      graceWindowMs: claudeCfg.graceWindowMs!,
+      idleTimeoutMs: claudeCfg.idleTimeoutMs!,
+      maxLivePtys: claudeCfg.maxLivePtys!,
+      onCleanup: (id) => {
+        cleanupSessionSettings(CLAUDE_SETTINGS_DIR, id);
+        hookRegistry.unregister(id);
+      },
+    });
+    claudeEngine = new InteractiveClaudeEngine(claudeLifecycle, hookRegistry, {
+      turnTimeoutMs: claudeCfg.turnTimeoutMs!,
+    });
+    logger.info("Claude engine: INTERACTIVE mode (PTY, bills as cc_entrypoint=cli)");
+  } else {
+    claudeEngine = new ClaudeEngine();
+    logger.info("Claude engine: headless mode (claude -p)");
+  }
   const codexEngine = new CodexEngine();
   const geminiEngine = new GeminiEngine();
-  const engines = new Map<string, InstanceType<typeof ClaudeEngine> | InstanceType<typeof CodexEngine> | InstanceType<typeof GeminiEngine>>();
+  const engines = new Map<string, ClaudeEngine | InteractiveClaudeEngine | InstanceType<typeof CodexEngine> | InstanceType<typeof GeminiEngine>>();
   engines.set("claude", claudeEngine);
   engines.set("codex", codexEngine);
   engines.set("gemini", geminiEngine);
@@ -568,6 +634,8 @@ export async function startGateway(
     emit,
     connectors: connectorMap,
     reloadConnectorInstances,
+    hookRegistry,
+    hookSecret: gatewayInfo.secret,
   };
 
   // Replay any pending web queue items (e.g. gateway restart mid-run)
@@ -680,10 +748,7 @@ export async function startGateway(
     },
   });
 
-  // Start listening
-  const port = config.gateway.port || 7777;
-  const host = config.gateway.host || "127.0.0.1";
-
+  // Start listening (port/host resolved earlier at boot)
   await new Promise<void>((resolve, reject) => {
     server.on("error", (err: NodeJS.ErrnoException) => {
       if (err.code === "EADDRINUSE") {
@@ -759,6 +824,22 @@ export async function startGateway(
     // Terminate live engine subprocesses after marking sessions.
     claudeEngine.killAll();
     codexEngine.killAll();
+
+    // Dispose the PTY lifecycle manager (interactive mode only).
+    if (claudeLifecycle) {
+      try {
+        claudeLifecycle.dispose();
+      } catch (err) {
+        logger.warn(`Failed to dispose PTY lifecycle manager: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
+    // Remove the gateway connection info file.
+    try {
+      fs.rmSync(GATEWAY_INFO_FILE, { force: true });
+    } catch (err) {
+      logger.warn(`Failed to remove ${GATEWAY_INFO_FILE}: ${err instanceof Error ? err.message : err}`);
+    }
 
     // Stop cron scheduler
     stopScheduler();
