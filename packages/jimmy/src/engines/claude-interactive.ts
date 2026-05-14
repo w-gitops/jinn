@@ -7,7 +7,8 @@ import { buildInteractiveArgs } from "./interactive-args.js";
 import { tailTranscript, type TranscriptTailer } from "./transcript-tail.js";
 import { PtyLifecycleManager, type PtyHandle } from "./pty-lifecycle.js";
 import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
-// NOTE: cost + rate-limit reconstruction is wired in by Task 5.3 (modifies run()).
+import { computeInteractiveCost } from "./interactive-cost.js";
+import { rateLimitFromStopFailure } from "./interactive-ratelimit.js";
 
 export interface TurnResolverOpts { turnTimeoutMs: number; fallbackSessionId: string | undefined; }
 
@@ -154,8 +155,16 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       this.lifecycle.turnEnded(jinnSessionId); // manager decides kill vs keep-warm
     }
 
-    // Task 5.3 inserts cost + rate-limit reconstruction here, using
-    // `resolver.transcriptPath` / `resolver.stopFailure`. For now return as-is.
+    // Reconstruct cost from the transcript (the Stop hook carries no cost).
+    const transcriptPath = resolver.transcriptPath;
+    if (transcriptPath && !result.error) {
+      const cost = computeInteractiveCost(transcriptPath, opts.model);
+      if (cost) { result.cost = cost.cost; result.numTurns = cost.turns; }
+    }
+    // Map a StopFailure rate-limit into result.rateLimit so manager.ts's
+    // wait/retry/fallback machinery engages exactly as it does for `claude -p`.
+    const rl = rateLimitFromStopFailure(resolver.stopFailure);
+    if (rl) result.rateLimit = rl;
     return result;
   }
 
