@@ -86,6 +86,7 @@ export function ChatPane({
   const onMetaRef = useRef(onSessionMetaChange)
   useEffect(() => { onMetaRef.current = onSessionMetaChange }, [onSessionMetaChange])
   const justCompletedAtRef = useRef<number>(0)
+  const loadTokenRef = useRef(0)
 
   // Employee picker state for new chat
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
@@ -263,9 +264,14 @@ export function ChatPane({
 
   // Load session data
   const loadSession = useCallback(async (id: string) => {
-    dbg(id, 'loadSession START')
+    const myToken = ++loadTokenRef.current
+    dbg(id, 'loadSession START', { token: myToken })
     try {
       const session = (await api.getSession(id)) as Record<string, unknown>
+      if (myToken !== loadTokenRef.current) {
+        dbg(id, 'loadSession STALE — ignoring response', { myToken, latest: loadTokenRef.current })
+        return
+      }
       dbg(id, 'loadSession got session', { status: session.status, messagesCount: Array.isArray(session.messages) ? session.messages.length : 'n/a' })
       setCurrentSession(session)
       const meta = {
@@ -310,22 +316,32 @@ export function ChatPane({
         } else {
           intermediateStartRef.current = backendMessages.length
           setMessages((current) => {
+            // If backend has FEWER messages than local, the backend snapshot is stale —
+            // local already contains streaming-completed messages not yet persisted (or
+            // a stale-snapshot race during slow GET). Keep current.
+            if (backendMessages.length < current.length) {
+              dbg(id, 'loadSession isRunning → KEEPING current (backend shorter)', { current: current.length, backend: backendMessages.length })
+              return current
+            }
             const next = backendMessages.length > 0 ? backendMessages : current
             dbg(id, 'loadSession isRunning → setMessages', { from: current.length, to: next.length, kept: next === current })
             return next
           })
         }
-        // Don't re-enter loading state if we just completed (status-write race guard)
-        if (Date.now() - justCompletedAtRef.current >= 3000) {
-          dbg(id, 'loadSession isRunning → setLoading(true)')
-          setLoading(true)
-        } else {
-          dbg(id, 'loadSession isRunning → SKIP setLoading (just completed)')
-        }
+        // Loading state is owned by handleSend (sets true) + WS session:completed/stopped (sets false).
+        // loadSession must NEVER set loading=true — a stale GET arriving after completion would
+        // re-arm the spinner and stick (the WS completion event has already passed).
       } else {
         clearIntermediateMessages(id)
         intermediateStartRef.current = -1
         setMessages((current) => {
+          // If backend has FEWER messages than local, the backend snapshot is stale —
+          // local already contains streaming-completed messages not yet persisted (or
+          // a stale-snapshot race during slow GET). Keep current.
+          if (backendMessages.length < current.length) {
+            dbg(id, 'loadSession notRunning → KEEPING current (backend shorter)', { current: current.length, backend: backendMessages.length, status: session.status })
+            return current
+          }
           const next = backendMessages.length > 0 ? backendMessages : current
           dbg(id, 'loadSession notRunning → setMessages', { from: current.length, to: next.length, kept: next === current, status: session.status })
           return next
@@ -361,26 +377,37 @@ export function ChatPane({
   }, [sessionId]) // loadSession is stable (useCallback with [] deps)
 
   // Reload on reconnect — only fires when WS genuinely reconnects (connectionSeq changes)
+  // Debounced 300ms so a burst of connectionSeq bumps collapses into a single loadSession.
   useEffect(() => {
     if (!connectionSeq || !sessionIdRef.current) return
-    loadSession(sessionIdRef.current)
+    const handle = setTimeout(() => {
+      loadSession(sessionIdRef.current!)
+    }, 300)
+    return () => clearTimeout(handle)
   }, [connectionSeq]) // loadSession is stable; sessionIdRef.current is read at call time
 
   // Poll for completion while loading
   useEffect(() => {
     if (!sessionId || !loading) return
+    let inFlight = false
+    let cancelled = false
     const timer = setInterval(async () => {
+      if (inFlight || cancelled) return
+      inFlight = true
       try {
         const session = (await api.getSession(sessionId)) as Record<string, unknown>
+        if (cancelled) return
         if (session.status !== 'running') {
           await loadSession(sessionId)
-          setLoading(false)
+          if (!cancelled) setLoading(false)
         }
       } catch {
         // ignore transient polling errors
+      } finally {
+        inFlight = false
       }
     }, 5000)
-    return () => clearInterval(timer)
+    return () => { cancelled = true; clearInterval(timer) }
   }, [sessionId, loading]) // loadSession is stable (useCallback with [] deps)
 
   const handleInterrupt = useCallback(async () => {
