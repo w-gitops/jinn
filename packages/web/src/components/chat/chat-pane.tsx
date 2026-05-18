@@ -589,7 +589,7 @@ export function ChatPane({
 
       {/* Messages / CLI transcript */}
       {viewMode === 'cli' && sessionId ? (
-        <CliTerminal sessionId={sessionId} />
+        <CliTerminal sessionId={sessionId} onSend={handleSend} />
       ) : (sessionId || messages.length > 0) ? (
         <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
       ) : null}

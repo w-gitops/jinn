@@ -29,7 +29,6 @@ import {
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
 import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
-import { RoutingClaudeEngine } from "../engines/claude-routing.js";
 import {
   CONFIG_PATH,
   CRON_JOBS,
@@ -534,9 +533,7 @@ export async function handleApiRequest(
         let interactiveCtx;
         if (source.engine === "claude") {
           const claudeEngine = context.sessionManager.getEngine("claude");
-          const interactive = claudeEngine instanceof RoutingClaudeEngine
-            ? claudeEngine.getInteractive()
-            : (claudeEngine instanceof InteractiveClaudeEngine ? claudeEngine : null);
+          const interactive = claudeEngine instanceof InteractiveClaudeEngine ? claudeEngine : null;
           if (interactive) {
             interactiveCtx = { sourceJinnSessionId: source.id, engine: interactive };
           }
