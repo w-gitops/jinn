@@ -2,6 +2,22 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { EngineRateLimitInfo, InterruptibleEngine, EngineRunOpts, EngineResult, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 
+const TRANSIENT_PATTERNS = [
+  /ECONNRESET/i,
+  /ETIMEDOUT/i,
+  /socket hang up/i,
+  /spawn.*EAGAIN/i,
+  /\b503\b/,
+  /\b529\b/,
+];
+
+function isTransientError(errorMsg: string): boolean {
+  return TRANSIENT_PATTERNS.some((p) => p.test(errorMsg));
+}
+
+const MAX_RETRIES = 2;
+const RETRY_BASE_MS = 1000;
+
 interface LiveProcess {
   proc: ChildProcess;
   terminationReason: string | null;
@@ -37,7 +53,25 @@ export class ClaudeEngine implements InterruptibleEngine {
   }
 
   async run(opts: EngineRunOpts): Promise<EngineResult> {
-    return this.runOnce(opts);
+    let lastResult: EngineResult | undefined;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        const delayMs = RETRY_BASE_MS * Math.pow(2, attempt - 1);
+        logger.warn(`Claude engine transient retry ${attempt}/${MAX_RETRIES} for session ${opts.sessionId ?? "unknown"} after ${delayMs}ms`);
+        opts.onStream?.({ type: "status", content: `Retrying (attempt ${attempt + 1}/${MAX_RETRIES + 1})...` });
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      const result = await this.runOnce(opts);
+      lastResult = result;
+      if (!result.error) return result;
+      if (result.error.startsWith("Interrupted")) return result;
+      if (attempt < MAX_RETRIES && isTransientError(result.error)) {
+        logger.warn(`Transient Claude failure (attempt ${attempt + 1}): ${result.error.slice(0, 200)}`);
+        continue;
+      }
+      return result;
+    }
+    return lastResult!;
   }
 
   private async runOnce(opts: EngineRunOpts): Promise<EngineResult> {
