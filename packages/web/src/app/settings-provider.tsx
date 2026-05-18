@@ -1,6 +1,6 @@
 "use client"
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import {
   type JinnSettings,
   type EmployeeOverride,
@@ -245,31 +245,17 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 
 export const useSettings = () => useContext(SettingsContext)
 
-/** Keeps document.title in sync with the portal name setting. */
+/** Sets document.title from the portal name setting. One-time write per change —
+ *  no MutationObserver (it raced with Next.js metadata / breadcrumb-context). */
 export function DocumentTitle() {
   const { settings } = useSettings()
-  const nameRef = useRef(settings.portalName)
-  nameRef.current = settings.portalName
 
   useEffect(() => {
-    function applyTitle() {
-      const name = nameRef.current || 'Jinn'
-      const desired = `${name} - AI Gateway`
-      if (document.title !== desired) {
-        document.title = desired
-      }
+    const name = settings.portalName || 'Jinn'
+    const desired = `${name} - AI Gateway`
+    if (document.title !== desired) {
+      document.title = desired
     }
-
-    applyTitle()
-
-    // Next.js metadata system can override document.title after hydration.
-    // Watch for external changes and re-assert the correct title.
-    const titleEl = document.querySelector('title')
-    if (!titleEl) return
-
-    const observer = new MutationObserver(() => applyTitle())
-    observer.observe(titleEl, { childList: true, characterData: true, subtree: true })
-    return () => observer.disconnect()
   }, [settings.portalName])
 
   return null

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef, type ReactNode } from "react";
-import { createGatewaySocket } from "@/lib/ws";
+import { useGateway } from "@/hooks/use-gateway";
 import {
   type AppNotification,
   loadNotifications,
@@ -62,16 +62,16 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  // Subscribe to WebSocket events
+  // Subscribe to WebSocket events via the shared GatewayProvider — no new socket.
   const addNotificationRef = useRef(addNotification);
   addNotificationRef.current = addNotification;
+  const { subscribe } = useGateway();
 
   useEffect(() => {
-    const socket = createGatewaySocket((event, payload) => {
+    return subscribe((event, payload) => {
       addNotificationRef.current(event, payload as Record<string, unknown>);
     });
-    return () => socket.close();
-  }, []);
+  }, [subscribe]);
 
   const markAllRead = useCallback(() => {
     setNotifications((prev) => {

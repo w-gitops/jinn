@@ -1,6 +1,5 @@
 "use client"
 import React, { useState, useCallback, useEffect, useRef, useMemo, Suspense } from 'react'
-import { useSearchParams } from 'next/navigation'
 import { api } from '@/lib/api'
 import { useGateway } from '@/hooks/use-gateway'
 import { PageLayout } from '@/components/page-layout'
@@ -17,18 +16,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '@/lib/query-keys'
 import { cn } from '@/lib/utils'
 import { Check, Copy, EllipsisVertical, Trash2 } from 'lucide-react'
-import { readViewMode, writeViewMode, type ViewMode } from '@/lib/view-mode'
-
-function getOnboardingPrompt(portalName: string, userMessage: string) {
-  return `This is your first time being activated. The user just set up ${portalName} and opened the web dashboard for the first time.
-
-Read your CLAUDE.md instructions and the onboarding skill at ~/.jinn/skills/onboarding/SKILL.md, then follow the onboarding flow:
-- Greet the user warmly and introduce yourself as ${portalName}
-- Briefly explain what you can do (manage cron jobs, hire AI employees, connect to Slack, etc.)
-- Ask the user what they'd like to set up first
-
-The user said: "${userMessage}"`
-}
+import { writeViewMode, type ViewMode } from '@/lib/view-mode'
 
 class ChatErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null }
@@ -159,10 +147,6 @@ function ChatPage() {
   const sessionPickerRef = useRef<HTMLDivElement>(null)
   const { events, connectionSeq, skillsVersion, subscribe } = useGateway()
   const chatTabs = useChatTabs()
-  const searchParams = useSearchParams()
-  const onboardingTriggered = useRef(false)
-  // When set, the current session is a stub awaiting the user's first message
-  const stubSessionRef = useRef(false)
   const deleteSessionMutation = useDeleteSession()
   const duplicateSessionMutation = useDuplicateSession()
   const qc = useQueryClient()
@@ -193,39 +177,6 @@ function ChatPage() {
     setTimeout(() => setCopiedField(null), 1500)
   }, [])
 
-  // Auto-trigger onboarding on first visit
-  useEffect(() => {
-    if (onboardingTriggered.current) return
-
-    const shouldOnboard = searchParams.get('onboarding') === '1'
-
-    if (shouldOnboard) {
-      onboardingTriggered.current = true
-      triggerOnboarding()
-    } else {
-      api.getOnboarding().then((data) => {
-        if (data.needed && !onboardingTriggered.current) {
-          onboardingTriggered.current = true
-          triggerOnboarding()
-        }
-      }).catch(() => {})
-    }
-  }, [searchParams])
-
-  function triggerOnboarding() {
-    api.createStubSession({
-      greeting: `Hey! \u{1F44B} Say hi when you're ready to get started.`,
-      title: 'Welcome',
-    }).then((session) => {
-      const id = String((session as Record<string, unknown>).id)
-      stubSessionRef.current = true
-      setSelectedId(id)
-      qc.invalidateQueries({ queryKey: queryKeys.sessions.all })
-    }).catch(() => {
-      // Silently fail — user can still start a normal chat
-    })
-  }
-
   // Update tab label/status when session meta changes
   const { updateTabStatus } = chatTabs
   useEffect(() => {
@@ -246,7 +197,6 @@ function ChatPage() {
   const handleSelect = useCallback(
     (id: string) => {
       newChatIntentRef.current = false
-      stubSessionRef.current = false
       setSelectedId(id)
       setMobileView('chat')
       // Open a tab — label will be updated once session meta loads
@@ -267,7 +217,7 @@ function ChatPage() {
 
   const handleSessionsLoaded = useCallback(
     (sessions: { id: string }[]) => {
-      if (!selectedId && !onboardingTriggered.current && !newChatIntentRef.current && sessions.length > 0) {
+      if (!selectedId && !newChatIntentRef.current && sessions.length > 0) {
         handleSelect(sessions[0].id)
       }
     },
@@ -328,14 +278,6 @@ function ChatPage() {
   const handleRefresh = useCallback(() => {
     qc.invalidateQueries({ queryKey: queryKeys.sessions.all })
   }, [qc])
-
-  const handleGetOnboardingPrompt = useCallback((message: string) => {
-    return getOnboardingPrompt(portalName, message)
-  }, [portalName])
-
-  const handleStubCleared = useCallback(() => {
-    stubSessionRef.current = false
-  }, [])
 
   // Navigation helpers for keyboard shortcuts
   const navigateSession = useCallback((direction: 1 | -1) => {
@@ -413,20 +355,6 @@ function ChatPage() {
   ], [handleNewChat, navigateSession, cycleEmployee, copyChat, selectedId, showShortcutOverlay, showMoreMenu, chatTabs])
 
   useKeyboardShortcuts(shortcuts)
-
-  // Keep-alive cache: keep the N most-recently-viewed sessions' ChatPanes mounted
-  // (hidden) so switching between them is instant. The active session is always
-  // included. N is kept well under MAX_TABS (12).
-  const KEEP_ALIVE_COUNT = 4
-  const keepAliveIds = useMemo(() => {
-    const ids = [...chatTabs.tabs]
-      .sort((a, b) => b.lastViewedAt - a.lastViewedAt)
-      .slice(0, KEEP_ALIVE_COUNT)
-      .map((t) => t.sessionId)
-    // Always include the active session, even if not in the top N.
-    if (selectedId && !ids.includes(selectedId)) ids.push(selectedId)
-    return ids
-  }, [chatTabs.tabs, selectedId])
 
   // When active tab changes, sync selectedId
   useEffect(() => {
@@ -605,57 +533,26 @@ function ChatPage() {
             "flex-1 overflow-hidden flex flex-col",
             mobileView === 'sidebar' ? 'hidden lg:flex' : 'flex'
           )}>
-            {/* Active pane: handles new-chat (sessionId=null) and the selected session.
-                Keyed by selectedId so switching to a non-cached session remounts cleanly. */}
-            <div
+            {/* Single ChatPane: handles new-chat (sessionId=null) and the selected session.
+                Keyed by selectedId so switching sessions remounts cleanly — no hidden
+                keep-alive panes (they caused stacked WS subscriptions + races). */}
+            <ChatPane
               key={selectedId ?? '__new__'}
-              style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', minHeight: 0 }}
-            >
-              <ChatPane
-                sessionId={selectedId}
-                isActive={true}
-                onFocus={() => {}}
-                onSessionCreated={handleSessionCreated}
-                onSessionMetaChange={handleSessionMetaChange}
-                onRefresh={handleRefresh}
-                portalName={portalName}
-                subscribe={subscribe}
-                connectionSeq={connectionSeq}
-                skillsVersion={skillsVersion}
-                events={events}
-                viewMode={viewMode}
-                getOnboardingPrompt={stubSessionRef.current ? handleGetOnboardingPrompt : undefined}
-                isStubSession={stubSessionRef.current}
-                onStubCleared={handleStubCleared}
-                focusTrigger={focusTrigger}
-                onShortcutsClick={() => setShowShortcutOverlay(true)}
-              />
-            </div>
-            {/* Keep-alive panes: recently-viewed sessions kept mounted but hidden so
-                switching back is instant. They self-filter WS events by their own
-                sessionId. Meta/created callbacks are intentionally omitted so a hidden
-                pane never clobbers the active session's parent state. */}
-            {keepAliveIds
-              .filter((id) => id !== selectedId)
-              .map((id) => (
-                <div
-                  key={id}
-                  style={{ display: 'none' }}
-                >
-                  <ChatPane
-                    sessionId={id}
-                    isActive={false}
-                    onFocus={() => {}}
-                    onRefresh={handleRefresh}
-                    portalName={portalName}
-                    subscribe={subscribe}
-                    connectionSeq={connectionSeq}
-                    skillsVersion={skillsVersion}
-                    events={events}
-                    viewMode={readViewMode(id)}
-                  />
-                </div>
-              ))}
+              sessionId={selectedId}
+              isActive={true}
+              onFocus={() => {}}
+              onSessionCreated={handleSessionCreated}
+              onSessionMetaChange={handleSessionMetaChange}
+              onRefresh={handleRefresh}
+              portalName={portalName}
+              subscribe={subscribe}
+              connectionSeq={connectionSeq}
+              skillsVersion={skillsVersion}
+              events={events}
+              viewMode={viewMode}
+              focusTrigger={focusTrigger}
+              onShortcutsClick={() => setShowShortcutOverlay(true)}
+            />
           </div>
         </div>
       </div>

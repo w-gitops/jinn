@@ -9,6 +9,7 @@ import { NotificationProvider } from "@/components/notifications/notification-pr
 import { useQueryInvalidation } from '@/hooks/use-query-invalidation'
 import { BreadcrumbProvider } from '@/context/breadcrumb-context'
 import { EmojiFavicon } from '@/components/emoji-favicon'
+import { GatewayProvider } from '@/hooks/use-gateway'
 
 function QueryInvalidationBridge() {
   useQueryInvalidation()
@@ -21,12 +22,14 @@ export function ClientProviders({ children }: { children: ReactNode }) {
       <ThemeProvider>
         <BreadcrumbProvider>
           <SettingsProvider>
-            <NotificationProvider>
-              {children}
-              <DocumentTitle />
-              <EmojiFavicon />
-              <QueryInvalidationBridge />
-            </NotificationProvider>
+            <GatewayProvider>
+              <NotificationProvider>
+                {children}
+                <DocumentTitle />
+                <EmojiFavicon />
+                <QueryInvalidationBridge />
+              </NotificationProvider>
+            </GatewayProvider>
           </SettingsProvider>
         </BreadcrumbProvider>
       </ThemeProvider>

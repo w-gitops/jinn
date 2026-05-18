@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import {
-  Home, MessageSquare, Users, LayoutGrid, Clock, DollarSign,
-  Activity, Zap, Settings, Plus, Target, Hash,
+  Home, MessageSquare, Users, LayoutGrid, Clock,
+  Activity, Zap, Settings, Plus, Hash,
 } from "lucide-react"
 import {
   Command,
@@ -53,11 +53,9 @@ const STATIC_PAGES = [
   { id: "page-org", label: "Organization", icon: Users, href: "/org" },
   { id: "page-kanban", label: "Kanban", icon: LayoutGrid, href: "/kanban" },
   { id: "page-cron", label: "Cron", icon: Clock, href: "/cron" },
-  { id: "page-costs", label: "Costs", icon: DollarSign, href: "/costs" },
   { id: "page-logs", label: "Activity", icon: Activity, href: "/logs" },
   { id: "page-skills", label: "Skills", icon: Zap, href: "/skills" },
   { id: "page-settings", label: "Settings", icon: Settings, href: "/settings" },
-  { id: "page-goals", label: "Goals", icon: Target, href: "/goals" },
 ]
 
 export function GlobalSearch() {

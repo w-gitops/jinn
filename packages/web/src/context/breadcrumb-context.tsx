@@ -1,6 +1,6 @@
 "use client"
 
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 
 interface BreadcrumbItem {
   label: string
@@ -20,12 +20,8 @@ const BreadcrumbContext = createContext<BreadcrumbContextValue>({
 export function BreadcrumbProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<BreadcrumbItem[]>([])
 
-  useEffect(() => {
-    if (items.length > 0) {
-      const trail = items.map(i => i.label).join(' > ')
-      document.title = `${trail} - Jinn`
-    }
-  }, [items])
+  // NOTE: document.title is owned solely by <DocumentTitle /> in settings-provider.tsx.
+  // Breadcrumbs no longer touch the title (was racing the title MutationObserver).
 
   return (
     <BreadcrumbContext.Provider value={{ items, setItems }}>

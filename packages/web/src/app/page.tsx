@@ -23,7 +23,6 @@ import {
   Network,
   KanbanSquare,
   Timer,
-  DollarSign,
   Activity,
 } from "lucide-react";
 
@@ -76,12 +75,6 @@ function getQuickLinks(portalName: string) {
       description: "Scheduled jobs and automations",
     },
     {
-      href: "/costs",
-      icon: DollarSign,
-      name: "Costs",
-      description: "API usage and spending",
-    },
-    {
       href: "/logs",
       icon: Activity,
       name: "Activity",
@@ -101,16 +94,8 @@ export default function DashboardPage() {
   const { events, connected } = useGateway();
 
   useEffect(() => {
-    // Check if onboarding is needed -- redirect to chat if first visit
-    api
-      .getOnboarding()
-      .then((data) => {
-        if (data.needed) {
-          window.location.href = "/chat?onboarding=1";
-        }
-      })
-      .catch(() => {});
-
+    // Onboarding is owned by <OnboardingWizard /> (mounted in PageLayout).
+    // The dashboard no longer redirects on first visit.
     api
       .getStatus()
       .then((data) => setStatus(data as StatusData))
