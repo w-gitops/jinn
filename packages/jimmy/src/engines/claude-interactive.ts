@@ -10,7 +10,14 @@ import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
 import { computeInteractiveCost } from "./interactive-cost.js";
 import { rateLimitFromStopFailure } from "./interactive-ratelimit.js";
 
-export interface TurnResolverOpts { turnTimeoutMs: number; fallbackSessionId: string | undefined; }
+export interface TurnResolverOpts {
+  turnTimeoutMs: number;
+  fallbackSessionId: string | undefined;
+  /** When true (warm-PTY reuse / post-idle-spawn), the resolver skips waiting for
+   *  SessionStart (it already fired once at process start) and pre-fills the
+   *  Claude session id from fallbackSessionId. */
+  assumeStarted?: boolean;
+}
 
 /** State machine for one interactive turn: resolves after BOTH SessionStart + Stop, or on StopFailure/interrupt/timeout. */
 export class TurnResolver {
@@ -30,6 +37,10 @@ export class TurnResolver {
       result: "",
       error: "Interactive turn timed out (watchdog)",
     }), opts.turnTimeoutMs);
+    if (opts.assumeStarted) {
+      this.gotSessionStart = true;
+      this.claudeSessionId = opts.fallbackSessionId;
+    }
   }
 
   onHook(h: HookPayload): void {
@@ -121,7 +132,12 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       appendSystemPrompt: opts.systemPrompt,
     });
 
-    const resolver = new TurnResolver({ turnTimeoutMs: this.cfg.turnTimeoutMs, fallbackSessionId: opts.resumeSessionId });
+    const warm = this.lifecycle.getWarm(jinnSessionId);
+    const resolver = new TurnResolver({
+      turnTimeoutMs: this.cfg.turnTimeoutMs,
+      fallbackSessionId: opts.resumeSessionId,
+      assumeStarted: !!warm, // warm PTY = SessionStart already fired (turn 1 or idle spawn)
+    });
     const entry: { resolver: TurnResolver; tailer?: TranscriptTailer } = { resolver };
     this.active.set(jinnSessionId, entry);
 
@@ -140,7 +156,6 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       }
     });
 
-    const warm = this.lifecycle.getWarm(jinnSessionId);
     if (warm) {
       this.injectPrompt(warm, opts);
       this.lifecycle.turnStarted(jinnSessionId);
@@ -173,6 +188,40 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     return result;
   }
 
+  /** Build the env passed to the claude PTY: inherits process.env but strips
+   *  CLAUDECODE / CLAUDE_CODE_* so the child doesn't think it's nested, then
+   *  enables fullscreen rendering. Shared by spawn() and ensureIdleSpawn(). */
+  private buildPtyEnv(): Record<string, string> {
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) continue;
+      if (v !== undefined) env[k] = v;
+    }
+    env.CLAUDE_CODE_NO_FLICKER = "1"; // fullscreen mode — discrete bottom slot for CLI rendering
+    return env;
+  }
+
+  /** Wrap a freshly-spawned pty.IPty in a PtyHandle and wire its output into
+   *  the session's scrollback ring buffer + live subscribers. Optional onExitExtra
+   *  runs on PTY exit (spawn() uses this to interrupt the active resolver). */
+  private wireProcToStream(jinnSessionId: string, proc: pty.IPty, onExitExtra?: () => void): PtyHandle {
+    const handle: PtyHandle = {
+      pid: proc.pid,
+      get killed() { return (proc as any)._exitCode != null; },
+      kill: (signal?: string) => { try { proc.kill(signal); } catch { /* already gone */ } },
+    } as PtyHandle;
+    const stream = this.streamFor(jinnSessionId);
+    proc.onData((d) => {
+      stream.buffer = (stream.buffer + d).slice(-SCROLLBACK_CAP_BYTES);
+      for (const cb of stream.subscribers) {
+        try { cb(d); } catch { /* ignore subscriber errors */ }
+      }
+    });
+    proc.onExit(() => { onExitExtra?.(); });
+    (handle as any)._proc = proc;
+    return handle;
+  }
+
   /** node-pty spawn of the genuine claude binary (no -p → cc_entrypoint=cli). */
   private spawn(jinnSessionId: string, opts: EngineRunOpts, settingsPath: string): PtyHandle {
     const args = buildInteractiveArgs({
@@ -185,12 +234,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       cliFlags: opts.cliFlags,
       attachments: opts.attachments,
     });
-    const env: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) {
-      if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) continue;
-      if (v !== undefined) env[k] = v;
-    }
-    env.CLAUDE_CODE_NO_FLICKER = "1"; // fullscreen mode — discrete bottom slot for CLI rendering
+    const env = this.buildPtyEnv();
     const bin = opts.bin || "claude";
     logger.info(`InteractiveClaudeEngine spawning ${bin} (resume: ${opts.resumeSessionId || "none"})`);
     const proc = pty.spawn(bin, args, {
@@ -200,26 +244,44 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       cwd: opts.cwd || JINN_HOME,
       env,
     });
-    const handle: PtyHandle = {
-      pid: proc.pid,
-      get killed() { return (proc as any)._exitCode != null; },
-      kill: (signal?: string) => { try { proc.kill(signal); } catch { /* already gone */ } },
-    } as PtyHandle;
-    // Wire PTY output into the session's scrollback ring buffer + live subscribers.
-    const stream = this.streamFor(jinnSessionId);
-    proc.onData((d) => {
-      stream.buffer = (stream.buffer + d).slice(-SCROLLBACK_CAP_BYTES);
-      for (const cb of stream.subscribers) {
-        try { cb(d); } catch { /* ignore subscriber errors */ }
-      }
-    });
-    proc.onExit(() => {
+    return this.wireProcToStream(jinnSessionId, proc, () => {
       // PTY exited without a Stop hook (crash / early exit) — settle as interrupted.
       const e = this.active.get(jinnSessionId);
       e?.resolver.interrupt("Interrupted: claude process exited");
     });
-    (handle as any)._proc = proc;
-    return handle;
+  }
+
+  /** Spawn an idle PTY that just loads the TUI on an existing Claude session id (no prompt → no turn).
+   *  Used by /ws/pty/:sessionId so opening a CLI-mode chat shows the conversation history.
+   *  Does NOTHING if a warm PTY already exists for the session. Does NOTHING if claudeSessionId is empty. */
+  ensureIdleSpawn(jinnSessionId: string, opts: { claudeSessionId: string; cwd?: string; model?: string; bin?: string }): void {
+    if (!opts.claudeSessionId) return;
+    if (this.lifecycle.getWarm(jinnSessionId)) return;
+    // Spawn claude in PTY with --resume <id>, no prompt. Include --settings so hooks fire for future turns.
+    const settingsPath = writeSessionSettings(CLAUDE_SETTINGS_DIR, jinnSessionId, {
+      sessionId: jinnSessionId,
+      relayScript: HOOK_RELAY_SCRIPT,
+    });
+    const args: string[] = [
+      "--resume", opts.claudeSessionId,
+      "--chrome",
+      "--dangerously-skip-permissions",
+      "--settings", settingsPath,
+    ];
+    if (opts.model) args.push("--model", opts.model);
+    const env = this.buildPtyEnv();
+    const bin = opts.bin || "claude";
+    logger.info(`InteractiveClaudeEngine ensureIdleSpawn for session ${jinnSessionId} (resume ${opts.claudeSessionId})`);
+    const proc = pty.spawn(bin, args, {
+      name: "xterm-256color",
+      cols: 120,
+      rows: 40,
+      cwd: opts.cwd || JINN_HOME,
+      env,
+    });
+    const handle = this.wireProcToStream(jinnSessionId, proc);
+    this.lifecycle.adopt(jinnSessionId, handle, { cronOrigin: false });
+    this.lifecycle.markViewed(jinnSessionId); // grace-period applies — keeps it warm while user views
   }
 
   /** Inject a follow-up prompt into a warm PTY via bracketed-paste + CR. */

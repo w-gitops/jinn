@@ -38,6 +38,15 @@ describe("TurnResolver", () => {
     expect(v.error).toMatch(/session id/i);
   });
 
+  it("with assumeStarted, resolves on Stop alone using fallbackSessionId", async () => {
+    const r = new TurnResolver({ turnTimeoutMs: 1000, fallbackSessionId: "warm-sid", assumeStarted: true });
+    r.onHook({ hook_event_name: "Stop", last_assistant_message: "ok" });
+    const v = await r.promise;
+    expect(v.result).toBe("ok");
+    expect(v.sessionId).toBe("warm-sid");
+    expect(v.numTurns).toBe(1);
+  });
+
   it("settles immediately on StopFailure (does not wait for SessionStart) and exposes it", async () => {
     const r = new TurnResolver({ turnTimeoutMs: 1000, fallbackSessionId: "old" });
     r.onHook({ hook_event_name: "StopFailure", error: "rate_limit", error_details: "resets 3pm" });
