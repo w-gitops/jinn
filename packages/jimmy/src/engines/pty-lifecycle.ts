@@ -45,7 +45,7 @@ export class PtyLifecycleManager {
 
   constructor(private opts: PtyLifecycleOpts) {
     this.sweepTimer = setInterval(() => this.sweep(), 30_000);
-    if (this.sweepTimer.unref) this.sweepTimer.unref();
+    this.sweepTimer.unref();
   }
 
   adopt(sessionId: string, handle: PtyHandle, meta: { cronOrigin: boolean }): void {
