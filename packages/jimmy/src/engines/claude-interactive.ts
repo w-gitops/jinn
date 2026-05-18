@@ -307,6 +307,18 @@ export class TurnResolver {
 /** Cap for the per-session PTY scrollback ring buffer (xterm.js reconnect replay). */
 const SCROLLBACK_CAP_BYTES = 262144;
 
+/** Bracketed-paste `text` into a PTY then submit with CR after a 50ms beat.
+ *  Phase 0 finding: bracketed-paste does NOT neutralize a leading /, @, or ! —
+ *  they still trigger the slash-command / mention / bash-mode handlers and the
+ *  turn is never submitted. Prepend a space so it's treated as a literal message.
+ *  Shared by injectPrompt() (warm-PTY first turn) and writeStdin() (raw WS input). */
+function pasteAndSubmit(proc: pty.IPty, text: string): void {
+  let payload = text;
+  if (/^[/@!]/.test(payload)) payload = " " + payload;
+  proc.write(`\x1b[200~${payload}\x1b[201~`);
+  setTimeout(() => proc.write("\r"), 50);
+}
+
 /** Out-of-band control event for PTY subscribers. Currently only `reset` (emitted
  *  when the PTY respawns mid-session so the client xterm can clear and re-attach). */
 export type PtyControlEvent = { type: "reset" };
@@ -552,12 +564,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     if (opts.attachments?.length) {
       text += "\n\nAttached files:\n" + opts.attachments.map((a) => `- ${a}`).join("\n");
     }
-    // Phase 0 finding: bracketed-paste does NOT neutralize a leading /, @, or ! —
-    // they still trigger the slash-command / mention / bash-mode handlers and the
-    // turn is never submitted. Prepend a space so it's treated as a literal message.
-    if (/^[/@!]/.test(text)) text = " " + text;
-    proc.write(`\x1b[200~${text}\x1b[201~`);
-    setTimeout(() => proc.write("\r"), 50); // small delay before submit — see Task 0.1
+    pasteAndSubmit(proc, text);
   }
 
   /** Lazily create (or fetch) the output stream entry for a Jinn session id. */
@@ -610,12 +617,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     if (!handle) return;
     const proc = (handle as any)._proc as pty.IPty | undefined;
     if (!proc) return;
-    let payload = text;
-    // Bracketed-paste does NOT neutralize a leading /, @, or ! — prepend a space so
-    // they're treated as a literal message (see injectPrompt).
-    if (/^[/@!]/.test(payload)) payload = " " + payload;
-    proc.write(`\x1b[200~${payload}\x1b[201~`);
-    setTimeout(() => proc.write("\r"), 50);
+    pasteAndSubmit(proc, text);
   }
 
   /** Resize the warm PTY. No-op if no warm PTY. */
