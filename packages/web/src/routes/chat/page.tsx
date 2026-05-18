@@ -11,7 +11,7 @@ import { useKeyboardShortcuts, type ShortcutDef } from '@/hooks/use-keyboard-sho
 import { useDeleteSession, useDuplicateSession, useSessions } from '@/hooks/use-sessions'
 import { clearIntermediateMessages } from '@/lib/conversations'
 import type { Message } from '@/lib/conversations'
-import { useSettings } from '@/app/settings-provider'
+import { useSettings } from '@/routes/settings-provider'
 import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '@/lib/query-keys'
 import { cn } from '@/lib/utils'

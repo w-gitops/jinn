@@ -4,7 +4,7 @@ import type { GatewayEvent } from "@/hooks/use-gateway";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useGateway } from "@/hooks/use-gateway";
-import { useSettings } from "@/app/settings-provider";
+import { useSettings } from "@/routes/settings-provider";
 import { PageLayout } from "@/components/page-layout";
 import { useBreadcrumbs } from "@/context/breadcrumb-context";
 import {

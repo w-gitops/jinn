@@ -7,7 +7,7 @@ import { FeedView } from "@/components/org/feed-view";
 import { OrgTree } from "@/components/org/org-tree";
 import { PageLayout } from "@/components/page-layout";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { useSettings } from "@/app/settings-provider";
+import { useSettings } from "@/routes/settings-provider";
 import { useBreadcrumbs } from "@/context/breadcrumb-context";
 
 const OrgMap = lazy(() =>

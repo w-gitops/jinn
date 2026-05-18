@@ -1,17 +1,17 @@
 import { lazy, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
-import { ClientProviders } from './app/client-providers'
-import DashboardPage from './app/page'
-import './app/globals.css'
+import { ClientProviders } from './routes/client-providers'
+import DashboardPage from './routes/page'
+import './routes/globals.css'
 
-const ChatPage = lazy(() => import('./app/chat/page'))
-const CronPage = lazy(() => import('./app/cron/page'))
-const KanbanPage = lazy(() => import('./app/kanban/page'))
-const LogsPage = lazy(() => import('./app/logs/page'))
-const OrgPage = lazy(() => import('./app/org/page'))
-const SettingsPage = lazy(() => import('./app/settings/page'))
-const SkillsPage = lazy(() => import('./app/skills/page'))
+const ChatPage = lazy(() => import('./routes/chat/page'))
+const CronPage = lazy(() => import('./routes/cron/page'))
+const KanbanPage = lazy(() => import('./routes/kanban/page'))
+const LogsPage = lazy(() => import('./routes/logs/page'))
+const OrgPage = lazy(() => import('./routes/org/page'))
+const SettingsPage = lazy(() => import('./routes/settings/page'))
+const SkillsPage = lazy(() => import('./routes/skills/page'))
 
 function App() {
   return (

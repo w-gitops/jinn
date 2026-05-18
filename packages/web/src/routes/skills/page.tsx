@@ -16,7 +16,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Zap } from "lucide-react";
-import { useSettings } from "@/app/settings-provider";
+import { useSettings } from "@/routes/settings-provider";
 
 interface Skill {
   name: string;
