@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { HookRegistry, HookPayload } from "./hook-registry.js";
 
 export interface HookEndpointCtx {
@@ -13,10 +14,13 @@ export function handleHookPost(
   providedSecret: string | undefined,
   body: { jinnSessionId?: string; hook?: HookPayload },
 ): { status: number; body: string } {
+  // Loopback check first — defense-in-depth alongside any upstream check.
   if (!ctx.remoteAddress || !LOOPBACK.has(ctx.remoteAddress)) {
     return { status: 403, body: "forbidden" };
   }
-  if (providedSecret !== ctx.secret) {
+  const a = Buffer.from(providedSecret ?? "", "utf-8");
+  const b = Buffer.from(ctx.secret, "utf-8");
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
     return { status: 403, body: "forbidden" };
   }
   if (!body.jinnSessionId || !body.hook?.hook_event_name) {
