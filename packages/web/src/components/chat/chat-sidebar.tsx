@@ -5,7 +5,7 @@ import { ChevronDown, Clock3, Copy, EllipsisVertical, Pencil, Pin, Plus, Search,
 import { api, type Employee } from "@/lib/api"
 import { useOrg } from "@/hooks/use-employees"
 import { EmployeeAvatar } from "@/components/ui/employee-avatar"
-import { useSettings } from "@/app/settings-provider"
+import { useSettings } from "@/routes/settings-provider"
 import { cleanPreview } from "@/lib/clean-preview"
 import { useSessions, useUpdateSession, useDeleteSession, useBulkDeleteSessions, useDuplicateSession } from "@/hooks/use-sessions"
 import {

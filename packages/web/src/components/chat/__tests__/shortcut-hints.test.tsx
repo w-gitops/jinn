@@ -25,7 +25,7 @@ vi.mock('@/lib/api', () => ({
   },
 }))
 
-vi.mock('@/app/settings-provider', () => ({
+vi.mock('@/routes/settings-provider', () => ({
   useSettings: () => ({ settings: { portalName: 'Jinn' } }),
 }))
 

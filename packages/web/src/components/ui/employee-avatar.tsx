@@ -1,5 +1,5 @@
 
-import { useSettings } from "@/app/settings-provider"
+import { useSettings } from "@/routes/settings-provider"
 import { emojiForName } from "@/lib/emoji-pool"
 
 interface EmployeeAvatarProps {

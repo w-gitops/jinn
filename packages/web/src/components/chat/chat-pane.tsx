@@ -15,16 +15,6 @@ import { saveIntermediateMessages, loadIntermediateMessages, clearIntermediateMe
 
 type Listener = (event: string, payload: unknown) => void
 
-// [chat-debug] instrumentation — kept in prod for diagnosis. Filter devtools by "[chat-debug]".
-const dbg = (sid: string | null | undefined, evt: string, data?: unknown) => {
-  try {
-    const t = new Date().toISOString().slice(11, 23)
-    const s = sid ? sid.slice(0, 8) : 'NEW '
-    if (data !== undefined) console.log(`[chat-debug] ${t} ${s} ${evt}`, data)
-    else console.log(`[chat-debug] ${t} ${s} ${evt}`)
-  } catch { /* ignore */ }
-}
-
 interface ChatPaneProps {
   sessionId: string | null
   isActive: boolean
@@ -72,10 +62,8 @@ export function ChatPane({
   onShortcutsClick,
   pendingUserMessage,
 }: ChatPaneProps) {
-  dbg(sessionId, 'render', { pendingUserMessage: pendingUserMessage ? { role: pendingUserMessage.role, contentPreview: pendingUserMessage.content.slice(0, 40) } : null })
   const [messages, setMessages] = useState<Message[]>(() => {
     const seed = pendingUserMessage ? [pendingUserMessage] : []
-    dbg(sessionId, 'useState-init messages', { seededCount: seed.length, seededFrom: pendingUserMessage ? 'pendingUserMessage' : 'empty' })
     return seed
   })
   // Seed loading=true when mounting with a pendingUserMessage (just-created new chat

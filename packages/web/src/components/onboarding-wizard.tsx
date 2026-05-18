@@ -13,8 +13,8 @@ import {
   ArrowRight,
   Rocket,
 } from "lucide-react"
-import { useSettings } from "@/app/settings-provider"
-import { useTheme } from "@/app/providers"
+import { useSettings } from "@/routes/settings-provider"
+import { useTheme } from "@/routes/providers"
 import { THEMES } from "@/lib/themes"
 import { api } from "@/lib/api"
 

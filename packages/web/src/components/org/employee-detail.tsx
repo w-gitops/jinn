@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { Employee } from "@/lib/api";
 import { EmployeeAvatar } from "@/components/ui/employee-avatar";
-import { useSettings } from "@/app/settings-provider";
+import { useSettings } from "@/routes/settings-provider";
 import { emojiForName } from "@/lib/emoji-pool";
 import { EmojiPicker } from "@/components/ui/emoji-picker";
 

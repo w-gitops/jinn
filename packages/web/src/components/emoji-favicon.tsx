@@ -1,6 +1,6 @@
 
 import { useEffect } from "react"
-import { useSettings } from "@/app/settings-provider"
+import { useSettings } from "@/routes/settings-provider"
 
 export function EmojiFavicon() {
   const { settings } = useSettings()

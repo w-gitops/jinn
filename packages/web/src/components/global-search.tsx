@@ -15,7 +15,7 @@ import {
   CommandSeparator,
 } from "@/components/ui/command"
 import { Dialog, DialogContent } from "@/components/ui/dialog"
-import { useSettings } from "@/app/settings-provider"
+import { useSettings } from "@/routes/settings-provider"
 import { useOrg } from "@/hooks/use-employees"
 import { useCronJobs } from "@/hooks/use-cron"
 import { useSessions } from "@/hooks/use-sessions"

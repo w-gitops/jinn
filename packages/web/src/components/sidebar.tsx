@@ -7,8 +7,8 @@ import {
   Palette,
   ArrowLeftRight,
 } from "lucide-react"
-import { useTheme } from "@/app/providers"
-import { useSettings } from "@/app/settings-provider"
+import { useTheme } from "@/routes/providers"
+import { useSettings } from "@/routes/settings-provider"
 import { THEMES } from "@/lib/themes"
 import { NAV_ITEMS } from "@/lib/nav"
 import type { ThemeId } from "@/lib/themes"

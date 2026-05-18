@@ -1,7 +1,7 @@
 
 import { lazy, Suspense, useState } from "react"
 import { Link, useLocation } from "react-router-dom"
-import { useSettings } from "@/app/settings-provider"
+import { useSettings } from "@/routes/settings-provider"
 import { Sidebar } from "./sidebar"
 import { NotificationBell } from "./notifications/notification-bell"
 import { BreadcrumbBar } from "./breadcrumb-bar"
