@@ -155,14 +155,4 @@ program
     });
 }
 
-program
-  .command("chrome-allow")
-  .description("Pre-approve all sites for the Claude Chrome extension")
-  .option("--no-restart", "Don't restart Chrome automatically")
-  .option("--comet-browser", "Target Comet browser instead of Google Chrome")
-  .action(async (opts) => {
-    const { runChromeAllow } = await import("../src/cli/chrome-allow.js");
-    await runChromeAllow(opts);
-  });
-
 program.parse();
