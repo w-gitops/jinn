@@ -1,14 +1,191 @@
+import fs from "node:fs";
 import * as pty from "node-pty";
-import type { InterruptibleEngine, EngineRunOpts, EngineResult } from "../shared/types.js";
+import type { InterruptibleEngine, EngineRunOpts, EngineResult, EngineRateLimitInfo, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { JINN_HOME, CLAUDE_SETTINGS_DIR, HOOK_RELAY_SCRIPT } from "../shared/paths.js";
 import { writeSessionSettings } from "../shared/claude-settings.js";
-import { buildInteractiveArgs } from "./interactive-args.js";
-import { tailTranscript, type TranscriptTailer } from "./transcript-tail.js";
 import { PtyLifecycleManager, type PtyHandle } from "./pty-lifecycle.js";
 import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
-import { computeInteractiveCost } from "./interactive-cost.js";
-import { rateLimitFromStopFailure } from "./interactive-ratelimit.js";
+
+interface InteractiveArgsOpts {
+  prompt: string;
+  settingsPath: string;
+  resumeSessionId?: string;
+  model?: string;
+  effortLevel?: string;
+  mcpConfigPath?: string;
+  cliFlags?: string[];
+  attachments?: string[];
+}
+
+interface TranscriptUsage { inputTokens: number; outputTokens: number; cacheTokens: number; assistantTurns: number; }
+
+interface TranscriptTailer {
+  stop(): void;
+}
+
+// $/million tokens. Conservative defaults.
+const MODEL_PRICES: Record<string, { in: number; out: number }> = {
+  "claude-opus-4-7": { in: 15, out: 75 },
+  "claude-sonnet-4-6": { in: 3, out: 15 },
+  "claude-haiku-4-5": { in: 1, out: 5 },
+};
+const DEFAULT_PRICE = { in: 15, out: 75 };
+
+function sumTranscriptUsage(content: string): TranscriptUsage {
+  const u: TranscriptUsage = { inputTokens: 0, outputTokens: 0, cacheTokens: 0, assistantTurns: 0 };
+  const seen = new Set<string>();
+  for (const line of content.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    let msg: any;
+    try { msg = JSON.parse(t); } catch { continue; }
+    if (msg.type !== "assistant") continue;
+    const usage = msg?.message?.usage;
+    if (!usage) continue;
+    // Phase 0 finding: --effort high emits two assistant lines per response
+    // (thinking + text) with the same message.id and identical usage. Dedupe
+    // by message.id so tokens aren't double-counted. Lines without an id are
+    // always counted (can't dedupe what we can't key).
+    const id = msg?.message?.id;
+    if (typeof id === "string") {
+      if (seen.has(id)) continue;
+      seen.add(id);
+    }
+    u.assistantTurns += 1;
+    u.inputTokens += Number(usage.input_tokens ?? 0);
+    u.outputTokens += Number(usage.output_tokens ?? 0);
+    u.cacheTokens += Number(usage.cache_read_input_tokens ?? 0) + Number(usage.cache_creation_input_tokens ?? 0);
+  }
+  return u;
+}
+
+function computeInteractiveCost(transcriptPath: string, model?: string): { cost: number; turns: number } | null {
+  let content: string;
+  try { content = fs.readFileSync(transcriptPath, "utf-8"); } catch { return null; }
+  const u = sumTranscriptUsage(content);
+  if (u.assistantTurns === 0) return null;
+  const price = (model && MODEL_PRICES[model]) || DEFAULT_PRICE;
+  const cost = (u.inputTokens / 1_000_000) * price.in + (u.outputTokens / 1_000_000) * price.out;
+  return { cost, turns: u.assistantTurns };
+}
+
+/**
+ * Map a StopFailure hook payload to an EngineRateLimitInfo.
+ * Returns null unless the turn failed specifically with error === "rate_limit".
+ * The shape matches what ClaudeEngine produces from `rate_limit_event` JSON, so
+ * detectRateLimit() / the wait-retry machinery in manager.ts work unchanged.
+ * (error_details may carry a reset time, but its format is unconfirmed — left
+ * unparsed; manager.ts computes a default backoff when resetsAt is absent.)
+ */
+function rateLimitFromStopFailure(payload: HookPayload | undefined): EngineRateLimitInfo | null {
+  if (!payload || payload.hook_event_name !== "StopFailure") return null;
+  if (payload.error !== "rate_limit") return null;
+  return { status: "rejected", rateLimitType: "interactive_detected" };
+}
+
+function buildInteractiveArgs(o: InteractiveArgsOpts): string[] {
+  const args: string[] = [];
+  if (o.resumeSessionId) args.push("--resume", o.resumeSessionId);
+
+  let prompt = o.prompt;
+  if (o.attachments?.length) {
+    prompt += "\n\nAttached files:\n" + o.attachments.map((a) => `- ${a}`).join("\n");
+  }
+  args.push(prompt); // positional — MUST precede variadic --mcp-config
+
+  args.push("--chrome");
+  if (o.effortLevel && o.effortLevel !== "default") args.push("--effort", o.effortLevel);
+  if (o.model) args.push("--model", o.model);
+  args.push("--dangerously-skip-permissions");
+  args.push("--settings", o.settingsPath);
+  if (o.cliFlags?.length) args.push(...o.cliFlags);
+  if (o.mcpConfigPath) args.push("--mcp-config", o.mcpConfigPath);
+  return args;
+}
+
+/**
+ * Parse one transcript JSONL line into StreamDeltas.
+ * `priorSnapshot` is the accumulated assistant text so far; the returned
+ * text_snapshot delta (if any) contains priorSnapshot + this line's text.
+ */
+function parseTranscriptLine(line: string, priorSnapshot: string): StreamDelta[] {
+  const trimmed = line.trim();
+  if (!trimmed) return [];
+  let msg: any;
+  try { msg = JSON.parse(trimmed); } catch { return []; }
+
+  const out: StreamDelta[] = [];
+  const content = msg?.message?.content;
+  if (!Array.isArray(content)) return out;
+
+  if (msg.type === "assistant") {
+    let text = "";
+    for (const block of content) {
+      if (block.type === "text" && typeof block.text === "string") text += block.text;
+      else if (block.type === "tool_use") {
+        out.push({ type: "tool_use", content: `Using ${block.name ?? "tool"}`, toolName: String(block.name ?? "tool"), toolId: String(block.id ?? "") });
+      }
+    }
+    if (text) {
+      out.push({ type: "text", content: text });
+      out.push({ type: "text_snapshot", content: priorSnapshot + text });
+    }
+  } else if (msg.type === "user") {
+    for (const block of content) {
+      if (block.type === "tool_result") out.push({ type: "tool_result", content: "" });
+    }
+  }
+  return out;
+}
+
+/** Tail a transcript file, emitting StreamDeltas for each appended line. */
+function tailTranscript(filePath: string, onDelta: (d: StreamDelta) => void): TranscriptTailer {
+  let offset = 0;
+  try { offset = fs.statSync(filePath).size; } catch { /* file may not exist yet; offset stays 0 */ }
+  let snapshot = "";
+  let buf = "";
+  let stopped = false;
+
+  const readNew = () => {
+    if (stopped) return;
+    let stat: fs.Stats;
+    try { stat = fs.statSync(filePath); } catch { return; }
+    if (stat.size <= offset) return;
+    const fd = fs.openSync(filePath, "r");
+    try {
+      const chunk = Buffer.alloc(stat.size - offset);
+      fs.readSync(fd, chunk, 0, chunk.length, offset);
+      offset = stat.size;
+      buf += chunk.toString("utf-8");
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const l of lines) {
+        for (const d of parseTranscriptLine(l, snapshot)) {
+          if (d.type === "text_snapshot") snapshot = d.content;
+          onDelta(d);
+        }
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+
+  let watcher: fs.FSWatcher | undefined;
+  try { watcher = fs.watch(filePath, () => readNew()); } catch { /* file may not exist yet */ }
+  const poll = setInterval(readNew, 150); // 100ms batched writes — poll a bit slower
+  if (poll.unref) poll.unref();
+  // Do NOT initial-drain — that would replay the resumed conversation history
+  // as fresh deltas. Poll/watch picks up new appends from `offset` onward.
+
+  return {
+    stop() {
+      stopped = true;
+      watcher?.close();
+      clearInterval(poll);
+    },
+  };
+}
 
 export interface TurnResolverOpts {
   turnTimeoutMs: number;

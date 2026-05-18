@@ -1,33 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { EngineRateLimitInfo, InterruptibleEngine, EngineRunOpts, EngineResult, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
-import { isDeadSessionError } from "../shared/rateLimit.js";
 
 interface LiveProcess {
   proc: ChildProcess;
   terminationReason: string | null;
 }
-
-/** Errors that are likely transient and worth retrying */
-const TRANSIENT_PATTERNS = [
-  /ECONNRESET/i,
-  /ETIMEDOUT/i,
-  /socket hang up/i,
-  /503/,
-  /529/,
-  /overloaded/i,
-  /rate limit/i,
-  /spawn.*EAGAIN/i,
-];
-
-function isTransientError(stderr: string, code: number | null): boolean {
-  // Exit code 1 with no meaningful stderr is often a transient crash
-  if (code === 1 && stderr.trim().length < 10) return true;
-  return TRANSIENT_PATTERNS.some((pat) => pat.test(stderr));
-}
-
-const MAX_RETRIES = 2;
-const RETRY_BASE_MS = 1000;
 
 export class ClaudeEngine implements InterruptibleEngine {
   name = "claude" as const;
@@ -59,48 +37,7 @@ export class ClaudeEngine implements InterruptibleEngine {
   }
 
   async run(opts: EngineRunOpts): Promise<EngineResult> {
-    let lastResult: EngineResult | undefined;
-
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      if (attempt > 0) {
-        const delayMs = RETRY_BASE_MS * Math.pow(2, attempt - 1);
-        logger.warn(
-          `Claude engine retry ${attempt}/${MAX_RETRIES} for session ${opts.sessionId || "unknown"} after ${delayMs}ms`,
-        );
-        // Emit a status delta so the UI knows we're retrying
-        opts.onStream?.({ type: "status", content: `Retrying (attempt ${attempt + 1}/${MAX_RETRIES + 1})...` });
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-      }
-
-      const result = await this.runOnce(opts);
-      lastResult = result;
-
-      // Success or non-transient error — return immediately
-      if (!result.error) return result;
-
-      // If the process was intentionally killed, don't retry
-      if (result.error.startsWith("Interrupted")) return result;
-
-      // Dead session (expired/invalid --resume ID) — clear the stale ID so the
-      // next attempt (if any) starts fresh instead of retrying the same dead session.
-      if (isDeadSessionError(result)) {
-        logger.warn(`Dead session detected for ${opts.sessionId || "unknown"}: ${result.error.slice(0, 200)}`);
-        opts = { ...opts, resumeSessionId: undefined };
-        // Don't retry — let the caller (manager) handle cleanup
-        return result;
-      }
-
-      // Check if this is a transient failure worth retrying
-      if (attempt < MAX_RETRIES && isTransientError(result.error, null)) {
-        logger.warn(`Transient Claude failure (attempt ${attempt + 1}): ${result.error.slice(0, 200)}`);
-        continue;
-      }
-
-      // Non-transient or final attempt — return the error
-      return result;
-    }
-
-    return lastResult!;
+    return this.runOnce(opts);
   }
 
   private async runOnce(opts: EngineRunOpts): Promise<EngineResult> {
@@ -265,7 +202,12 @@ export class ClaudeEngine implements InterruptibleEngine {
 
         // Non-zero exit code — if we still got a structured "result" message, use it.
         if (streaming && lastResultMsg) {
-          resolve(this.extractResult(lastResultMsg, opts.resumeSessionId, rateLimitInfo));
+          resolve(this.buildEngineResultFromResultEvent(
+            lastResultMsg,
+            String(lastResultMsg.result || ""),
+            opts.resumeSessionId,
+            rateLimitInfo,
+          ));
           return;
         }
 
@@ -275,13 +217,24 @@ export class ClaudeEngine implements InterruptibleEngine {
             if (Array.isArray(parsed)) {
               const resultEvent = [...parsed].reverse().find((e: Record<string, unknown>) => e.type === "result") as Record<string, unknown> | undefined;
               const rlEvent = [...parsed].reverse().find((e: Record<string, unknown>) => e.type === "rate_limit_event") as Record<string, unknown> | undefined;
-              const rl = rlEvent ? this.normalizeRateLimitInfo(rlEvent.rate_limit_info) : rateLimitInfo;
+              const rl = rlEvent ? this.parseRateLimitInfo(rlEvent.rate_limit_info) : rateLimitInfo;
               if (resultEvent) {
-                resolve(this.extractResult(resultEvent, opts.resumeSessionId, rl));
+                resolve(this.buildEngineResultFromResultEvent(
+                  resultEvent,
+                  String(resultEvent.result || ""),
+                  opts.resumeSessionId,
+                  rl,
+                ));
                 return;
               }
             } else if (parsed && typeof parsed === "object" && (parsed as Record<string, unknown>).type === "result") {
-              resolve(this.extractResult(parsed as Record<string, unknown>, opts.resumeSessionId, rateLimitInfo));
+              const evt = parsed as Record<string, unknown>;
+              resolve(this.buildEngineResultFromResultEvent(
+                evt,
+                String(evt.result || ""),
+                opts.resumeSessionId,
+                rateLimitInfo,
+              ));
               return;
             }
           } catch {
@@ -531,37 +484,6 @@ export class ClaudeEngine implements InterruptibleEngine {
     }
 
     return this.buildEngineResultFromResultEvent(resultEvent, finalText, fallbackSessionId, rateLimitInfo);
-  }
-
-  private extractResult(result: Record<string, unknown>, fallbackSessionId?: string, rateLimitInfo?: EngineRateLimitInfo): EngineResult {
-    const isError = result.is_error === true;
-    const msg = String(result.result || "");
-    const error = isError
-      ? (rateLimitInfo?.status === "rejected" ? `Claude usage limit reached: ${msg || "Rate limited"}` : (msg || "Claude error"))
-      : undefined;
-    return {
-      sessionId: String(result.session_id || fallbackSessionId || ""),
-      result: isError ? "" : String(result.result || ""),
-      error,
-      rateLimit: rateLimitInfo,
-      cost: typeof result.total_cost_usd === "number" ? result.total_cost_usd : undefined,
-      durationMs: typeof result.duration_ms === "number" ? result.duration_ms : undefined,
-      numTurns: typeof result.num_turns === "number" ? result.num_turns : undefined,
-    };
-  }
-
-  private normalizeRateLimitInfo(raw: unknown): EngineRateLimitInfo | undefined {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-    const o = raw as Record<string, unknown>;
-    const resetsAt = typeof o.resetsAt === "number" ? o.resetsAt : undefined;
-    return {
-      status: typeof o.status === "string" ? o.status : undefined,
-      resetsAt,
-      rateLimitType: typeof o.rateLimitType === "string" ? o.rateLimitType : undefined,
-      overageStatus: typeof o.overageStatus === "string" ? o.overageStatus : undefined,
-      overageDisabledReason: typeof o.overageDisabledReason === "string" ? o.overageDisabledReason : undefined,
-      isUsingOverage: typeof o.isUsingOverage === "boolean" ? o.isUsingOverage : undefined,
-    };
   }
 
   private buildCleanEnv(): Record<string, string> {
