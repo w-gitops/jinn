@@ -67,6 +67,10 @@ export function seedTrust(claudeJsonPath: string, projectDir: string): void {
   proj.hasCompletedProjectOnboarding = true;
   proj.allowedTools ??= [];
   const tmp = `${claudeJsonPath}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, claudeJsonPath);
+  // Defensive: ensure the final file has 0o600 even if the target pre-existed
+  // with a more permissive mode (rename preserves the destination inode's perms
+  // on some platforms / filesystems is not guaranteed — be explicit).
+  fs.chmodSync(claudeJsonPath, 0o600);
 }
