@@ -30,11 +30,11 @@ export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: Int
 
   // replay scrollback (may now include the idle-spawn's first bytes)
   const scrollback = engine.getScrollback(sessionId);
-  if (scrollback && ws.readyState === ws.OPEN) ws.send(Buffer.from(scrollback, "utf-8"));
+  if (scrollback.length > 0 && ws.readyState === ws.OPEN) ws.send(scrollback);
 
-  // live output
+  // live output — engine yields Buffers already; forward as binary frames without re-encoding.
   const unsubscribe = engine.subscribeOutput(sessionId, (data) => {
-    if (ws.readyState === ws.OPEN) ws.send(Buffer.from(data, "utf-8"));
+    if (ws.readyState === ws.OPEN) ws.send(data);
   });
 
   ws.on("message", (raw) => {

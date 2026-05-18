@@ -286,8 +286,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
   name = "claude" as const;
   /** Active turn resolvers keyed by Jinn session id. */
   private active = new Map<string, { resolver: TurnResolver; tailer?: TranscriptTailer }>();
-  /** Per-session PTY output streams: scrollback ring buffer + live subscribers. Survives PTY respawn. */
-  private streams = new Map<string, { buffer: string; subscribers: Set<(d: string) => void> }>();
+  /** Per-session PTY output streams: scrollback ring buffer (chunk list + running byte total)
+   *  + live subscribers. Survives PTY respawn. The chunk-list ring avoids the O(N) realloc
+   *  that a `(buffer + d).slice(-CAP)` per data event would cause at hot output. */
+  private streams = new Map<string, { chunks: Buffer[]; totalBytes: number; subscribers: Set<(d: Buffer) => void> }>();
 
   constructor(
     private lifecycle: PtyLifecycleManager,
@@ -390,16 +392,30 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     } as PtyHandle;
     const stream = this.streamFor(jinnSessionId);
     proc.onData((d) => {
-      stream.buffer = (stream.buffer + d).slice(-SCROLLBACK_CAP_BYTES);
+      // Convert string to Buffer once; push to ring; evict head until under cap.
+      const chunk = Buffer.from(d, "utf-8");
+      stream.chunks.push(chunk);
+      stream.totalBytes += chunk.length;
+      while (stream.totalBytes > SCROLLBACK_CAP_BYTES && stream.chunks.length > 1) {
+        const head = stream.chunks.shift()!;
+        stream.totalBytes -= head.length;
+      }
+      // If a single chunk exceeds the cap, slice it down (rare; keeps invariant tight).
+      if (stream.totalBytes > SCROLLBACK_CAP_BYTES && stream.chunks.length === 1) {
+        const only = stream.chunks[0]!;
+        const sliced = only.subarray(only.length - SCROLLBACK_CAP_BYTES);
+        stream.chunks[0] = sliced;
+        stream.totalBytes = sliced.length;
+      }
       for (const cb of stream.subscribers) {
-        try { cb(d); } catch { /* ignore subscriber errors */ }
+        try { cb(chunk); } catch { /* ignore subscriber errors */ }
       }
     });
     proc.onExit(() => {
       // Clear scrollback so a stale farewell (Claude's "Resume this session…" hint
       // printed on SIGHUP shutdown) doesn't persist into the next PTY incarnation.
       const s = this.streams.get(jinnSessionId);
-      if (s) s.buffer = "";
+      if (s) { s.chunks = []; s.totalBytes = 0; }
       // Release the lifecycle entry so the dead handle isn't picked up by a future
       // run() as "warm" — that would inject into a corpse.
       this.lifecycle.releaseSession(jinnSessionId);
@@ -489,22 +505,25 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
   }
 
   /** Lazily create (or fetch) the output stream entry for a Jinn session id. */
-  private streamFor(sessionId: string): { buffer: string; subscribers: Set<(d: string) => void> } {
+  private streamFor(sessionId: string): { chunks: Buffer[]; totalBytes: number; subscribers: Set<(d: Buffer) => void> } {
     let stream = this.streams.get(sessionId);
     if (!stream) {
-      stream = { buffer: "", subscribers: new Set() };
+      stream = { chunks: [], totalBytes: 0, subscribers: new Set() };
       this.streams.set(sessionId, stream);
     }
     return stream;
   }
 
-  /** Append-only capped output buffer for the session's current/most-recent PTY (for xterm.js reconnect replay). */
-  getScrollback(sessionId: string): string {
-    return this.streams.get(sessionId)?.buffer ?? "";
+  /** Append-only capped output buffer for the session's current/most-recent PTY (for xterm.js reconnect replay).
+   *  Returns a concatenated Buffer — pty-ws.ts forwards it directly without re-encoding. */
+  getScrollback(sessionId: string): Buffer {
+    const s = this.streams.get(sessionId);
+    if (!s || s.chunks.length === 0) return Buffer.alloc(0);
+    return Buffer.concat(s.chunks, s.totalBytes);
   }
 
   /** Subscribe to live PTY output for a session. Returns an unsubscribe fn. Survives PTY respawn within the session. */
-  subscribeOutput(sessionId: string, cb: (data: string) => void): () => void {
+  subscribeOutput(sessionId: string, cb: (data: Buffer) => void): () => void {
     const stream = this.streamFor(sessionId);
     stream.subscribers.add(cb);
     return () => { stream.subscribers.delete(cb); };
