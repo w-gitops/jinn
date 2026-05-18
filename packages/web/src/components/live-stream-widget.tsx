@@ -110,7 +110,9 @@ export function LiveStreamWidget() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const logIndexRef = useRef(0)
 
-  const { events } = useGateway()
+  const { subscribe } = useGateway()
+  const stateRef = useRef<WidgetState>(state)
+  stateRef.current = state
 
   /* ── Auto-scroll ──────────────────────────────────────────── */
 
@@ -145,17 +147,21 @@ export function LiveStreamWidget() {
   }, [state])
 
   /* ── Listen for WebSocket events ──────────────────────────── */
+  // Subscribe to gateway events directly (avoids re-rendering on every event by
+  // not destructuring the `events` array from context). We still gate on the
+  // current widget state via a ref so the subscriber stays mounted but cheap.
 
   useEffect(() => {
-    if (state === "hidden" || events.length === 0) return
-    const latest = events[events.length - 1]
-    if (latest.event === "log" && typeof latest.payload === "object" && latest.payload !== null) {
-      const p = latest.payload as Record<string, unknown>
-      const line = (p.line as string) || (p.message as string) || JSON.stringify(latest.payload)
+    return subscribe((event, payload) => {
+      if (stateRef.current === "hidden") return
+      if (event !== "log") return
+      if (typeof payload !== "object" || payload === null) return
+      const p = payload as Record<string, unknown>
+      const line = (p.line as string) || (p.message as string) || JSON.stringify(payload)
       const newEntry = parseLogLine(line, logIndexRef.current++)
       setEntries((prev) => [...prev, newEntry].slice(-MAX_LINES))
-    }
-  }, [events, state])
+    })
+  }, [subscribe])
 
   /* ── Actions ──────────────────────────────────────────────── */
 
