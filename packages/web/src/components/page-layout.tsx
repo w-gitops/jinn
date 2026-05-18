@@ -3,7 +3,6 @@ import { lazy, Suspense, useState } from "react"
 import { Link, useLocation } from "react-router-dom"
 import { useSettings } from "@/routes/settings-provider"
 import { Sidebar } from "./sidebar"
-import { NotificationBell } from "./notifications/notification-bell"
 import { BreadcrumbBar } from "./breadcrumb-bar"
 import { useBreadcrumbs } from "@/context/breadcrumb-context"
 import { Menu, X } from "lucide-react"
@@ -14,7 +13,7 @@ const GlobalSearch = lazy(() => import("./global-search").then(m => ({ default: 
 const LiveStreamWidget = lazy(() => import("./live-stream-widget").then(m => ({ default: m.LiveStreamWidget })))
 const OnboardingWizard = lazy(() => import("./onboarding-wizard").then(m => ({ default: m.OnboardingWizard })))
 
-function MobileHeader({ actions }: { actions?: React.ReactNode }) {
+function MobileHeader({ actions, leftActions }: { actions?: React.ReactNode; leftActions?: React.ReactNode }) {
   const [open, setOpen] = useState(false)
   const pathname = useLocation().pathname
   const { settings } = useSettings()
@@ -31,13 +30,13 @@ function MobileHeader({ actions }: { actions?: React.ReactNode }) {
         >
           <Menu size={20} />
         </button>
+        {leftActions && <div className="flex items-center gap-1">{leftActions}</div>}
         <div className="flex flex-1 items-center justify-center text-center">
           <span className="mr-1.5 text-lg">{emoji}</span>
           <span className="text-sm font-semibold text-foreground">{portalName}</span>
         </div>
         <div className="flex items-center gap-1">
           {actions}
-          <NotificationBell />
         </div>
       </div>
 
@@ -99,7 +98,6 @@ export function ToolbarActions({ children }: { children?: React.ReactNode }) {
   return (
     <div className="hidden items-center gap-2 lg:flex">
       {children}
-      <NotificationBell />
     </div>
   )
 }
@@ -114,7 +112,7 @@ function DesktopHeader() {
   )
 }
 
-export function PageLayout({ children, mobileHeaderActions }: { children: React.ReactNode; mobileHeaderActions?: React.ReactNode }) {
+export function PageLayout({ children, mobileHeaderActions, mobileHeaderLeftActions }: { children: React.ReactNode; mobileHeaderActions?: React.ReactNode; mobileHeaderLeftActions?: React.ReactNode }) {
   return (
     <div className="flex h-dvh overflow-hidden bg-background">
       <Sidebar />
@@ -122,7 +120,7 @@ export function PageLayout({ children, mobileHeaderActions }: { children: React.
         <GlobalSearch />
       </Suspense>
       <main className="flex-1 overflow-hidden flex flex-col lg:ml-[56px]">
-        <MobileHeader actions={mobileHeaderActions} />
+        <MobileHeader actions={mobileHeaderActions} leftActions={mobileHeaderLeftActions} />
         <DesktopHeader />
         <div className="flex-1 overflow-hidden">
           {children}

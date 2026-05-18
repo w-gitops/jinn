@@ -28,7 +28,6 @@ export interface Employee {
   model: string;
   persona: string;
   emoji?: string;
-  alwaysNotify?: boolean;
   reportsTo?: string | string[];
   parentName?: string | null;
   directReports?: string[];
@@ -103,16 +102,6 @@ async function put<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
-async function patch<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(await extractErrorMessage(res));
-  return res.json();
-}
-
 interface UploadedFile {
   id: string
   filename: string
@@ -148,8 +137,6 @@ export const api = {
     post<Record<string, unknown>>(`/api/cron/${id}/trigger`, {}),
   getOrg: () => get<OrgData>("/api/org"),
   getEmployee: (name: string) => get<Employee>(`/api/org/employees/${name}`),
-  updateEmployee: (name: string, data: { alwaysNotify?: boolean }) =>
-    patch<{ status: string }>(`/api/org/employees/${name}`, data),
   getDepartmentBoard: (name: string) =>
     get<Record<string, unknown>>(`/api/org/departments/${name}/board`),
   getSkills: () => get<Record<string, unknown>[]>("/api/skills"),

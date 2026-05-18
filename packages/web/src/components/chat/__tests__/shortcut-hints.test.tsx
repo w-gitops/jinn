@@ -64,10 +64,6 @@ describe('ChatSidebar shortcut hints', () => {
 
 // --- ChatTabBar shortcut hints ---
 
-vi.mock('@/components/notifications/notification-bell', () => ({
-  NotificationBell: () => null,
-}))
-
 vi.mock('@/components/ui/employee-avatar', () => ({
   EmployeeAvatar: () => null,
 }))

@@ -173,21 +173,6 @@ export function ChatPane({
         }
       }
 
-      if (event === 'session:notification') {
-        const notifMessage = String(p.message || '')
-        if (notifMessage) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: 'notification' as const,
-              content: notifMessage,
-              timestamp: Date.now(),
-            },
-          ])
-        }
-      }
-
       if (event === 'session:interrupted') {
         streamingTextRef.current = ''
         setStreamingText('')
@@ -266,7 +251,7 @@ export function ChatPane({
       const backendMessages: Message[] = Array.isArray(history)
         ? history.map((m: Record<string, unknown>) => ({
             id: crypto.randomUUID(),
-            role: (m.role as 'user' | 'assistant' | 'notification') || 'assistant',
+            role: (m.role as 'user' | 'assistant') || 'assistant',
             content: String(m.content || m.text || ''),
             timestamp: m.timestamp ? Number(m.timestamp) : Date.now(),
           }))
@@ -599,16 +584,18 @@ export function ChatPane({
         </div>
       )}
 
-      {/* Messages / CLI transcript */}
+      {/* Messages / CLI transcript — CliTerminal is display-only; ChatInput below sends. */}
       {viewMode === 'cli' && sessionId ? (
-        <Suspense fallback={null}>
-          <CliTerminal sessionId={sessionId} onSend={handleSend} />
+        // Reserve flex space during lazy-chunk load so the ChatInput below stays
+        // pinned to the bottom instead of flashing to the top for a frame.
+        <Suspense fallback={<div style={{ flex: 1, minHeight: 0, background: '#0b0b0c' }} />}>
+          <CliTerminal sessionId={sessionId} />
         </Suspense>
       ) : (sessionId || messages.length > 0) ? (
         <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
       ) : null}
 
-      {/* Queue panel — hidden in the live xterm view */}
+      {/* Queue panel — hidden in the live xterm view (noise on top of the PTY). */}
       {!(viewMode === 'cli' && sessionId) && (
         <QueuePanel
           sessionId={sessionId}
@@ -617,24 +604,22 @@ export function ChatPane({
         />
       )}
 
-      {/* Input — chat-style composer for chat view AND for the CLI empty state
-          (no session yet). Once a CLI session exists, the CliTerminal hosts its own overlay input. */}
-      {!(viewMode === 'cli' && sessionId) && (
-        <ChatInput
-          disabled={false}
-          loading={loading}
-          onSend={handleSend}
-          onInterrupt={handleInterrupt}
-          onNewSession={handleNewSession}
-          onStatusRequest={handleStatusRequest}
-          skillsVersion={skillsVersion}
-          events={events}
-          droppedFiles={droppedFiles}
-          onDroppedFilesConsumed={() => setDroppedFiles(undefined)}
-          focusTrigger={focusTrigger}
-          onShortcutsClick={onShortcutsClick}
-        />
-      )}
+      {/* Input — chat-style composer for every view, including CLI (the PTY engine
+          accepts attachments + the prompt is injected into xterm via bracketed-paste). */}
+      <ChatInput
+        disabled={false}
+        loading={loading}
+        onSend={handleSend}
+        onInterrupt={handleInterrupt}
+        onNewSession={handleNewSession}
+        onStatusRequest={handleStatusRequest}
+        skillsVersion={skillsVersion}
+        events={events}
+        droppedFiles={droppedFiles}
+        onDroppedFilesConsumed={() => setDroppedFiles(undefined)}
+        focusTrigger={focusTrigger}
+        onShortcutsClick={onShortcutsClick}
+      />
     </div>
   )
 }

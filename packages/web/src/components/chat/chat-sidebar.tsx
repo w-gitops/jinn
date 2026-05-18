@@ -1043,6 +1043,8 @@ export function ChatSidebar({
               return (
                 <div
                   key={vr.key}
+                  ref={rowVirtualizer.measureElement}
+                  data-index={vr.index}
                   style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${vr.start}px)` }}
                 >
                   {vi.kind === "employee" ? (

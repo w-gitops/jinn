@@ -31,18 +31,21 @@ export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: Int
   // Eager spawn so the terminal shows the TUI immediately on session open.
   spawnIfNeeded();
 
-  // Replay scrollback (may now include the idle-spawn's first bytes).
-  const scrollback = engine.getScrollback(sessionId);
-  if (scrollback.length > 0 && ws.readyState === ws.OPEN) ws.send(scrollback);
-
-  // Live output — engine yields Buffers already; forward as binary frames.
-  // Control events (e.g. PTY respawn → `reset`) ride a JSON text frame so the client can
-  // distinguish them from raw PTY bytes (which stay binary).
+  // Subscribe FIRST, then replay scrollback. Reverse order had a race window
+  // between snapshot and subscribe where PTY bytes could be lost — the snapshot
+  // was already captured (so the replay didn't have them) and the subscriber
+  // wasn't attached yet (so the live forward missed them too). With this order
+  // those bytes arrive via the subscriber, slightly out of order vs. scrollback
+  // but never missing.
   const unsubscribe = engine.subscribeOutput(
     sessionId,
     (data) => { if (ws.readyState === ws.OPEN) ws.send(data); },
     (event) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event)); },
   );
+
+  // Replay scrollback (may now include the idle-spawn's first bytes).
+  const scrollback = engine.getScrollback(sessionId);
+  if (scrollback.length > 0 && ws.readyState === ws.OPEN) ws.send(scrollback);
 
   // Track whether this socket has reported viewing:true so close-cleanup can
   // decrement only if it actually incremented. Guards against double-decrement

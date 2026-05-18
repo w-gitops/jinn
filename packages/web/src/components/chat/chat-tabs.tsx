@@ -1,7 +1,6 @@
 
 import { useRef, useState, type MouseEvent, type DragEvent, type ReactNode } from 'react'
 import { X, Plus, PanelLeftOpen, PanelLeftClose } from 'lucide-react'
-import { NotificationBell } from '@/components/notifications/notification-bell'
 import type { ChatTab } from '@/hooks/use-chat-tabs'
 import { cn } from '@/lib/utils'
 import { EmployeeAvatar } from '@/components/ui/employee-avatar'
@@ -77,7 +76,7 @@ export function ChatTabBar({ tabs, activeIndex, onSwitch, onClose, onNew, onPin,
   }
 
   return (
-    <div className="relative z-[100] flex h-10 shrink-0 items-center border-b border-border bg-[var(--bg-secondary)]">
+    <div className="relative z-[100] hidden h-10 shrink-0 items-center border-b border-border bg-[var(--bg-secondary)] md:flex">
       {onToggleSidebar && (
         <button
           onClick={onToggleSidebar}
@@ -143,7 +142,6 @@ export function ChatTabBar({ tabs, activeIndex, onSwitch, onClose, onNew, onPin,
       {toolbarActions && (
         <div className="hidden shrink-0 items-center gap-2 border-l border-border px-3 lg:flex">
           {toolbarActions}
-          <NotificationBell />
         </div>
       )}
     </div>

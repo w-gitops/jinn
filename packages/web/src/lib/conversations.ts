@@ -21,7 +21,7 @@ export interface MediaAttachment {
 
 export interface Message {
   id: string
-  role: 'user' | 'assistant' | 'notification'
+  role: 'user' | 'assistant'
   content: string
   timestamp: number
   media?: MediaAttachment[]

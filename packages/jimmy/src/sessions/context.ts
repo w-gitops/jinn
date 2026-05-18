@@ -676,14 +676,9 @@ curl -s -X POST ${gatewayUrl}/api/sessions/<child-id>/message \\
   -d '{"message": "<follow-up>"}'
 \`\`\`
 
-6. **Respond immediately**: Tell the user you've delegated and will follow up when it's done. **Do NOT poll or wait** — end your turn now.
-
-7. **onComplete callback**: When the child session finishes, the gateway automatically sends you a notification message with the result. You will receive this as a new message in your session — no polling needed.
-
-8. **Review**: When the onComplete notification arrives, assess work using oversight levels (TRUST / VERIFY / THOROUGH) based on complexity and risk, then relay the result to the user.
+6. **Follow up via GET**: After spawning, you can check on the child session at any time via \`GET /api/sessions/:id\` to read the latest assistant messages. The gateway does NOT push notifications back to you, so poll when needed (e.g. next turn).
 
 ### Key rules
-- **NEVER poll or wait for child sessions**. After spawning, reply to the user and end your turn. The gateway's onComplete callback will message you automatically when the child finishes.
 - **Always reuse** child sessions — never create duplicates for the same employee.
 - **Parallel spawning**: For independent sub-tasks, spawn multiple employees simultaneously.
 - **Cross-reference**: Compare results from multiple employees before responding.

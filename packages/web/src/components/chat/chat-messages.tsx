@@ -394,7 +394,6 @@ interface MessageRowProps {
 
 const MessageRow = React.memo(function MessageRow({ msg, index: i, messages }: MessageRowProps) {
   const isUser = msg.role === 'user'
-  const isNotification = msg.role === 'notification'
   const showTimestamp = shouldShowTimestamp(messages, i)
   const media = msg.media || parseMedia(msg.content)
 
@@ -433,19 +432,6 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, messages }: M
         <div className={messages[i - 1].role !== msg.role ? 'h-[var(--space-4)]' : 'h-[var(--space-1)]'} />
       )}
 
-      {/* Notification message — centered system-style banner */}
-      {isNotification && (
-        <div className="flex justify-center px-[var(--space-4)] mb-[var(--space-1)]">
-          <div className="notification-msg-bubble flex items-start gap-[var(--space-2)] py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-md)] bg-[var(--fill-secondary)] border border-dashed border-[var(--separator)] text-[var(--text-secondary)] text-[length:var(--text-caption1)] leading-[var(--leading-relaxed)] max-w-[85%]">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5 opacity-60">
-              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-              <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-            </svg>
-            <span>{formattedContent}</span>
-          </div>
-        </div>
-      )}
-
       {/* User message */}
       {isUser && (
         <div className="flex flex-col items-end px-[var(--space-4)] mb-[var(--space-1)]">
@@ -463,7 +449,7 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, messages }: M
       )}
 
       {/* Assistant message */}
-      {!isUser && !isNotification && (
+      {!isUser && (
         <div className="assistant-msg-row flex justify-start px-[var(--space-4)] mb-[var(--space-1)]">
           <div className="assistant-msg-bubble flex flex-col">
             {/* Text bubble */}
@@ -691,7 +677,6 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
         }
         .assistant-msg-bubble { max-width: 100%; overflow-wrap: break-word; word-break: break-word; }
         .user-msg-bubble { max-width: 90%; overflow-wrap: break-word; word-break: break-word; }
-        .notification-msg-bubble { overflow-wrap: break-word; word-break: break-word; }
         .assistant-msg-row { padding: 0 var(--space-2) !important; }
         @media (min-width: 1024px) {
           .assistant-msg-bubble { max-width: 75%; }

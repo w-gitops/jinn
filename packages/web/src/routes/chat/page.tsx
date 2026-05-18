@@ -15,7 +15,7 @@ import { useSettings } from '@/routes/settings-provider'
 import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '@/lib/query-keys'
 import { cn } from '@/lib/utils'
-import { Check, Copy, EllipsisVertical, Trash2 } from 'lucide-react'
+import { Check, Copy, EllipsisVertical, PanelLeftClose, PanelLeftOpen, Plus, Trash2 } from 'lucide-react'
 import { writeViewMode, type ViewMode } from '@/lib/view-mode'
 
 class ChatErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
@@ -441,7 +441,29 @@ function ChatPage() {
       </button>
 
       {showMoreMenu && (
-        <div className="absolute right-0 top-full z-[200] mt-1 min-w-[220px] overflow-hidden rounded-[var(--radius-md)] border border-border bg-[var(--material-thick)] shadow-[var(--shadow-overlay)] backdrop-blur-xl">
+        <div className="absolute right-0 top-full z-[200] mt-1 min-w-[220px] overflow-hidden rounded-[var(--radius-md)] border border-border bg-[var(--material-thick)] shadow-[var(--shadow-overlay)] backdrop-blur-xl md:top-full md:mt-1 md:bottom-auto md:mb-0 max-md:top-auto max-md:bottom-full max-md:mt-0 max-md:mb-1">
+          {/* Mobile-only Chat/CLI toggle — the desktop one lives in the tab bar's toolbarActions */}
+          <div className="flex items-center gap-1 px-3 py-2 md:hidden">
+            <button
+              onClick={() => { setAndPersistViewMode('chat'); setShowMoreMenu(false) }}
+              className={cn(
+                "flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                viewMode === 'chat' ? "bg-[var(--accent-fill)] text-[var(--accent)]" : "text-muted-foreground hover:bg-accent"
+              )}
+            >
+              Chat
+            </button>
+            <button
+              onClick={() => { setAndPersistViewMode('cli'); setShowMoreMenu(false) }}
+              className={cn(
+                "flex-1 rounded-md px-2 py-1 font-mono text-xs font-medium transition-colors",
+                viewMode === 'cli' ? "bg-[var(--accent-fill)] text-[var(--accent)]" : "text-muted-foreground hover:bg-accent"
+              )}
+            >
+              CLI
+            </button>
+          </div>
+          <div className="my-0.5 border-t border-border md:hidden" />
           <button
             onClick={() => copyToClipboard(selectedId, 'id')}
             className="block w-full px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent"
@@ -520,8 +542,32 @@ function ChatPage() {
     </>
   )
 
+  const mobileSidebarToggle = (
+    <button
+      onClick={toggleSidebar}
+      aria-label={mobileView === 'sidebar' ? 'Hide chats' : 'Show chats'}
+      className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+    >
+      {mobileView === 'sidebar' ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+    </button>
+  )
+
+  const mobileRightActions = (
+    <>
+      <button
+        onClick={handleNewChat}
+        aria-label="New chat"
+        title="New chat"
+        className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <Plus size={18} />
+      </button>
+      {moreMenu}
+    </>
+  )
+
   return (
-    <PageLayout mobileHeaderActions={moreMenu}>
+    <PageLayout mobileHeaderActions={mobileRightActions} mobileHeaderLeftActions={mobileSidebarToggle}>
       <div className="flex overflow-hidden h-full">
         <div
           className="hidden h-full shrink-0 overflow-hidden lg:block"

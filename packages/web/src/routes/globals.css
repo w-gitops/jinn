@@ -727,3 +727,12 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* xterm.js: .xterm-screen snaps its width to whole cells (e.g. 853px in a
+   ~870px container), so by default the rounding leftover (5–20px) shows as
+   dead bg on the right only. Center the screen inside its parent so the
+   leftover splits evenly left/right and the inset looks symmetric. */
+.xterm-screen {
+  margin-left: auto !important;
+  margin-right: auto !important;
+}

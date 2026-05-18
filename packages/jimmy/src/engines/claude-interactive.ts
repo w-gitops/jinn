@@ -431,7 +431,11 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) continue;
       if (v !== undefined) env[k] = v;
     }
-    env.CLAUDE_CODE_NO_FLICKER = "1"; // fullscreen mode — discrete bottom slot for CLI rendering
+    // Use claude's main-screen renderer (NOT the alt-screen fullscreen one).
+    // xterm.js's `scrollback` ring only applies to the main buffer — the alt
+    // screen has no scrollback at all, so wheel-scroll in our CLI view is
+    // impossible while NO_FLICKER is on. Trading mild flicker for usable scroll.
+    env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN = "1";
     env.CLAUDE_CODE_RESUME_TOKEN_THRESHOLD = "999999999"; // suppress "resume from summary?" picker — always full-resume
     return env;
   }

@@ -4,7 +4,6 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClient } from '@/lib/query-client'
 import { ThemeProvider } from "@/routes/providers"
 import { SettingsProvider, DocumentTitle } from "@/routes/settings-provider"
-import { NotificationProvider } from "@/components/notifications/notification-provider"
 import { useQueryInvalidation } from '@/hooks/use-query-invalidation'
 import { BreadcrumbProvider } from '@/context/breadcrumb-context'
 import { EmojiFavicon } from '@/components/emoji-favicon'
@@ -22,12 +21,10 @@ export function ClientProviders({ children }: { children: ReactNode }) {
         <BreadcrumbProvider>
           <SettingsProvider>
             <GatewayProvider>
-              <NotificationProvider>
-                {children}
-                <DocumentTitle />
-                <EmojiFavicon />
-                <QueryInvalidationBridge />
-              </NotificationProvider>
+              {children}
+              <DocumentTitle />
+              <EmojiFavicon />
+              <QueryInvalidationBridge />
             </GatewayProvider>
           </SettingsProvider>
         </BreadcrumbProvider>
