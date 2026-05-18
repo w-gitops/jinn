@@ -91,16 +91,25 @@ export function CliTerminal({
       ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
     };
 
+    // Coalesce a burst of `resize` events (window drag, mobile rotation,
+    // devtools open) into one fit + one WS frame per animation frame. Without
+    // this, fit.fit() and a WS resize message fire per pixel during a drag.
+    let raf: number | null = null;
     const onResize = () => {
-      fit.fit();
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-      }
+      if (raf !== null) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = null;
+        fit.fit();
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        }
+      });
     };
     window.addEventListener("resize", onResize);
 
     return () => {
       window.removeEventListener("resize", onResize);
+      if (raf !== null) cancelAnimationFrame(raf);
       ws.close();
       wsRef.current = null;
       term.dispose();
