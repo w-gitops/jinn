@@ -68,6 +68,9 @@ export function ChatPane({
   const intermediateStartRef = useRef<number>(-1)
   const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(null)
   const sessionIdRef = useRef(sessionId)
+  const onMetaRef = useRef(onSessionMetaChange)
+  useEffect(() => { onMetaRef.current = onSessionMetaChange }, [onSessionMetaChange])
+  const justCompletedAtRef = useRef<number>(0)
 
   // Employee picker state for new chat
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
@@ -200,6 +203,7 @@ export function ChatPane({
         setStreamingText('')
         setLoading(false)
         intermediateStartRef.current = -1
+        justCompletedAtRef.current = Date.now()
 
         const completedSessionId = sid || (p.sessionId ? String(p.sessionId) : null)
         if (completedSessionId) {
@@ -252,7 +256,7 @@ export function ChatPane({
         title: session.title ? String(session.title) : undefined,
         employee: session.employee ? String(session.employee) : undefined,
       }
-      onSessionMetaChange?.(meta)
+      onMetaRef.current?.(meta)
 
       const history = session.messages || session.history || []
       const backendMessages: Message[] = Array.isArray(history)
@@ -292,7 +296,10 @@ export function ChatPane({
             return current
           })
         }
-        setLoading(true)
+        // Don't re-enter loading state if we just completed (status-write race guard)
+        if (Date.now() - justCompletedAtRef.current >= 3000) {
+          setLoading(true)
+        }
       } else {
         clearIntermediateMessages(id)
         intermediateStartRef.current = -1
@@ -308,7 +315,7 @@ export function ChatPane({
       setCurrentSession(null)
       intermediateStartRef.current = -1
     }
-  }, [onSessionMetaChange])
+  }, [])
 
   // Load on session change
   useEffect(() => {
@@ -327,13 +334,13 @@ export function ChatPane({
     setStreamingText('')
     setLoading(false)
     loadSession(sessionId)
-  }, [sessionId, loadSession])
+  }, [sessionId]) // loadSession is stable (useCallback with [] deps)
 
-  // Reload on reconnect
+  // Reload on reconnect — only fires when WS genuinely reconnects (connectionSeq changes)
   useEffect(() => {
-    if (!connectionSeq || !sessionId) return
-    loadSession(sessionId)
-  }, [connectionSeq, sessionId, loadSession])
+    if (!connectionSeq || !sessionIdRef.current) return
+    loadSession(sessionIdRef.current)
+  }, [connectionSeq]) // loadSession is stable; sessionIdRef.current is read at call time
 
   // Poll for completion while loading
   useEffect(() => {
@@ -350,7 +357,7 @@ export function ChatPane({
       }
     }, 5000)
     return () => clearInterval(timer)
-  }, [sessionId, loading, loadSession])
+  }, [sessionId, loading]) // loadSession is stable (useCallback with [] deps)
 
   const handleInterrupt = useCallback(async () => {
     if (!sessionId) return
