@@ -133,9 +133,23 @@ function ChatPage() {
     if (selectedId) writeViewMode(selectedId, mode)
   }, [selectedId])
 
-  // Re-read persisted view mode when active session changes
+  // When the active session changes, sync viewMode with the per-session persisted value.
+  // - Switching to an EXISTING session → load its stored mode.
+  // - Switching to a FRESHLY CREATED session (nothing stored yet) → inherit the current
+  //   local viewMode, so picking "CLI" on New Chat before sending opens the new session in CLI.
+  // - Going back to New Chat (selectedId = null) → keep viewMode as-is (don't force chat).
+  const viewModeRef = useRef(viewMode)
+  useEffect(() => { viewModeRef.current = viewMode }, [viewMode])
   useEffect(() => {
-    setViewMode(selectedId ? readViewMode(selectedId) : 'chat')
+    if (!selectedId) return
+    const raw = typeof window !== 'undefined'
+      ? window.localStorage.getItem(`jinn-view-mode-${selectedId}`)
+      : null
+    if (raw === 'cli' || raw === 'chat') {
+      setViewMode(raw)
+    } else {
+      writeViewMode(selectedId, viewModeRef.current)
+    }
   }, [selectedId])
   const [showMoreMenu, setShowMoreMenu] = useState(false)
   const [showSessionPicker, setShowSessionPicker] = useState(false)
@@ -483,32 +497,30 @@ function ChatPage() {
   // Build toolbar actions to pass into tab bar (desktop only content)
   const toolbarActions = (
     <>
-      {selectedId && (
-        <div className="flex items-center gap-0.5 rounded-full bg-[var(--fill-tertiary)] p-0.5">
-          <button
-            onClick={() => setAndPersistViewMode('chat')}
-            className={cn(
-              "rounded-full px-2.5 py-1 text-[11px] font-medium transition-all",
-              viewMode === 'chat'
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            Chat
-          </button>
-          <button
-            onClick={() => setAndPersistViewMode('cli')}
-            className={cn(
-              "rounded-full px-2.5 py-1 font-mono text-[11px] font-medium transition-all",
-              viewMode === 'cli'
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            CLI
-          </button>
-        </div>
-      )}
+      <div className="flex items-center gap-0.5 rounded-full bg-[var(--fill-tertiary)] p-0.5">
+        <button
+          onClick={() => setAndPersistViewMode('chat')}
+          className={cn(
+            "rounded-full px-2.5 py-1 text-[11px] font-medium transition-all",
+            viewMode === 'chat'
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground"
+          )}
+        >
+          Chat
+        </button>
+        <button
+          onClick={() => setAndPersistViewMode('cli')}
+          className={cn(
+            "rounded-full px-2.5 py-1 font-mono text-[11px] font-medium transition-all",
+            viewMode === 'cli'
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground"
+          )}
+        >
+          CLI
+        </button>
+      </div>
 
       {selectedId && (
         <button
