@@ -11,8 +11,11 @@ export function writeGatewayInfo(file: string, opts: { port: number; pid: number
     ptyPids: [],
   };
   const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(info, null, 2));
+  fs.writeFileSync(tmp, JSON.stringify(info, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, file);
+  // rename preserves the temp file's mode, but if the target already existed
+  // with broader permissions some filesystems may not reset them — be explicit.
+  fs.chmodSync(file, 0o600);
   return info;
 }
 
@@ -29,6 +32,7 @@ export function updateGatewayPtyPids(file: string, ptyPids: number[]): void {
   if (!info) return;
   info.ptyPids = ptyPids;
   const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(info, null, 2));
+  fs.writeFileSync(tmp, JSON.stringify(info, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, file);
+  fs.chmodSync(file, 0o600);
 }
