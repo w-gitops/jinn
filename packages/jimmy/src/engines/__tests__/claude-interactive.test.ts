@@ -1,4 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+// claude-interactive.ts imports node-pty at the top level. node-pty loads its
+// native module at import time and that fails on Linux CI runners (looks for
+// prebuilds/linux-x64/pty.node under a wrong relative path). TurnResolver is a
+// pure-JS class with zero PTY dependency, so mocking the module keeps the test
+// focused and CI-portable.
+vi.mock("node-pty", () => ({ spawn: vi.fn() }));
+
 import { TurnResolver } from "../claude-interactive.js";
 
 describe("TurnResolver", () => {
