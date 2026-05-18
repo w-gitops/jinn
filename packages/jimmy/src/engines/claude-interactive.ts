@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import * as pty from "node-pty";
 import type { InterruptibleEngine, EngineRunOpts, EngineResult, EngineRateLimitInfo, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
@@ -140,42 +141,63 @@ function parseTranscriptLine(line: string): StreamDelta[] {
   return out;
 }
 
-/** Tail a transcript file, emitting StreamDeltas for each appended line. */
+/** Tail a transcript file, emitting StreamDeltas for each appended line.
+ *  Uses async fs.promises so a slow disk read never blocks the event loop
+ *  (which would stall the hook server, PTY data callbacks, and every other
+ *  in-flight WS / HTTP handler). A single fd is kept open across reads and
+ *  reused; readNew() guards against re-entry with a queued flag so two
+ *  rapid fs.watch events can't race on the same fd. */
 function tailTranscript(filePath: string, onDelta: (d: StreamDelta) => void): TranscriptTailer {
   let offset = 0;
   try { offset = fs.statSync(filePath).size; } catch { /* file may not exist yet; offset stays 0 */ }
   let buf = "";
   let stopped = false;
+  let fh: fsp.FileHandle | undefined;
+  let reading = false;
+  let pending = false;
 
-  const readNew = () => {
+  const ensureOpen = async (): Promise<fsp.FileHandle | undefined> => {
+    if (fh) return fh;
+    try { fh = await fsp.open(filePath, "r"); } catch { return undefined; }
+    return fh;
+  };
+
+  const readNew = async (): Promise<void> => {
     if (stopped) return;
-    let stat: fs.Stats;
-    try { stat = fs.statSync(filePath); } catch { return; }
-    if (stat.size <= offset) return;
-    const fd = fs.openSync(filePath, "r");
+    if (reading) { pending = true; return; }
+    reading = true;
     try {
-      const chunk = Buffer.alloc(stat.size - offset);
-      fs.readSync(fd, chunk, 0, chunk.length, offset);
-      offset = stat.size;
-      buf += chunk.toString("utf-8");
-      const lines = buf.split("\n");
-      buf = lines.pop() ?? "";
-      for (const l of lines) {
-        for (const d of parseTranscriptLine(l)) {
-          onDelta(d);
+      do {
+        pending = false;
+        let stat: fs.Stats;
+        try { stat = await fsp.stat(filePath); } catch { return; }
+        if (stat.size <= offset) return;
+        const handle = await ensureOpen();
+        if (!handle || stopped) return;
+        const size = stat.size - offset;
+        const chunk = Buffer.alloc(size);
+        const { bytesRead } = await handle.read(chunk, 0, size, offset);
+        offset += bytesRead;
+        buf += chunk.subarray(0, bytesRead).toString("utf-8");
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const l of lines) {
+          for (const d of parseTranscriptLine(l)) {
+            onDelta(d);
+          }
         }
-      }
+      } while (pending && !stopped);
     } finally {
-      fs.closeSync(fd);
+      reading = false;
     }
   };
 
   let watcher: fs.FSWatcher | undefined;
-  try { watcher = fs.watch(filePath, () => readNew()); } catch { /* file may not exist yet */ }
+  try { watcher = fs.watch(filePath, () => { void readNew(); }); } catch { /* file may not exist yet */ }
   // One-shot drain shortly after attach in case the file was appended between
   // SessionStart hook and watcher install. NOT a poll — just a single catch-up.
-  const initialDrain = setTimeout(readNew, 30);
-  if (initialDrain.unref) initialDrain.unref();
+  const initialDrain = setTimeout(() => { void readNew(); }, 30);
+  initialDrain.unref();
   // Do NOT initial-drain at offset 0 — that would replay the resumed conversation
   // history as fresh deltas. fs.watch picks up new appends from `offset` onward.
 
@@ -184,6 +206,9 @@ function tailTranscript(filePath: string, onDelta: (d: StreamDelta) => void): Tr
       stopped = true;
       watcher?.close();
       clearTimeout(initialDrain);
+      // Close the fd off-thread; nothing waits on this.
+      void fh?.close().catch(() => { /* ignore */ });
+      fh = undefined;
     },
   };
 }
