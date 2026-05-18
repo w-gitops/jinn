@@ -662,36 +662,6 @@ export async function handleApiRequest(
       return json(res, entries);
     }
 
-    // POST /api/sessions/stub — create a session with a pre-populated assistant
-    // message but do NOT run the engine. Used for lazy onboarding.
-    if (method === "POST" && pathname === "/api/sessions/stub") {
-      const _parsed = await readJsonBody(req, res);
-      if (!_parsed.ok) return;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const body = _parsed.body as any;
-      const greeting = body.greeting || "Hey! Say hi when you're ready to get started.";
-      const config = context.getConfig();
-      const engineName = body.engine || config.engines.default;
-      const sessionKey = `web:${Date.now()}`;
-      const session = createSession({
-        engine: engineName,
-        source: "web",
-        sourceRef: sessionKey,
-        connector: "web",
-        sessionKey,
-        replyContext: { source: "web" },
-        employee: body.employee,
-        // Honor body.model so API clients can pin per-employee models.
-        // See POST /api/sessions handler below for the full rationale. Fixes #38.
-        model: body.model,
-        title: body.title,
-        portalName: config.portal?.portalName,
-      });
-      insertMessage(session.id, "assistant", greeting);
-      logger.info(`Stub session created: ${session.id} (model=${body.model || "default"})`);
-      return json(res, serializeSession(session, context), 201);
-    }
-
     // POST /api/sessions
     if (method === "POST" && pathname === "/api/sessions") {
       const _parsed = await readJsonBody(req, res);

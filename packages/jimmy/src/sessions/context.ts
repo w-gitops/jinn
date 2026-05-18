@@ -2,8 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Employee, JinnConfig } from "../shared/types.js";
 import { JINN_HOME, ORG_DIR, CRON_JOBS, DOCS_DIR } from "../shared/paths.js";
-import { scanOrg } from "../gateway/org.js";
-import { buildServiceRegistry } from "../gateway/services.js";
 
 /**
  * Token budget strategy:
@@ -131,19 +129,6 @@ export function buildContext(opts: {
       content: orgCtx,
       summary: `## Organization\nEmployee files are in \`${ORG_DIR}/\`. Read them directly when needed.`,
     });
-  }
-
-  // ── STANDARD: Available services (for employees only) ────────
-  if (opts.employee) {
-    const svcCtx = buildServicesContext(opts.employee, gatewayUrl);
-    if (svcCtx) {
-      sections.push({
-        tier: Tier.STANDARD,
-        marker: "## Available services",
-        content: svcCtx,
-        summary: `## Available services\nUse \`POST ${gatewayUrl}/api/org/cross-request\` to request services from other employees.`,
-      });
-    }
   }
 
   // ── STANDARD: Cron jobs (only enabled, with disabled count) ─
@@ -314,32 +299,6 @@ function buildChainOfCommand(
   lines.push(`- **Escalation path**: ${unique.join(" → ")}`);
 
   return "\n" + lines.join("\n") + "\n";
-}
-
-function buildServicesContext(employee: Employee, gatewayUrl: string): string | null {
-  try {
-    const registry = scanOrg();
-    const services = buildServiceRegistry(registry);
-    if (services.size === 0) return null;
-
-    const lines: string[] = ["## Available services"];
-    lines.push("Other employees provide the following services. To request one, use the cross-request API:");
-    lines.push(`\`POST ${gatewayUrl}/api/org/cross-request\` with \`{"fromEmployee": "${employee.name}", "service": "<name>", "prompt": "<what you need>"}\``);
-    lines.push("");
-
-    for (const [svcName, entry] of services) {
-      // Skip services from own department
-      if (entry.provider.department === employee.department) continue;
-      lines.push(`- **${svcName}** — ${entry.declaration.description} (provided by ${entry.provider.displayName}, ${entry.provider.department})`);
-    }
-
-    // If no external services remain after filtering, skip
-    if (lines.length <= 4) return null;
-
-    return lines.join("\n");
-  } catch {
-    return null;
-  }
 }
 
 function buildIdentity(portalName: string, operatorName?: string, language?: string): string {
