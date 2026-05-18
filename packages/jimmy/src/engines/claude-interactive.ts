@@ -217,7 +217,16 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
         try { cb(d); } catch { /* ignore subscriber errors */ }
       }
     });
-    proc.onExit(() => { onExitExtra?.(); });
+    proc.onExit(() => {
+      // Clear scrollback so a stale farewell (Claude's "Resume this session…" hint
+      // printed on SIGHUP shutdown) doesn't persist into the next PTY incarnation.
+      const s = this.streams.get(jinnSessionId);
+      if (s) s.buffer = "";
+      // Release the lifecycle entry so the dead handle isn't picked up by a future
+      // run() as "warm" — that would inject into a corpse.
+      this.lifecycle.releaseSession(jinnSessionId);
+      onExitExtra?.();
+    });
     (handle as any)._proc = proc;
     return handle;
   }
@@ -257,6 +266,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
   ensureIdleSpawn(jinnSessionId: string, opts: { claudeSessionId: string; cwd?: string; model?: string; bin?: string }): void {
     if (!opts.claudeSessionId) return;
     if (this.lifecycle.getWarm(jinnSessionId)) return;
+    if (this.active.has(jinnSessionId)) return; // a turn is starting/running — let run() spawn
     // Spawn claude in PTY with --resume <id>, no prompt. Include --settings so hooks fire for future turns.
     const settingsPath = writeSessionSettings(CLAUDE_SETTINGS_DIR, jinnSessionId, {
       sessionId: jinnSessionId,
@@ -364,6 +374,17 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
   /** Toggle KEEP ALIVE for a session — forwards to the PTY lifecycle manager. */
   setKeepAlive(sessionId: string, on: boolean): void {
     this.lifecycle.setKeepAlive(sessionId, on);
+  }
+
+  /** True iff a warm PTY exists for this session (in the lifecycle manager). */
+  hasWarmPty(sessionId: string): boolean {
+    return this.lifecycle.getWarm(sessionId) !== undefined;
+  }
+
+  /** Refresh the lifecycle's lastViewedAt for the session (called when a browser tab
+   *  views/interacts with the CLI terminal — keeps the warm PTY in the grace window). */
+  markViewed(sessionId: string): void {
+    this.lifecycle.markViewed(sessionId);
   }
 
   /** InterruptibleEngine.isAlive — true if a turn OR a warm PTY exists. */

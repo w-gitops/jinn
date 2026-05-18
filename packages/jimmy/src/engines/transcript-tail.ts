@@ -43,6 +43,7 @@ export interface TranscriptTailer {
 /** Tail a transcript file, emitting StreamDeltas for each appended line. */
 export function tailTranscript(filePath: string, onDelta: (d: StreamDelta) => void): TranscriptTailer {
   let offset = 0;
+  try { offset = fs.statSync(filePath).size; } catch { /* file may not exist yet; offset stays 0 */ }
   let snapshot = "";
   let buf = "";
   let stopped = false;
@@ -75,7 +76,8 @@ export function tailTranscript(filePath: string, onDelta: (d: StreamDelta) => vo
   try { watcher = fs.watch(filePath, () => readNew()); } catch { /* file may not exist yet */ }
   const poll = setInterval(readNew, 150); // 100ms batched writes — poll a bit slower
   if (poll.unref) poll.unref();
-  readNew();
+  // Do NOT initial-drain — that would replay the resumed conversation history
+  // as fresh deltas. Poll/watch picks up new appends from `offset` onward.
 
   return {
     stop() {

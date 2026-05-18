@@ -11,11 +11,13 @@ import { JINN_HOME } from "../shared/paths.js";
  * - on close, just unsubscribes — it does NOT kill the PTY (the lifecycle manager owns that)
  */
 export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: InteractiveClaudeEngine): void {
-  // If nothing is happening for this session yet (no warm PTY, empty scrollback),
-  // and we know the Claude session id from the DB, spawn an idle TUI so the user sees
-  // the conversation history immediately instead of a blank "Waiting" screen.
-  const initialScrollback = engine.getScrollback(sessionId);
-  if (!initialScrollback) {
+  // Mark viewed on attach so the lifecycle grace window engages while the user is here.
+  engine.markViewed(sessionId);
+
+  // If there's no warm PTY for this session, spawn one (loads the conversation history
+  // via `claude --resume`). We gate on hasWarmPty — NOT on scrollback emptiness —
+  // because stale farewell bytes from a dead PTY persist in the scrollback buffer.
+  if (!engine.hasWarmPty(sessionId)) {
     const session = getSession(sessionId);
     if (session?.engineSessionId) {
       engine.ensureIdleSpawn(sessionId, {
@@ -39,8 +41,10 @@ export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: Int
     let msg: any;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
     if (msg?.type === "stdin" && typeof msg.data === "string") {
+      engine.markViewed(sessionId);
       engine.writeStdin(sessionId, msg.data);
     } else if (msg?.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
+      engine.markViewed(sessionId);
       engine.resizePty(sessionId, msg.cols, msg.rows);
     }
   });
