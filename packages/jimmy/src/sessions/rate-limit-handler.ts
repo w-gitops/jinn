@@ -273,10 +273,15 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
       await new Promise<void>((r) => setTimeout(r, nextDelayMs));
       attempt++;
 
-      // Check if session was stopped while waiting.
+      // Check if session was stopped while waiting. We set status:"waiting"
+      // before entering this loop, so any other status (idle from a user
+      // POST /stop, error from a crash, etc.) means the user/system pulled
+      // us out of the waiting state and we should NOT retry. Previously this
+      // only caught "error", so user-initiated stop ("idle") leaked through
+      // and the retry fired against a session the user thought was stopped.
       const currentSession = getSession(session.id);
-      if (!currentSession || currentSession.status === "error") {
-        logger.info(`Session ${session.id} stopped while waiting for usage reset`);
+      if (!currentSession || currentSession.status !== "waiting") {
+        logger.info(`Session ${session.id} stopped while waiting for usage reset (status=${currentSession?.status ?? "deleted"})`);
         await hooks.onCancelled?.();
         return { kind: "cancelled" };
       }
