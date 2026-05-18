@@ -39,6 +39,14 @@ export function CliTerminal({
   const containerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const [hasOutput, setHasOutput] = useState(false);
+  // Mirror of `hasOutput` for use inside the WS onmessage closure, which is
+  // created once per session and would otherwise see a stale `false`.
+  const hasOutputRef = useRef(false);
+  // A reset frame can flip hasOutput back to false; keep the ref in sync.
+  const markHasOutput = (value: boolean) => {
+    hasOutputRef.current = value;
+    setHasOutput(value);
+  };
 
   useEffect(() => {
     // Defensive guard — parent already gates rendering on sessionId, but if a falsy
@@ -72,18 +80,18 @@ export function CliTerminal({
           const msg = JSON.parse(e.data);
           if (msg?.type === "reset") {
             term.reset();
-            setHasOutput(false);
+            markHasOutput(false);
             return;
           }
         } catch {
           // Not JSON — fall through and treat as plain text output.
         }
         term.write(e.data);
-        if (e.data.length > 0) setHasOutput(true);
+        if (!hasOutputRef.current && e.data.length > 0) markHasOutput(true);
       } else {
         const bytes = new Uint8Array(e.data as ArrayBuffer);
         term.write(bytes);
-        if (bytes.byteLength > 0) setHasOutput(true);
+        if (!hasOutputRef.current && bytes.byteLength > 0) markHasOutput(true);
       }
     };
 
