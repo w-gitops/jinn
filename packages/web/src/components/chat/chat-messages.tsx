@@ -1,5 +1,5 @@
 "use client"
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Message, MediaAttachment } from '@/lib/conversations'
 import { parseMedia } from '@/lib/conversations'
 import { FileAttachment } from './file-attachment'
@@ -385,6 +385,122 @@ function renderMedia(media: MediaAttachment[], isUser: boolean) {
   )
 }
 
+/* ── MessageRow — memoized per-message renderer ─────────── */
+
+interface MessageRowProps {
+  msg: Message
+  index: number
+  messages: Message[]
+}
+
+const MessageRow = React.memo(function MessageRow({ msg, index: i, messages }: MessageRowProps) {
+  const isUser = msg.role === 'user'
+  const isNotification = msg.role === 'notification'
+  const showTimestamp = shouldShowTimestamp(messages, i)
+  const media = msg.media || parseMedia(msg.content)
+
+  // Strip media URLs from text for display
+  let textContent = msg.content
+  if (media.length > 0 && !msg.media) {
+    media.forEach(m => {
+      textContent = textContent.replace(m.url, '')
+      textContent = textContent.replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+    })
+    textContent = textContent.trim()
+  }
+  // Hide auto-generated content labels for media-only messages
+  if (msg.media && msg.media.length > 0) {
+    const isAutoLabel = textContent.startsWith('[') && textContent.endsWith(']')
+    if (isAutoLabel) textContent = ''
+  }
+
+  // Memoize the expensive formatting — re-runs only when textContent changes
+  const formattedContent = useMemo(() => formatMessage(textContent), [textContent])
+
+  // Memoize timestamp formatting — avoids Date allocations on every parent re-render
+  const formattedTimestamp = useMemo(() => formatTimestamp(msg.timestamp), [msg.timestamp])
+
+  return (
+    <div key={msg.id || i}>
+      {/* Timestamp divider */}
+      {showTimestamp && (
+        <div className="text-center py-[var(--space-3)] text-[length:var(--text-caption2)] text-[var(--text-tertiary)]">
+          {formattedTimestamp}
+        </div>
+      )}
+
+      {/* Spacing between role switches */}
+      {!showTimestamp && i > 0 && (
+        <div className={messages[i - 1].role !== msg.role ? 'h-[var(--space-4)]' : 'h-[var(--space-1)]'} />
+      )}
+
+      {/* Notification message — centered system-style banner */}
+      {isNotification && (
+        <div className="flex justify-center px-[var(--space-4)] mb-[var(--space-1)]">
+          <div className="notification-msg-bubble flex items-start gap-[var(--space-2)] py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-md)] bg-[var(--fill-secondary)] border border-dashed border-[var(--separator)] text-[var(--text-secondary)] text-[length:var(--text-caption1)] leading-[var(--leading-relaxed)] max-w-[85%]">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5 opacity-60">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+            </svg>
+            <span>{formattedContent}</span>
+          </div>
+        </div>
+      )}
+
+      {/* User message */}
+      {isUser && (
+        <div className="flex flex-col items-end px-[var(--space-4)] mb-[var(--space-1)]">
+          {textContent && (
+            <div className="user-msg-bubble py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-lg)_var(--radius-lg)_var(--radius-sm)_var(--radius-lg)] bg-[var(--accent)] text-[var(--accent-contrast)] text-[length:var(--text-subheadline)] leading-[var(--leading-relaxed)] font-[var(--weight-medium)] shadow-[var(--shadow-subtle)]">
+              {formattedContent}
+            </div>
+          )}
+          {media.length > 0 && (
+            <div className="user-msg-bubble">
+              {renderMedia(media, true)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Assistant message */}
+      {!isUser && !isNotification && (
+        <div className="assistant-msg-row flex justify-start px-[var(--space-4)] mb-[var(--space-1)]">
+          <div className="assistant-msg-bubble flex flex-col">
+            {/* Text bubble */}
+            {textContent && (
+              <div className="py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-sm)_var(--radius-lg)_var(--radius-lg)_var(--radius-lg)] bg-[var(--material-thin)] border border-[var(--separator)] text-[var(--text-primary)] text-[length:var(--text-subheadline)] leading-[var(--leading-relaxed)]">
+                {formattedContent}
+              </div>
+            )}
+
+            {/* Media attachments */}
+            {media.length > 0 && renderMedia(media, false)}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+})
+
+/* ── StreamingBubble — always re-renders on every token ── */
+
+function StreamingBubble({ streamingText }: { streamingText: string }) {
+  const formattedContent = useMemo(
+    () => formatMessage(closePartialMarkdown(streamingText)),
+    [streamingText]
+  )
+  return (
+    <div className="assistant-msg-row flex justify-start px-[var(--space-4)] mb-[var(--space-1)]">
+      <div className="assistant-msg-bubble flex flex-col">
+        <div className="py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-sm)_var(--radius-lg)_var(--radius-lg)_var(--radius-lg)] bg-[var(--material-thin)] border border-[var(--separator)] text-[var(--text-primary)] text-[length:var(--text-subheadline)] leading-[var(--leading-relaxed)]">
+          {formattedContent}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ── Component ──────────────────────────────────────────── */
 
 interface ChatMessagesProps {
@@ -402,6 +518,7 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
   const isAtBottomRef = useRef(true)
   const [showScrollButton, setShowScrollButton] = useState(false)
   const scrollButtonTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const rafRef = useRef<number | null>(null)
 
   // IntersectionObserver: track whether the bottom sentinel is visible
   useEffect(() => {
@@ -433,18 +550,28 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
   }, [])
 
   // ResizeObserver: auto-scroll when content grows (new messages, streaming, image loads)
+  // rAF-batched to avoid calling scrollIntoView on every resize during streaming
   useEffect(() => {
     const content = contentRef.current
     if (!content) return
 
     const observer = new ResizeObserver(() => {
-      if (isAtBottomRef.current && bottomRef.current) {
-        bottomRef.current.scrollIntoView({ behavior: 'auto' })
-      }
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+      rafRef.current = requestAnimationFrame(() => {
+        if (isAtBottomRef.current && bottomRef.current) {
+          bottomRef.current.scrollIntoView({ behavior: 'auto' })
+        }
+      })
     })
 
     observer.observe(content)
-    return () => observer.disconnect()
+    return () => {
+      observer.disconnect()
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+    }
   }, [])
 
   // Session switch / initial load: snap to bottom instantly before paint
@@ -479,6 +606,9 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
     setShowScrollButton(false)
   }, [])
 
+  // Memoize grouped messages to avoid re-running on streaming-only re-renders
+  const groupedMessages = useMemo(() => groupMessages(messages), [messages])
+
   if (messages.length === 0 && !loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -497,7 +627,7 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
   return (
     <div ref={scrollContainerRef} className="chat-messages-scroll relative flex-1 overflow-y-auto overflow-x-hidden bg-[var(--bg)] min-h-0">
       <div ref={contentRef} className="py-[var(--space-3)] pb-[var(--space-6)]">
-      {groupMessages(messages).map((item) => {
+      {groupedMessages.map((item) => {
         if (item.kind === 'tool-group') {
           const firstMsg = item.msgs[0]
           const showTimestamp = shouldShowTimestamp(messages, item.startIndex)
@@ -519,99 +649,13 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
         }
 
         const { msg, index: i } = item
-        const isUser = msg.role === 'user'
-        const isNotification = msg.role === 'notification'
-        const showTimestamp = shouldShowTimestamp(messages, i)
-        const media = msg.media || parseMedia(msg.content)
-
-        // Strip media URLs from text for display
-        let textContent = msg.content
-        if (media.length > 0 && !msg.media) {
-          media.forEach(m => {
-            textContent = textContent.replace(m.url, '')
-            textContent = textContent.replace(/!\[[^\]]*\]\([^)]+\)/g, '')
-          })
-          textContent = textContent.trim()
-        }
-        // Hide auto-generated content labels for media-only messages
-        if (msg.media && msg.media.length > 0) {
-          const isAutoLabel = textContent.startsWith('[') && textContent.endsWith(']')
-          if (isAutoLabel) textContent = ''
-        }
-
         return (
-          <div key={msg.id || i}>
-            {/* Timestamp divider */}
-            {showTimestamp && (
-              <div className="text-center py-[var(--space-3)] text-[length:var(--text-caption2)] text-[var(--text-tertiary)]">
-                {formatTimestamp(msg.timestamp)}
-              </div>
-            )}
-
-            {/* Spacing between role switches */}
-            {!showTimestamp && i > 0 && (
-              <div className={messages[i - 1].role !== msg.role ? 'h-[var(--space-4)]' : 'h-[var(--space-1)]'} />
-            )}
-
-            {/* Notification message — centered system-style banner */}
-            {isNotification && (
-              <div className="flex justify-center px-[var(--space-4)] mb-[var(--space-1)]">
-                <div className="notification-msg-bubble flex items-start gap-[var(--space-2)] py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-md)] bg-[var(--fill-secondary)] border border-dashed border-[var(--separator)] text-[var(--text-secondary)] text-[length:var(--text-caption1)] leading-[var(--leading-relaxed)] max-w-[85%]">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5 opacity-60">
-                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                  </svg>
-                  <span>{formatMessage(textContent)}</span>
-                </div>
-              </div>
-            )}
-
-            {/* User message */}
-            {isUser && (
-              <div className="flex flex-col items-end px-[var(--space-4)] mb-[var(--space-1)]">
-                {textContent && (
-                  <div className="user-msg-bubble py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-lg)_var(--radius-lg)_var(--radius-sm)_var(--radius-lg)] bg-[var(--accent)] text-[var(--accent-contrast)] text-[length:var(--text-subheadline)] leading-[var(--leading-relaxed)] font-[var(--weight-medium)] shadow-[var(--shadow-subtle)]">
-                    {formatMessage(textContent)}
-                  </div>
-                )}
-                {media.length > 0 && (
-                  <div className="user-msg-bubble">
-                    {renderMedia(media, true)}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Assistant message */}
-            {!isUser && !isNotification && (
-              <div className="assistant-msg-row flex justify-start px-[var(--space-4)] mb-[var(--space-1)]">
-                <div className="assistant-msg-bubble flex flex-col">
-                  {/* Text bubble */}
-                  {textContent && (
-                    <div className="py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-sm)_var(--radius-lg)_var(--radius-lg)_var(--radius-lg)] bg-[var(--material-thin)] border border-[var(--separator)] text-[var(--text-primary)] text-[length:var(--text-subheadline)] leading-[var(--leading-relaxed)]">
-                      {formatMessage(textContent)}
-                    </div>
-                  )}
-
-                  {/* Media attachments */}
-                  {media.length > 0 && renderMedia(media, false)}
-                </div>
-              </div>
-            )}
-          </div>
+          <MessageRow key={msg.id || i} msg={msg} index={i} messages={messages} />
         )
       })}
 
-      {/* Streaming message — shows text as it arrives */}
-      {streamingText && (
-        <div className="assistant-msg-row flex justify-start px-[var(--space-4)] mb-[var(--space-1)]">
-          <div className="assistant-msg-bubble flex flex-col">
-            <div className="py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-sm)_var(--radius-lg)_var(--radius-lg)_var(--radius-lg)] bg-[var(--material-thin)] border border-[var(--separator)] text-[var(--text-primary)] text-[length:var(--text-subheadline)] leading-[var(--leading-relaxed)]">
-              {formatMessage(closePartialMarkdown(streamingText))}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Streaming message — shows text as it arrives, always re-renders */}
+      {streamingText && <StreamingBubble streamingText={streamingText} />}
 
       {/* Thinking indicator — visible while waiting, disappears when streaming or response arrives */}
       {loading && !streamingText && messages.length > 0 && (
