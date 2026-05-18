@@ -99,6 +99,7 @@ function buildInteractiveArgs(o: InteractiveArgsOpts): string[] {
   if (o.effortLevel && o.effortLevel !== "default") args.push("--effort", o.effortLevel);
   if (o.model) args.push("--model", o.model);
   args.push("--dangerously-skip-permissions");
+  args.push("--disallowedTools", "AskUserQuestion", "ExitPlanMode");
   args.push("--settings", o.settingsPath);
   if (o.cliFlags?.length) args.push(...o.cliFlags);
   if (o.mcpConfigPath) args.push("--mcp-config", o.mcpConfigPath);
@@ -225,7 +226,6 @@ function tailTranscript(filePath: string, onDelta: (d: StreamDelta) => void): Tr
 }
 
 export interface TurnResolverOpts {
-  turnTimeoutMs: number;
   fallbackSessionId: string | undefined;
   /** When true (warm-PTY reuse / post-idle-spawn), the resolver skips waiting for
    *  SessionStart (it already fired once at process start) and pre-fills the
@@ -233,7 +233,7 @@ export interface TurnResolverOpts {
   assumeStarted?: boolean;
 }
 
-/** State machine for one interactive turn: resolves after BOTH SessionStart + Stop, or on StopFailure/interrupt/timeout. */
+/** State machine for one interactive turn: resolves after BOTH SessionStart + Stop, or on StopFailure/interrupt. */
 export class TurnResolver {
   readonly promise: Promise<EngineResult>;
   private resolve!: (r: EngineResult) => void;
@@ -242,15 +242,9 @@ export class TurnResolver {
   private gotSessionStart = false;
   private stopPayload: HookPayload | undefined;
   private stopFailurePayload: HookPayload | undefined;
-  private timer: NodeJS.Timeout;
 
   constructor(private opts: TurnResolverOpts) {
     this.promise = new Promise((res) => { this.resolve = res; });
-    this.timer = setTimeout(() => this.settle({
-      sessionId: opts.fallbackSessionId ?? "",
-      result: "",
-      error: "Interactive turn timed out (watchdog)",
-    }), opts.turnTimeoutMs);
     if (opts.assumeStarted) {
       this.gotSessionStart = true;
       this.claudeSessionId = opts.fallbackSessionId;
@@ -310,7 +304,6 @@ export class TurnResolver {
   private settle(r: EngineResult): void {
     if (this.settled) return;
     this.settled = true;
-    clearTimeout(this.timer);
     this.resolve(r);
   }
 }
@@ -354,7 +347,6 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
   constructor(
     private lifecycle: PtyLifecycleManager,
     private hookRegistry: HookRegistry,
-    private cfg: { turnTimeoutMs: number },
   ) {}
 
   async run(opts: EngineRunOpts): Promise<EngineResult> {
@@ -374,7 +366,6 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
 
     const warm = this.lifecycle.getWarm(jinnSessionId);
     const resolver = new TurnResolver({
-      turnTimeoutMs: this.cfg.turnTimeoutMs,
       fallbackSessionId: opts.resumeSessionId,
       assumeStarted: !!warm, // warm PTY = SessionStart already fired (turn 1 or idle spawn)
     });
@@ -404,7 +395,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       this.injectPrompt(warm, opts);
     } else {
       const handle = this.spawn(jinnSessionId, opts, settingsPath);
-      this.lifecycle.adopt(jinnSessionId, handle, { cronOrigin: opts.source === "cron" });
+      this.lifecycle.adopt(jinnSessionId, handle);
       this.lifecycle.turnStarted(jinnSessionId);
     }
 
@@ -441,6 +432,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       if (v !== undefined) env[k] = v;
     }
     env.CLAUDE_CODE_NO_FLICKER = "1"; // fullscreen mode — discrete bottom slot for CLI rendering
+    env.CLAUDE_CODE_RESUME_TOKEN_THRESHOLD = "999999999"; // suppress "resume from summary?" picker — always full-resume
     return env;
   }
 
@@ -548,28 +540,28 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     });
   }
 
-  /** Spawn an idle PTY that just loads the TUI on an existing Claude session id (no prompt → no turn).
-   *  Used by /ws/pty/:sessionId so opening a CLI-mode chat shows the conversation history.
-   *  Does NOTHING if a warm PTY already exists for the session. Does NOTHING if claudeSessionId is empty. */
-  ensureIdleSpawn(jinnSessionId: string, opts: { claudeSessionId: string; cwd?: string; model?: string; bin?: string }): void {
-    if (!opts.claudeSessionId) return;
+  /** Spawn an idle PTY for the CLI/xterm view. If a claudeSessionId is provided,
+   *  resumes that session; otherwise spawns a fresh `claude` so a brand-new CLI-mode
+   *  session shows the TUI before the user types anything.
+   *  Does NOTHING if a warm PTY already exists or a turn is starting. */
+  ensureIdleSpawn(jinnSessionId: string, opts: { claudeSessionId?: string; cwd?: string; model?: string; bin?: string }): void {
     if (this.lifecycle.getWarm(jinnSessionId)) return;
     if (this.active.has(jinnSessionId)) return; // a turn is starting/running — let run() spawn
-    // Spawn claude in PTY with --resume <id>, no prompt. Include --settings so hooks fire for future turns.
     const settingsPath = writeSessionSettings(CLAUDE_SETTINGS_DIR, jinnSessionId, {
       sessionId: jinnSessionId,
       relayScript: HOOK_RELAY_SCRIPT,
     });
     const args: string[] = [
-      "--resume", opts.claudeSessionId,
       "--chrome",
       "--dangerously-skip-permissions",
+      "--disallowedTools", "AskUserQuestion", "ExitPlanMode",
       "--settings", settingsPath,
     ];
+    if (opts.claudeSessionId) args.unshift("--resume", opts.claudeSessionId);
     if (opts.model) args.push("--model", opts.model);
     const env = this.buildPtyEnv();
     const bin = opts.bin || "claude";
-    logger.info(`InteractiveClaudeEngine ensureIdleSpawn for session ${jinnSessionId} (resume ${opts.claudeSessionId})`);
+    logger.info(`InteractiveClaudeEngine ensureIdleSpawn for session ${jinnSessionId} (resume ${opts.claudeSessionId || "none — fresh"})`);
     const proc = pty.spawn(bin, args, {
       name: "xterm-256color",
       cols: 120,
@@ -578,8 +570,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       env,
     });
     const handle = this.wireProcToStream(jinnSessionId, proc);
-    this.lifecycle.adopt(jinnSessionId, handle, { cronOrigin: false });
-    this.lifecycle.markViewed(jinnSessionId); // grace-period applies — keeps it warm while user views
+    this.lifecycle.adopt(jinnSessionId, handle);
   }
 
   /** Inject a follow-up prompt into a warm PTY via bracketed-paste + CR. */
@@ -672,20 +663,17 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     return this.active.has(sessionId);
   }
 
-  /** Toggle KEEP ALIVE for a session — forwards to the PTY lifecycle manager. */
-  setKeepAlive(sessionId: string, on: boolean): void {
-    this.lifecycle.setKeepAlive(sessionId, on);
-  }
-
   /** True iff a warm PTY exists for this session (in the lifecycle manager). */
   hasWarmPty(sessionId: string): boolean {
     return this.lifecycle.getWarm(sessionId) !== undefined;
   }
 
-  /** Refresh the lifecycle's lastViewedAt for the session (called when a browser tab
-   *  views/interacts with the CLI terminal — keeps the warm PTY in the grace window). */
-  markViewed(sessionId: string): void {
-    this.lifecycle.markViewed(sessionId);
+  /** Track viewing state from the frontend. Called by pty-ws on `viewing` messages
+   *  from CliTerminal (mount/unmount + Page Visibility). Ref-counted so multiple tabs
+   *  viewing the same session keep it warm until the last one leaves. */
+  setViewing(sessionId: string, viewing: boolean): void {
+    if (viewing) this.lifecycle.viewerEnter(sessionId);
+    else this.lifecycle.viewerLeave(sessionId);
   }
 
   /** InterruptibleEngine.isAlive — true if a turn OR a warm PTY exists. */

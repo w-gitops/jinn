@@ -407,12 +407,16 @@ export function ChatPane({
             selectedEmployee,
             attachmentIds,
           })
+          if (viewMode === 'cli') (params as Record<string, unknown>).mode = 'interactive'
           const session = (await api.createSession(params)) as Record<string, unknown>
           sid = String(session.id)
           onSessionCreated?.(sid, userMsg)
           onRefresh?.()
         } else {
-          await api.sendMessage(sid, { message, interrupt: interrupt || undefined, attachments: attachmentIds })
+          // CLI view → route to the interactive PTY engine so the user sees the prompt
+          // get injected into the live xterm + claude's streaming response.
+          const mode = viewMode === 'cli' ? 'interactive' : undefined
+          await api.sendMessage(sid, { message, interrupt: interrupt || undefined, attachments: attachmentIds, mode })
           onRefresh?.()
         }
       } catch (err) {
@@ -583,8 +587,8 @@ export function ChatPane({
           </div>
         </div>
       )}
-      {/* Employee picker for new chat */}
-      {!sessionId && messages.length === 0 && viewMode === 'chat' && (
+      {/* Employee picker for new chat (any view mode — the CLI terminal mounts after first message creates the session) */}
+      {!sessionId && messages.length === 0 && (
         <div className="flex flex-1 items-center justify-center">
           <ChatEmployeePicker
             employees={pickerEmployees}
@@ -604,8 +608,8 @@ export function ChatPane({
         <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
       ) : null}
 
-      {/* Queue panel */}
-      {viewMode === 'chat' && (
+      {/* Queue panel — hidden in the live xterm view */}
+      {!(viewMode === 'cli' && sessionId) && (
         <QueuePanel
           sessionId={sessionId}
           events={events}
@@ -613,8 +617,9 @@ export function ChatPane({
         />
       )}
 
-      {/* Input */}
-      {viewMode === 'chat' && (
+      {/* Input — chat-style composer for chat view AND for the CLI empty state
+          (no session yet). Once a CLI session exists, the CliTerminal hosts its own overlay input. */}
+      {!(viewMode === 'cli' && sessionId) && (
         <ChatInput
           disabled={false}
           loading={loading}

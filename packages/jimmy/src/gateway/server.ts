@@ -162,64 +162,52 @@ export async function startGateway(
   // Hook registry — shared by the interactive engine and the internal hook route.
   const hookRegistry = new HookRegistry();
 
-  // Set up engines — Claude engine selection depends on configured mode.
-  // In "interactive" mode, ALL Claude turns (cron, connectors, web Chat, web CLI)
-  // go through InteractiveClaudeEngine (PTY, no -p).
-  let claudeEngine: ClaudeEngine | InteractiveClaudeEngine;
-  let claudeLifecycle: PtyLifecycleManager | null = null;
-  if (claudeCfg.mode === "interactive") {
-    // Copy the hook-relay asset next to JINN_HOME so spawned Claude PTYs can find it.
-    // At runtime server.ts lives at dist/src/gateway/; the asset stays uncompiled in
-    // packages/jimmy/assets/. Try the known candidate locations and use the first one
-    // that exists.
-    const relayCandidates = [
-      path.join(__dirname, "..", "..", "..", "assets", "hook-relay.mjs"), // dist/src/gateway -> packages/jimmy/assets
-      path.join(__dirname, "..", "..", "assets", "hook-relay.mjs"), // src/gateway -> packages/jimmy/assets
-      path.join(__dirname, "..", "assets", "hook-relay.mjs"), // dist/assets fallback
-    ];
-    try {
-      const relaySrc = relayCandidates.find((p) => fs.existsSync(p));
-      if (relaySrc) {
-        fs.copyFileSync(relaySrc, HOOK_RELAY_SCRIPT);
-      } else {
-        logger.warn(`hook-relay.mjs asset not found in any candidate location; interactive Claude hooks may not work`);
-      }
-    } catch (err) {
-      logger.warn(`Failed to copy hook-relay.mjs: ${err instanceof Error ? err.message : err}`);
-    }
+  // Claude engines — split by use case:
+  //   • ClaudeEngine (headless `claude -p`): used by chat, connectors, cron — short-lived, one spawn per turn.
+  //   • InteractiveClaudeEngine (PTY): used only by /ws/pty/:sessionId for the live xterm CLI view.
+  const claudeEngine = new ClaudeEngine();
 
-    // Seed trust for the Jinn project dir so interactive Claude doesn't prompt.
-    try {
-      seedTrust(path.join(os.homedir(), ".claude.json"), JINN_HOME);
-    } catch (err) {
-      logger.warn(`Failed to seed Claude trust: ${err instanceof Error ? err.message : err}`);
+  // Copy hook-relay asset next to JINN_HOME so PTY-spawned Claude can find it.
+  const relayCandidates = [
+    path.join(__dirname, "..", "..", "..", "assets", "hook-relay.mjs"),
+    path.join(__dirname, "..", "..", "assets", "hook-relay.mjs"),
+    path.join(__dirname, "..", "assets", "hook-relay.mjs"),
+  ];
+  try {
+    const relaySrc = relayCandidates.find((p) => fs.existsSync(p));
+    if (relaySrc) {
+      fs.copyFileSync(relaySrc, HOOK_RELAY_SCRIPT);
+    } else {
+      logger.warn(`hook-relay.mjs asset not found in any candidate location; interactive Claude hooks may not work`);
     }
-
-    const refreshPtyPids = () => {
-      try { updateGatewayPtyPids(GATEWAY_INFO_FILE, claudeLifecycle!.livePids()); } catch { /* best effort */ }
-    };
-    claudeLifecycle = new PtyLifecycleManager({
-      graceWindowMs: claudeCfg.graceWindowMs!,
-      idleTimeoutMs: claudeCfg.idleTimeoutMs!,
-      maxLivePtys: claudeCfg.maxLivePtys!,
-      onAdopt: (_id) => refreshPtyPids(),
-      onCleanup: (id) => {
-        cleanupSessionSettings(CLAUDE_SETTINGS_DIR, id);
-        hookRegistry.unregister(id);
-        refreshPtyPids();
-      },
-    });
-    claudeEngine = new InteractiveClaudeEngine(claudeLifecycle, hookRegistry, {
-      turnTimeoutMs: claudeCfg.turnTimeoutMs!,
-    });
-    logger.info("Claude engine: INTERACTIVE mode (PTY, bills as cc_entrypoint=cli — used for ALL Claude turns)");
-  } else {
-    claudeEngine = new ClaudeEngine();
-    logger.info("Claude engine: headless mode (claude -p)");
+  } catch (err) {
+    logger.warn(`Failed to copy hook-relay.mjs: ${err instanceof Error ? err.message : err}`);
   }
+
+  // Seed trust for the Jinn project dir so interactive Claude doesn't prompt.
+  try {
+    seedTrust(path.join(os.homedir(), ".claude.json"), JINN_HOME);
+  } catch (err) {
+    logger.warn(`Failed to seed Claude trust: ${err instanceof Error ? err.message : err}`);
+  }
+
+  const claudeLifecycle: PtyLifecycleManager = new PtyLifecycleManager({
+    maxLivePtys: claudeCfg.maxLivePtys!,
+    onAdopt: (_id) => {
+      try { updateGatewayPtyPids(GATEWAY_INFO_FILE, claudeLifecycle.livePids()); } catch { /* best effort */ }
+    },
+    onCleanup: (id) => {
+      cleanupSessionSettings(CLAUDE_SETTINGS_DIR, id);
+      hookRegistry.unregister(id);
+      try { updateGatewayPtyPids(GATEWAY_INFO_FILE, claudeLifecycle.livePids()); } catch { /* best effort */ }
+    },
+  });
+  const interactiveClaudeEngine = new InteractiveClaudeEngine(claudeLifecycle, hookRegistry);
+  logger.info("Claude engines initialized: headless (chat/cron/connectors) + interactive PTY (CLI view)");
+
   const codexEngine = new CodexEngine();
   const geminiEngine = new GeminiEngine();
-  const engines = new Map<string, ClaudeEngine | InteractiveClaudeEngine | InstanceType<typeof CodexEngine> | InstanceType<typeof GeminiEngine>>();
+  const engines = new Map<string, ClaudeEngine | InstanceType<typeof CodexEngine> | InstanceType<typeof GeminiEngine>>();
   engines.set("claude", claudeEngine);
   engines.set("codex", codexEngine);
   engines.set("gemini", geminiEngine);
@@ -680,6 +668,7 @@ export async function startGateway(
     reloadConnectorInstances,
     hookRegistry,
     hookSecret: gatewayInfo.secret,
+    interactiveClaudeEngine,
   };
 
   // Replay any pending web queue items (e.g. gateway restart mid-run)
@@ -752,18 +741,13 @@ export async function startGateway(
       });
       return;
     }
-    // Dedicated per-session PTY channel: /ws/pty/:sessionId (interactive mode only).
+    // Dedicated per-session PTY channel for the live xterm CLI view.
     const ptyMatch = reqUrl.split("?")[0].match(/^\/ws\/pty\/([^/]+)$/);
     if (ptyMatch) {
       const sessionId = decodeURIComponent(ptyMatch[1]);
-      const interactive = claudeEngine instanceof InteractiveClaudeEngine ? claudeEngine : null;
-      if (interactive) {
-        ptyWss.handleUpgrade(req, socket, head, (ws) => {
-          attachPtyWebSocket(ws, sessionId, interactive);
-        });
-      } else {
-        socket.destroy();
-      }
+      ptyWss.handleUpgrade(req, socket, head, (ws) => {
+        attachPtyWebSocket(ws, sessionId, interactiveClaudeEngine);
+      });
       return;
     }
     socket.destroy();
@@ -804,10 +788,7 @@ export async function startGateway(
       employeeRegistry = scanOrg();
       logger.info(`Org directory changed, reloaded ${employeeRegistry.size} employee(s)`);
       // Org/persona changed — drop warm PTYs so the next turn respawns with fresh --append-system-prompt.
-      const interactive = claudeEngine instanceof InteractiveClaudeEngine ? claudeEngine : null;
-      if (interactive) {
-        interactive.killAll();
-      }
+      interactiveClaudeEngine.killAll();
       emit("org:changed", {});
     },
     onSkillsChange: () => {
@@ -891,15 +872,14 @@ export async function startGateway(
 
     // Terminate live engine subprocesses after marking sessions.
     claudeEngine.killAll();
+    interactiveClaudeEngine.killAll();
     codexEngine.killAll();
 
-    // Dispose the PTY lifecycle manager (interactive mode only).
-    if (claudeLifecycle) {
-      try {
-        claudeLifecycle.dispose();
-      } catch (err) {
-        logger.warn(`Failed to dispose PTY lifecycle manager: ${err instanceof Error ? err.message : err}`);
-      }
+    // Dispose the PTY lifecycle manager.
+    try {
+      claudeLifecycle.dispose();
+    } catch (err) {
+      logger.warn(`Failed to dispose PTY lifecycle manager: ${err instanceof Error ? err.message : err}`);
     }
 
     // Dispose the hook registry so its periodic sweep timer is cleared. The

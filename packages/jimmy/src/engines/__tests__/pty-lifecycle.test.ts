@@ -9,62 +9,66 @@ function fakeHandle() {
 
 describe("PtyLifecycleManager", () => {
   it("registers a PTY and reports it as warm", () => {
-    const m = new PtyLifecycleManager({ graceWindowMs: 1000, idleTimeoutMs: 10000, maxLivePtys: 8 });
+    const m = new PtyLifecycleManager({ maxLivePtys: 8 });
     const h = fakeHandle();
-    m.adopt("sess-1", h, { cronOrigin: false });
+    m.adopt("sess-1", h);
     expect(m.getWarm("sess-1")).toBe(h);
   });
 
   it("releaseSession kills the PTY, cleans the handle, and fires onCleanup", () => {
     let cleaned = "";
-    const m = new PtyLifecycleManager({ graceWindowMs: 1000, idleTimeoutMs: 10000, maxLivePtys: 8, onCleanup: (id) => { cleaned = id; } });
+    const m = new PtyLifecycleManager({ maxLivePtys: 8, onCleanup: (id) => { cleaned = id; } });
     const h = fakeHandle();
-    m.adopt("sess-2", h, { cronOrigin: false });
+    m.adopt("sess-2", h);
     m.releaseSession("sess-2");
     expect(h.killed).toBe(true);
     expect(m.getWarm("sess-2")).toBeUndefined();
     expect(cleaned).toBe("sess-2");
   });
 
-  it("a cron-origin PTY is killed on turnEnded even if keepAlive is requested", () => {
-    const m = new PtyLifecycleManager({ graceWindowMs: 1000, idleTimeoutMs: 10000, maxLivePtys: 8 });
+  it("a PTY with no viewer dies within the grace window after turnEnded", () => {
+    // No viewer, no turn → grace window starts → reevaluate kills since lastTurnEndedAt is 0… actually
+    // lastTurnEndedAt is set on turnEnded, so within the 10-min cap it stays alive.
+    const m = new PtyLifecycleManager({ maxLivePtys: 8 });
     const h = fakeHandle();
-    m.adopt("sess-3", h, { cronOrigin: true });
-    m.setKeepAlive("sess-3", true);
+    m.adopt("sess-3", h);
+    m.turnStarted("sess-3");
     m.turnEnded("sess-3");
-    expect(h.killed).toBe(true);
+    expect(h.killed).toBe(false); // still inside CLI_KEEPALIVE_AFTER_LEAVE_MS
   });
 
-  it("a keepAlive non-cron PTY survives turnEnded", () => {
-    const m = new PtyLifecycleManager({ graceWindowMs: 1000, idleTimeoutMs: 10000, maxLivePtys: 8 });
+  it("a PTY with an active viewer survives turnEnded indefinitely (within the keep-alive cap)", () => {
+    const m = new PtyLifecycleManager({ maxLivePtys: 8 });
     const h = fakeHandle();
-    m.adopt("sess-4", h, { cronOrigin: false });
-    m.setKeepAlive("sess-4", true);
+    m.adopt("sess-4", h);
+    m.viewerEnter("sess-4");
+    m.turnStarted("sess-4");
     m.turnEnded("sess-4");
     expect(h.killed).toBe(false);
   });
 
-  it("isAtCapacity is true once maxLivePtys is reached", () => {
-    const m = new PtyLifecycleManager({ graceWindowMs: 1000, idleTimeoutMs: 10000, maxLivePtys: 2 });
-    m.adopt("a", fakeHandle(), { cronOrigin: false });
-    m.adopt("b", fakeHandle(), { cronOrigin: false });
-    expect(m.isAtCapacity()).toBe(true);
-  });
-
-  it("markViewed extends life past turnEnded within the grace window", () => {
-    const m = new PtyLifecycleManager({ graceWindowMs: 60_000, idleTimeoutMs: 600_000, maxLivePtys: 8 });
+  it("releases the PTY when the last viewer leaves and no turn has ever run", () => {
+    const m = new PtyLifecycleManager({ maxLivePtys: 8 });
     const h = fakeHandle();
-    m.adopt("sess-5", h, { cronOrigin: false });
-    m.markViewed("sess-5");
-    m.turnEnded("sess-5");
+    m.adopt("sess-5", h);
+    m.viewerEnter("sess-5");
+    m.viewerLeave("sess-5");
+    // viewingEndedAt was just set to now → still inside 10-min grace → alive
     expect(h.killed).toBe(false);
   });
 
+  it("isAtCapacity is true once maxLivePtys is reached", () => {
+    const m = new PtyLifecycleManager({ maxLivePtys: 2 });
+    m.adopt("a", fakeHandle());
+    m.adopt("b", fakeHandle());
+    expect(m.isAtCapacity()).toBe(true);
+  });
+
   it("killAll kills every live PTY", () => {
-    const m = new PtyLifecycleManager({ graceWindowMs: 1000, idleTimeoutMs: 10000, maxLivePtys: 8 });
+    const m = new PtyLifecycleManager({ maxLivePtys: 8 });
     const a = fakeHandle(), b = fakeHandle();
-    m.adopt("a", a, { cronOrigin: false });
-    m.adopt("b", b, { cronOrigin: false });
+    m.adopt("a", a);
+    m.adopt("b", b);
     m.killAll();
     expect(a.killed).toBe(true);
     expect(b.killed).toBe(true);

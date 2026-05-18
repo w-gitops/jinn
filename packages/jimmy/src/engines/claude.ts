@@ -76,7 +76,7 @@ export class ClaudeEngine implements InterruptibleEngine {
 
   private async runOnce(opts: EngineRunOpts): Promise<EngineResult> {
     const streaming = !!opts.onStream;
-    const args = ["-p", "--output-format", streaming ? "stream-json" : "json", "--verbose", "--dangerously-skip-permissions", "--chrome"];
+    const args = ["-p", "--output-format", streaming ? "stream-json" : "json", "--verbose", "--dangerously-skip-permissions", "--chrome", "--disallowedTools", "AskUserQuestion", "ExitPlanMode"];
 
     if (streaming) args.push("--include-partial-messages");
     if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);

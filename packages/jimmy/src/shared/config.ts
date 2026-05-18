@@ -5,16 +5,9 @@ import type { JinnConfig } from "./types.js";
 
 type ClaudeEngineConfig = JinnConfig["engines"]["claude"];
 
-export function normalizeClaudeEngineConfig(raw: ClaudeEngineConfig): Required<Pick<ClaudeEngineConfig,
-  "mode" | "idleTimeoutMs" | "graceWindowMs" | "turnTimeoutMs" | "maxLivePtys">> & ClaudeEngineConfig {
-  const mode = raw.mode === "interactive" ? "interactive" : "headless";
+export function normalizeClaudeEngineConfig(raw: ClaudeEngineConfig): Required<Pick<ClaudeEngineConfig, "maxLivePtys">> & ClaudeEngineConfig {
   return {
     ...raw,
-    mode,
-    keepAlive: raw.keepAlive ?? false,
-    idleTimeoutMs: raw.idleTimeoutMs ?? 1_800_000,
-    graceWindowMs: raw.graceWindowMs ?? 300_000,
-    turnTimeoutMs: raw.turnTimeoutMs ?? 600_000,
     maxLivePtys: raw.maxLivePtys ?? 8,
   };
 }

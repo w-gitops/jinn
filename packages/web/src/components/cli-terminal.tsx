@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { usePageVisibility } from "../hooks/use-page-visibility";
 
 function getPtyWsUrl(sessionId: string): string {
   const gatewayUrl = process.env.NEXT_PUBLIC_GATEWAY_URL;
@@ -37,6 +38,7 @@ export function CliTerminal({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const visible = usePageVisibility();
   const [hasOutput, setHasOutput] = useState(false);
   // Mirror of `hasOutput` for use inside the WS onmessage closure, which is
   // created once per session and would otherwise see a stale `false`.
@@ -57,6 +59,8 @@ export function CliTerminal({
       convertEol: true,
       fontSize: 13,
       theme: { background: "#0b0b0c" },
+      scrollback: 5000,
+      scrollOnUserInput: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -96,6 +100,9 @@ export function CliTerminal({
 
     ws.onopen = () => {
       ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      // Initial viewing report — backend ref-counts viewers and uses this to
+      // keep the PTY warm (or auto-respawn on return if it was reaped).
+      ws.send(JSON.stringify({ type: "viewing", viewing: document.visibilityState === "visible" }));
     };
 
     // Coalesce a burst of `resize` events (window drag, mobile rotation,
@@ -117,11 +124,24 @@ export function CliTerminal({
     return () => {
       window.removeEventListener("resize", onResize);
       if (raf !== null) cancelAnimationFrame(raf);
+      // Explicit viewing:false before close so the backend decrements promptly
+      // (close handler also decrements as a safety net, but this is cleaner).
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: "viewing", viewing: false })); } catch { /* ignore */ }
+      }
       ws.close();
       wsRef.current = null;
       term.dispose();
     };
   }, [sessionId]);
+
+  // Page Visibility — emit on backgrounding/foregrounding so the backend can
+  // start the 10-min grace timer (hidden) or trigger auto-resume respawn (visible).
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try { ws.send(JSON.stringify({ type: "viewing", viewing: visible })); } catch { /* ignore */ }
+  }, [visible]);
 
   const handleOverlaySend = (text: string) => {
     const trimmed = text.trim();
@@ -166,8 +186,8 @@ export function CliTerminal({
   }
 
   return (
-    <div style={{ position: "relative", height: "100%" }}>
-      <div ref={containerRef} style={{ height: "100%" }} />
+    <div style={{ position: "relative", height: "100%", width: "100%", overflow: "hidden" }}>
+      <div ref={containerRef} style={{ height: "100%", width: "100%", overflow: "hidden" }} />
       {!hasOutput && (
         <div
           style={{
@@ -210,8 +230,8 @@ function CliOverlayInput({ onSend }: { onSend: (t: string) => void }) {
         position: "absolute",
         left: 0,
         right: 0,
-        bottom: 0,
-        height: "5.5rem",
+        bottom: "1.7rem",
+        height: "2.6rem",
         background: "#0b0b0c",
         color: "#eee",
         border: "1px solid #333",

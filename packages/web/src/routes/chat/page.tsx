@@ -95,29 +95,8 @@ function ChatPage() {
     }
   }, [])
   const [viewMode, setViewMode] = useState<ViewMode>('chat')
-  // Per-session KEEP ALIVE toggle (reflects the session's keep_alive flag)
-  const [keepAlive, setKeepAlive] = useState(false)
   // Pending user message from new-chat send — passed to the new ChatPane so the user bubble appears before loadSession resolves
   const [pendingUserMessage, setPendingUserMessage] = useState<{ sessionId: string; message: Message } | null>(null)
-
-  // Sync KEEP ALIVE state when the active session changes
-  useEffect(() => {
-    if (!selectedId) { setKeepAlive(false); return }
-    let cancelled = false
-    api.getSession(selectedId)
-      .then((s) => { if (!cancelled) setKeepAlive(Boolean(s?.keepAlive)) })
-      .catch(() => { /* ignore — leave default */ })
-    return () => { cancelled = true }
-  }, [selectedId])
-
-  const toggleKeepAlive = useCallback(() => {
-    if (!selectedId) return
-    const next = !keepAlive
-    setKeepAlive(next) // optimistic
-    api.updateSession(selectedId, { keepAlive: next }).catch(() => {
-      setKeepAlive(!next) // revert on failure
-    })
-  }, [selectedId, keepAlive])
 
   // Persist view mode per session
   const setAndPersistViewMode = useCallback((mode: ViewMode) => {
@@ -529,21 +508,6 @@ function ChatPage() {
           CLI
         </button>
       </div>
-
-      {selectedId && (
-        <button
-          onClick={toggleKeepAlive}
-          title="Keep the Claude session warm between turns"
-          className={cn(
-            "rounded-full px-2.5 py-1 text-[11px] font-medium transition-all",
-            keepAlive
-              ? "bg-[var(--accent)] text-white shadow-sm"
-              : "bg-[var(--fill-tertiary)] text-muted-foreground hover:text-foreground"
-          )}
-        >
-          KEEP ALIVE
-        </button>
-      )}
 
       <div className="hidden lg:block">{moreMenu}</div>
 

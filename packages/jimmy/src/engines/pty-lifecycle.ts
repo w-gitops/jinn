@@ -1,18 +1,16 @@
-interface LifecycleInputs {
-  turnRunning: boolean;
-  keepAlive: boolean;
-  cronOrigin: boolean;
-  lastViewedAt: number; // epoch ms, 0 = never
-  now: number;
-  graceWindowMs: number;
-}
+/**
+ * PTY lifecycle for the interactive Claude engine (CLI/xterm view).
+ *
+ * Rules:
+ *   - A PTY stays alive while: a turn is running, OR at least one user is viewing
+ *     the session, OR less than CLI_KEEPALIVE_AFTER_LEAVE_MS has elapsed since
+ *     BOTH viewing ended AND the last turn ended (whichever happened later).
+ *   - A 30s sweep enforces the grace cap once both conditions lapse.
+ *   - When at capacity (maxLivePtys), adopt() evicts the LRU eligible entry
+ *     (no viewer, no running turn, oldest viewingEndedAt/lastTurnEndedAt).
+ */
 
-function shouldStayAlive(i: LifecycleInputs): boolean {
-  if (i.turnRunning) return true;
-  if (i.keepAlive && !i.cronOrigin) return true;
-  if (i.lastViewedAt > 0 && i.now - i.lastViewedAt <= i.graceWindowMs) return true;
-  return false;
-}
+export const CLI_KEEPALIVE_AFTER_LEAVE_MS = 10 * 60 * 1000;
 
 export interface PtyHandle {
   pid: number;
@@ -21,8 +19,6 @@ export interface PtyHandle {
 }
 
 export interface PtyLifecycleOpts {
-  graceWindowMs: number;
-  idleTimeoutMs: number;
   maxLivePtys: number;
   /** Called after a new PTY session is adopted — used to refresh gateway.json pids. */
   onAdopt?: (sessionId: string) => void;
@@ -32,11 +28,18 @@ export interface PtyLifecycleOpts {
 
 interface Entry {
   handle: PtyHandle;
-  cronOrigin: boolean;
-  keepAlive: boolean;
   turnRunning: boolean;
-  lastViewedAt: number;
-  lastActivityAt: number;
+  viewerCount: number;
+  viewingEndedAt: number; // epoch ms; 0 while at least one viewer is attached
+  lastTurnEndedAt: number; // epoch ms; 0 if no turn has completed yet
+}
+
+function shouldStayAlive(e: Entry, now: number): boolean {
+  if (e.turnRunning) return true;
+  if (e.viewerCount > 0) return true;
+  const since = Math.max(e.viewingEndedAt, e.lastTurnEndedAt);
+  if (since > 0 && now - since < CLI_KEEPALIVE_AFTER_LEAVE_MS) return true;
+  return false;
 }
 
 export class PtyLifecycleManager {
@@ -48,10 +51,14 @@ export class PtyLifecycleManager {
     this.sweepTimer.unref();
   }
 
-  adopt(sessionId: string, handle: PtyHandle, meta: { cronOrigin: boolean }): void {
+  adopt(sessionId: string, handle: PtyHandle): void {
+    if (this.entries.size >= this.opts.maxLivePtys) this.evictLru();
     this.entries.set(sessionId, {
-      handle, cronOrigin: meta.cronOrigin, keepAlive: false,
-      turnRunning: false, lastViewedAt: 0, lastActivityAt: Date.now(),
+      handle,
+      turnRunning: false,
+      viewerCount: 0,
+      viewingEndedAt: 0,
+      lastTurnEndedAt: 0,
     });
     this.opts.onAdopt?.(sessionId);
   }
@@ -68,26 +75,33 @@ export class PtyLifecycleManager {
     return [...this.entries.values()].map((e) => e.handle.pid);
   }
 
-  setKeepAlive(sessionId: string, on: boolean): void {
+  viewerEnter(sessionId: string): void {
     const e = this.entries.get(sessionId);
-    if (e) { e.keepAlive = on; this.reevaluate(sessionId); }
+    if (!e) return;
+    e.viewerCount += 1;
+    e.viewingEndedAt = 0;
   }
 
-  markViewed(sessionId: string): void {
+  viewerLeave(sessionId: string): void {
     const e = this.entries.get(sessionId);
-    if (e) { e.lastViewedAt = Date.now(); e.lastActivityAt = Date.now(); }
+    if (!e) return;
+    e.viewerCount = Math.max(0, e.viewerCount - 1);
+    if (e.viewerCount === 0) {
+      e.viewingEndedAt = Date.now();
+      this.reevaluate(sessionId);
+    }
   }
 
   turnStarted(sessionId: string): void {
     const e = this.entries.get(sessionId);
-    if (e) { e.turnRunning = true; e.lastActivityAt = Date.now(); }
+    if (e) e.turnRunning = true;
   }
 
   turnEnded(sessionId: string): void {
     const e = this.entries.get(sessionId);
     if (!e) return;
     e.turnRunning = false;
-    e.lastActivityAt = Date.now();
+    e.lastTurnEndedAt = Date.now();
     this.reevaluate(sessionId);
   }
 
@@ -106,26 +120,27 @@ export class PtyLifecycleManager {
   private reevaluate(sessionId: string): void {
     const e = this.entries.get(sessionId);
     if (!e) return;
-    const alive = shouldStayAlive({
-      turnRunning: e.turnRunning,
-      keepAlive: e.keepAlive,
-      cronOrigin: e.cronOrigin,
-      lastViewedAt: e.lastViewedAt,
-      now: Date.now(),
-      graceWindowMs: this.opts.graceWindowMs,
-    });
-    if (!alive) this.releaseSession(sessionId);
+    if (!shouldStayAlive(e, Date.now())) this.releaseSession(sessionId);
   }
 
   private sweep(): void {
-    const now = Date.now();
-    for (const [id, e] of [...this.entries.entries()]) {
-      if (now - e.lastActivityAt > this.opts.idleTimeoutMs) {
-        this.releaseSession(id);
-        continue;
+    for (const id of [...this.entries.keys()]) this.reevaluate(id);
+  }
+
+  /** LRU eviction when at capacity: pick the eligible entry (no viewer, no running turn)
+   *  with the oldest max(viewingEndedAt, lastTurnEndedAt). If none are eligible, no-op. */
+  private evictLru(): void {
+    let victim: string | null = null;
+    let oldest = Infinity;
+    for (const [id, e] of this.entries.entries()) {
+      if (e.turnRunning || e.viewerCount > 0) continue;
+      const since = Math.max(e.viewingEndedAt, e.lastTurnEndedAt);
+      if (since < oldest) {
+        oldest = since;
+        victim = id;
       }
-      this.reevaluate(id);
     }
+    if (victim) this.releaseSession(victim);
   }
 
   dispose(): void {

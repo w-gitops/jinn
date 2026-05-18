@@ -155,7 +155,6 @@ export interface Session {
   parentSessionId: string | null;
   status: "idle" | "running" | "error" | "waiting" | "interrupted";
   effortLevel: string | null;
-  keepAlive: boolean;
   totalCost: number;
   totalTurns: number;
   queueDepth?: number;
@@ -375,17 +374,7 @@ export interface JinnConfig {
       model: string;
       effortLevel?: string;
       childEffortOverride?: string;
-      /** "headless" = claude -p (default, legacy). "interactive" = PTY-driven TUI. Restart-only. */
-      mode?: "headless" | "interactive";
-      /** Default KEEP ALIVE for sessions (web UI control overrides per-session). */
-      keepAlive?: boolean;
-      /** Hard idle cap for warm PTYs, ms. Default 1_800_000 (30m). */
-      idleTimeoutMs?: number;
-      /** Grace window for recently-viewed web sessions, ms. Default 300_000 (5m). */
-      graceWindowMs?: number;
-      /** Turn-completion watchdog timeout, ms. Default 600_000 (10m). */
-      turnTimeoutMs?: number;
-      /** Max concurrent live PTYs across all sessions. Default 8. */
+      /** Max concurrent live PTYs across all sessions (CLI/xterm view only). Default 8. */
       maxLivePtys?: number;
     };
     codex: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };

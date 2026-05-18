@@ -54,6 +54,10 @@ export function wsEventToNotification(
       const employee = (payload.employee as string) || "Session";
       const error = payload.error as string | null;
       if (error) {
+        // Suppress benign PTY-lifecycle exits — these are normal under the new
+        // CLI-mode lifecycle (PTY reaped after viewing ends + grace window) and
+        // shouldn't surface as scary errors.
+        if (error.startsWith("Interrupted: claude process exited")) return null;
         return {
           type: "error",
           title: `${employee} — Error`,

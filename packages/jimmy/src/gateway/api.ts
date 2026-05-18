@@ -28,7 +28,6 @@ import {
   initDb,
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
-import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
 import {
   CONFIG_PATH,
   CRON_JOBS,
@@ -69,6 +68,10 @@ export interface ApiContext {
   reloadConnectorInstances?: () => Promise<{ started: string[]; stopped: string[]; errors: string[] }>;
   hookRegistry?: import("./hook-registry.js").HookRegistry;
   hookSecret?: string;
+  /** PTY-backed Claude engine used by CLI-mode message sends so the user sees the
+   *  prompt + response stream into the live xterm. Distinct from the headless
+   *  "claude" engine in sessionManager (which chat/cron/connectors use). */
+  interactiveClaudeEngine?: import("../engines/claude-interactive.js").InteractiveClaudeEngine;
 }
 
 export function resumePendingWebQueueItems(context: ApiContext): void {
@@ -485,19 +488,9 @@ export async function handleApiRequest(
         if (!trimmed) return badRequest(res, "title must not be empty");
         updates.title = trimmed.slice(0, 200);
       }
-      if (body.keepAlive !== undefined) {
-        if (typeof body.keepAlive !== "boolean") return badRequest(res, "keepAlive must be a boolean");
-        updates.keepAlive = body.keepAlive;
-      }
       if (Object.keys(updates).length === 0) return badRequest(res, "no valid fields to update");
       const updated = updateSession(params.id, updates);
       if (!updated) return notFound(res);
-      if (updates.keepAlive !== undefined) {
-        const engine = context.sessionManager.getEngine("claude");
-        if (engine && "setKeepAlive" in engine) {
-          (engine as { setKeepAlive(sessionId: string, on: boolean): void }).setKeepAlive(params.id, updates.keepAlive);
-        }
-      }
       context.emit("session:updated", { sessionId: params.id });
       return json(res, serializeSession(updated, context));
     }
@@ -580,19 +573,8 @@ export async function handleApiRequest(
         const { session: newSession, messageCount } = duplicateSession(params.id);
         newSessionId = newSession.id;
 
-        // 2. Fork the engine session (Claude/Codex/Gemini).
-        // For Claude, when the interactive engine is in use, route the fork
-        // through a PTY (no `-p`) so the new turn bills as `cc_entrypoint=cli`
-        // and the source session's warm PTY is released first.
-        let interactiveCtx;
-        if (source.engine === "claude") {
-          const claudeEngine = context.sessionManager.getEngine("claude");
-          const interactive = claudeEngine instanceof InteractiveClaudeEngine ? claudeEngine : null;
-          if (interactive) {
-            interactiveCtx = { sourceJinnSessionId: source.id, engine: interactive };
-          }
-        }
-        const forkResult = forkEngineSession(source.engine, source.engineSessionId, JINN_HOME, interactiveCtx);
+        // 2. Fork the engine session (Claude/Codex/Gemini) via headless fork.
+        const forkResult = forkEngineSession(source.engine, source.engineSessionId, JINN_HOME);
 
         // 3. Store the new engine session ID
         updateSession(newSession.id, { engineSessionId: forkResult.engineSessionId });
@@ -749,8 +731,13 @@ export async function handleApiRequest(
       logger.info(`Web session created: ${session.id} (model=${body.model || "default"})`);
       insertMessage(session.id, "user", prompt);
 
-      // Run engine asynchronously — respond immediately, push result via WebSocket
-      const engine = context.sessionManager.getEngine(engineName);
+      // Run engine asynchronously — respond immediately, push result via WebSocket.
+      // CLI-mode session creation (mode: "interactive") uses the PTY-backed engine
+      // so the first turn streams into the live xterm; chat/cron/connectors use headless.
+      const wantInteractive = body.mode === "interactive" && engineName === "claude";
+      const engine = wantInteractive && context.interactiveClaudeEngine
+        ? context.interactiveClaudeEngine
+        : context.sessionManager.getEngine(engineName);
       if (!engine) {
         updateSession(session.id, {
           status: "error",
@@ -797,7 +784,13 @@ export async function handleApiRequest(
       const isNotification = messageRole === "notification";
 
       const config = context.getConfig();
-      const engine = context.sessionManager.getEngine(session.engine);
+      // CLI-mode sends route to the interactive PTY engine so the user sees their
+      // prompt injected + claude's response stream in the live xterm. All other
+      // sends (chat, connectors, cron) use the headless engine.
+      const wantInteractive = body.mode === "interactive" && session.engine === "claude";
+      const engine = wantInteractive && context.interactiveClaudeEngine
+        ? context.interactiveClaudeEngine
+        : context.sessionManager.getEngine(session.engine);
       if (!engine) return serverError(res, `Engine "${session.engine}" not available`);
 
       // Persist the message immediately
@@ -832,8 +825,8 @@ export async function handleApiRequest(
         if (!isNotification && (config.sessions?.interruptOnNewMessage ?? true) && turnRunning) {
           logger.info(`Interrupting running session ${session.id} for new message`);
           engine.kill(session.id, "Interrupted: new message received");
-          // Wait briefly for the process to exit so the queue slot frees up
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          // SessionQueue serializes per-session; the new turn enqueued below will
+          // wait for the killed run()'s promise to settle before starting.
           context.emit("session:interrupted", { sessionId: session.id, reason: "new message" });
         } else {
           context.emit("session:queued", { sessionId: session.id, message: prompt });

@@ -3,7 +3,7 @@ import { TurnResolver } from "../claude-interactive.js";
 
 describe("TurnResolver", () => {
   it("resolves only after BOTH SessionStart and Stop", async () => {
-    const r = new TurnResolver({ turnTimeoutMs: 1000, fallbackSessionId: "old" });
+    const r = new TurnResolver({ fallbackSessionId: "old" });
     let resolved: any;
     r.promise.then((v) => { resolved = v; });
     r.onHook({ hook_event_name: "Stop", last_assistant_message: "done" });
@@ -17,21 +17,15 @@ describe("TurnResolver", () => {
   });
 
   it("settles with an Interrupted error when killed", async () => {
-    const r = new TurnResolver({ turnTimeoutMs: 1000, fallbackSessionId: "old" });
+    const r = new TurnResolver({ fallbackSessionId: "old" });
     r.onHook({ hook_event_name: "SessionStart", session_id: "c1" });
     r.interrupt("Interrupted: user");
     const v = await r.promise;
     expect(v.error).toMatch(/^Interrupted/);
   });
 
-  it("settles with an error on watchdog timeout", async () => {
-    const r = new TurnResolver({ turnTimeoutMs: 20, fallbackSessionId: "old" });
-    const v = await r.promise;
-    expect(v.error).toMatch(/timed out/i);
-  });
-
   it("treats a missing session id as a hard error", async () => {
-    const r = new TurnResolver({ turnTimeoutMs: 1000, fallbackSessionId: undefined });
+    const r = new TurnResolver({ fallbackSessionId: undefined });
     r.onHook({ hook_event_name: "SessionStart" }); // no session_id
     r.onHook({ hook_event_name: "Stop", last_assistant_message: "x" });
     const v = await r.promise;
@@ -39,7 +33,7 @@ describe("TurnResolver", () => {
   });
 
   it("with assumeStarted, resolves on Stop alone using fallbackSessionId", async () => {
-    const r = new TurnResolver({ turnTimeoutMs: 1000, fallbackSessionId: "warm-sid", assumeStarted: true });
+    const r = new TurnResolver({ fallbackSessionId: "warm-sid", assumeStarted: true });
     r.onHook({ hook_event_name: "Stop", last_assistant_message: "ok" });
     const v = await r.promise;
     expect(v.result).toBe("ok");
@@ -48,7 +42,7 @@ describe("TurnResolver", () => {
   });
 
   it("settles immediately on StopFailure (does not wait for SessionStart) and exposes it", async () => {
-    const r = new TurnResolver({ turnTimeoutMs: 1000, fallbackSessionId: "old" });
+    const r = new TurnResolver({ fallbackSessionId: "old" });
     r.onHook({ hook_event_name: "StopFailure", error: "rate_limit", error_details: "resets 3pm" });
     const v = await r.promise;
     expect(v.error).toMatch(/rate_limit/);
