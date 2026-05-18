@@ -457,7 +457,7 @@ export async function handleApiRequest(
       // parsing + N individual INSERTs. Subsequent GETs will see the messages
       // once the backfill finishes; this one returns whatever is in DB now.
       if (messages.length === 0 && session.engineSessionId) {
-        scheduleTranscriptBackfill(params.id, session.engineSessionId);
+        scheduleTranscriptBackfill(params.id, session.engineSessionId, context);
       }
 
       // Support ?last=N to return only the N most recent messages
@@ -1739,7 +1739,7 @@ function loadRawTranscript(engineSessionId: string): TranscriptEntry[] {
  */
 const backfillInProgress = new Set<string>();
 
-function scheduleTranscriptBackfill(sessionId: string, engineSessionId: string): void {
+function scheduleTranscriptBackfill(sessionId: string, engineSessionId: string, context: ApiContext): void {
   if (backfillInProgress.has(sessionId)) return;
   backfillInProgress.add(sessionId);
   // Defer off the request-handling tick so the GET returns immediately.
@@ -1763,6 +1763,9 @@ function scheduleTranscriptBackfill(sessionId: string, engineSessionId: string):
       });
       txn(transcriptMessages);
       logger.info(`Backfilled ${transcriptMessages.length} transcript message(s) for session ${sessionId}`);
+      // Notify subscribers (web client) so they re-fetch and display the
+      // newly backfilled messages instead of waiting for another event.
+      context.emit("session:updated", { sessionId });
     } catch (err) {
       logger.warn(`Transcript backfill failed for session ${sessionId}: ${err instanceof Error ? err.message : err}`);
     } finally {
