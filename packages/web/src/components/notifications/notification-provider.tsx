@@ -11,12 +11,8 @@ import {
 } from "@/lib/notifications";
 import { NotificationContext } from "@/hooks/use-notifications";
 
-const TOAST_DURATION_MS = 5_000;
-
 export function NotificationProvider({ children }: { children: ReactNode }) {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
-  const [toasts, setToasts] = useState<AppNotification[]>([]);
-  const toastTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const initialized = useRef(false);
 
   // Load from localStorage on mount
@@ -32,15 +28,6 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       initialized.current = true;
     }
   }, [notifications]);
-
-  const dismissToast = useCallback((id: string) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-    const timer = toastTimers.current.get(id);
-    if (timer) {
-      clearTimeout(timer);
-      toastTimers.current.delete(id);
-    }
-  }, []);
 
   const addNotification = useCallback(
     (event: string, payload: Record<string, unknown>) => {
@@ -101,9 +88,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       value={{
         notifications,
         unreadCount,
-        toasts,
         pushFromEvent: addNotification,
-        dismissToast,
         markAllRead,
         markRead,
         clearAll,

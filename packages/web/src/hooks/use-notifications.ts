@@ -1,21 +1,7 @@
 "use client";
 
-import {
-  createContext,
-  useContext,
-  useState,
-  useCallback,
-  useEffect,
-  useRef,
-  type ReactNode,
-} from "react";
-import {
-  type AppNotification,
-  loadNotifications,
-  saveNotifications,
-  generateId,
-  wsEventToNotification,
-} from "@/lib/notifications";
+import { createContext, useContext } from "react";
+import { type AppNotification } from "@/lib/notifications";
 
 // ---------------------------------------------------------------------------
 // Context
@@ -24,11 +10,8 @@ import {
 export interface NotificationContextValue {
   notifications: AppNotification[];
   unreadCount: number;
-  toasts: AppNotification[];
   /** Push a new notification from a WS event */
   pushFromEvent: (event: string, payload: Record<string, unknown>) => void;
-  /** Dismiss a toast */
-  dismissToast: (id: string) => void;
   /** Mark all as read */
   markAllRead: () => void;
   /** Mark one as read */
@@ -40,9 +23,7 @@ export interface NotificationContextValue {
 const NotificationContext = createContext<NotificationContextValue>({
   notifications: [],
   unreadCount: 0,
-  toasts: [],
   pushFromEvent: () => {},
-  dismissToast: () => {},
   markAllRead: () => {},
   markRead: () => {},
   clearAll: () => {},

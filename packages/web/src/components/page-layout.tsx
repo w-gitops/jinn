@@ -9,7 +9,6 @@ import { GlobalSearch } from "./global-search"
 import { LiveStreamWidget } from "./live-stream-widget"
 import { OnboardingWizard } from "./onboarding-wizard"
 import { NotificationBell } from "./notifications/notification-bell"
-import { ToastContainer } from "./notifications/toast-container"
 import { BreadcrumbBar } from "./breadcrumb-bar"
 import { useBreadcrumbs } from "@/context/breadcrumb-context"
 import { Menu, X } from "lucide-react"
@@ -128,7 +127,6 @@ export function PageLayout({ children, mobileHeaderActions }: { children: React.
           {children}
         </div>
       </main>
-      <ToastContainer />
       <LiveStreamWidget />
       <OnboardingWizard />
     </div>
