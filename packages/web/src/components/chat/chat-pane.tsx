@@ -14,6 +14,16 @@ import { saveIntermediateMessages, loadIntermediateMessages, clearIntermediateMe
 
 type Listener = (event: string, payload: unknown) => void
 
+// [chat-debug] instrumentation — kept in prod for diagnosis. Filter devtools by "[chat-debug]".
+const dbg = (sid: string | null | undefined, evt: string, data?: unknown) => {
+  try {
+    const t = new Date().toISOString().slice(11, 23)
+    const s = sid ? sid.slice(0, 8) : 'NEW '
+    if (data !== undefined) console.log(`[chat-debug] ${t} ${s} ${evt}`, data)
+    else console.log(`[chat-debug] ${t} ${s} ${evt}`)
+  } catch { /* ignore */ }
+}
+
 interface ChatPaneProps {
   sessionId: string | null
   isActive: boolean
@@ -61,7 +71,12 @@ export function ChatPane({
   onShortcutsClick,
   pendingUserMessage,
 }: ChatPaneProps) {
-  const [messages, setMessages] = useState<Message[]>(() => pendingUserMessage ? [pendingUserMessage] : [])
+  dbg(sessionId, 'render', { pendingUserMessage: pendingUserMessage ? { role: pendingUserMessage.role, contentPreview: pendingUserMessage.content.slice(0, 40) } : null })
+  const [messages, setMessages] = useState<Message[]>(() => {
+    const seed = pendingUserMessage ? [pendingUserMessage] : []
+    dbg(sessionId, 'useState-init messages', { seededCount: seed.length, seededFrom: pendingUserMessage ? 'pendingUserMessage' : 'empty' })
+    return seed
+  })
   const [loading, setLoading] = useState(false)
   const streamingTextRef = useRef('')
   const [streamingText, setStreamingText] = useState('')
@@ -113,6 +128,7 @@ export function ChatPane({
 
       if (event === 'session:delta') {
         const deltaType = String(p.type || 'text')
+        dbg(sid, `WS session:delta ${deltaType}`, { contentLen: typeof p.content === 'string' ? p.content.length : 0, toolName: p.toolName })
 
         if (deltaType === 'text') {
           const chunk = String(p.content || '')
@@ -199,6 +215,7 @@ export function ChatPane({
       }
 
       if (event === 'session:completed') {
+        dbg(sid, 'WS session:completed', { resultLen: typeof p.result === 'string' ? p.result.length : 0, hasError: !!p.error })
         streamingTextRef.current = ''
         setStreamingText('')
         setLoading(false)
@@ -246,8 +263,10 @@ export function ChatPane({
 
   // Load session data
   const loadSession = useCallback(async (id: string) => {
+    dbg(id, 'loadSession START')
     try {
       const session = (await api.getSession(id)) as Record<string, unknown>
+      dbg(id, 'loadSession got session', { status: session.status, messagesCount: Array.isArray(session.messages) ? session.messages.length : 'n/a' })
       setCurrentSession(session)
       const meta = {
         engine: session.engine ? String(session.engine) : undefined,
@@ -286,28 +305,30 @@ export function ChatPane({
         const cached = loadIntermediateMessages(id)
         if (cached.length > 0) {
           intermediateStartRef.current = backendMessages.length
+          dbg(id, 'loadSession isRunning+cached → setMessages', { backendCount: backendMessages.length, cachedCount: cached.length })
           setMessages([...backendMessages, ...cached])
         } else {
           intermediateStartRef.current = backendMessages.length
           setMessages((current) => {
-            // If backend has at least one message, trust it (it includes the user message — daemon inserts it before any delta).
-            if (backendMessages.length > 0) return backendMessages
-            // Backend returned empty (race or error) — keep the current state (which contains the pending user message).
-            return current
+            const next = backendMessages.length > 0 ? backendMessages : current
+            dbg(id, 'loadSession isRunning → setMessages', { from: current.length, to: next.length, kept: next === current })
+            return next
           })
         }
         // Don't re-enter loading state if we just completed (status-write race guard)
         if (Date.now() - justCompletedAtRef.current >= 3000) {
+          dbg(id, 'loadSession isRunning → setLoading(true)')
           setLoading(true)
+        } else {
+          dbg(id, 'loadSession isRunning → SKIP setLoading (just completed)')
         }
       } else {
         clearIntermediateMessages(id)
         intermediateStartRef.current = -1
         setMessages((current) => {
-          // If backend has at least one message, trust it (it includes the user message — daemon inserts it before any delta).
-          if (backendMessages.length > 0) return backendMessages
-          // Backend returned empty (race or error) — keep the current state (which contains the pending user message).
-          return current
+          const next = backendMessages.length > 0 ? backendMessages : current
+          dbg(id, 'loadSession notRunning → setMessages', { from: current.length, to: next.length, kept: next === current, status: session.status })
+          return next
         })
       }
     } catch {
@@ -319,7 +340,9 @@ export function ChatPane({
 
   // Load on session change
   useEffect(() => {
+    dbg(sessionId, 'effect[sessionId] fired', { sessionId })
     if (!sessionId) {
+      dbg(sessionId, 'effect[sessionId] !sessionId → clearing all state')
       setMessages([])
       setLoading(false)
       setCurrentSession(null)
@@ -333,6 +356,7 @@ export function ChatPane({
     streamingTextRef.current = ''
     setStreamingText('')
     setLoading(false)
+    dbg(sessionId, 'effect[sessionId] calling loadSession')
     loadSession(sessionId)
   }, [sessionId]) // loadSession is stable (useCallback with [] deps)
 
@@ -370,6 +394,7 @@ export function ChatPane({
 
   const handleSend = useCallback(
     async (message: string, media?: MediaAttachment[], interrupt?: boolean) => {
+      dbg(sessionId, 'handleSend START', { messagePreview: message.slice(0, 40), sessionIdAtSend: sessionId })
       const userMsg: Message = {
         id: crypto.randomUUID(),
         role: 'user',
@@ -379,7 +404,9 @@ export function ChatPane({
       }
       setMessages((prev) => {
         intermediateStartRef.current = prev.length + 1
-        return [...prev, userMsg]
+        const next = [...prev, userMsg]
+        dbg(sessionId, 'handleSend optimistic setMessages', { from: prev.length, to: next.length })
+        return next
       })
       setLoading(true)
 
@@ -404,8 +431,11 @@ export function ChatPane({
             selectedEmployee,
             attachmentIds,
           })
+          dbg(null, 'handleSend createSession START')
           const session = (await api.createSession(params)) as Record<string, unknown>
           sid = String(session.id)
+          dbg(sid, 'handleSend createSession DONE', { newSid: sid })
+          dbg(sid, 'handleSend → onSessionCreated(sid, userMsg)', { hasUserMsg: !!userMsg })
           onSessionCreated?.(sid, userMsg)
           onRefresh?.()
         } else {
