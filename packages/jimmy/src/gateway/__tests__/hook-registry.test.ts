@@ -35,5 +35,17 @@ describe("HookRegistry", () => {
     const seen: string[] = [];
     reg.register("s4", (h) => seen.push(h.hook_event_name));
     expect(seen).toEqual([]);
+    reg.dispose();
+  });
+
+  it("periodic sweep evicts buffered entries past TTL even without register", async () => {
+    const reg = new HookRegistry(20, 10); // 20ms TTL, 10ms sweep
+    reg.deliver("s5", { hook_event_name: "SessionStart" } as any);
+    // Access internal buffer for assertion — keep registry visibility minimal.
+    const buf = (reg as unknown as { buffer: Map<string, unknown[]> }).buffer;
+    expect(buf.has("s5")).toBe(true);
+    await new Promise((r) => setTimeout(r, 80));
+    expect(buf.has("s5")).toBe(false);
+    reg.dispose();
   });
 });
