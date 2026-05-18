@@ -106,10 +106,12 @@ function buildInteractiveArgs(o: InteractiveArgsOpts): string[] {
 
 /**
  * Parse one transcript JSONL line into StreamDeltas.
- * `priorSnapshot` is the accumulated assistant text so far; the returned
- * text_snapshot delta (if any) contains priorSnapshot + this line's text.
+ * Emits `text` deltas (incremental) and tool_use/tool_result markers. We intentionally
+ * do NOT emit `text_snapshot` deltas here — those were a defense against `claude -p`'s
+ * dropped-token streaming. Interactive mode tails the transcript file (append-only,
+ * no drops), so cumulative snapshots are pure quadratic overhead.
  */
-function parseTranscriptLine(line: string, priorSnapshot: string): StreamDelta[] {
+function parseTranscriptLine(line: string): StreamDelta[] {
   const trimmed = line.trim();
   if (!trimmed) return [];
   let msg: any;
@@ -129,7 +131,6 @@ function parseTranscriptLine(line: string, priorSnapshot: string): StreamDelta[]
     }
     if (text) {
       out.push({ type: "text", content: text });
-      out.push({ type: "text_snapshot", content: priorSnapshot + text });
     }
   } else if (msg.type === "user") {
     for (const block of content) {
@@ -143,7 +144,6 @@ function parseTranscriptLine(line: string, priorSnapshot: string): StreamDelta[]
 function tailTranscript(filePath: string, onDelta: (d: StreamDelta) => void): TranscriptTailer {
   let offset = 0;
   try { offset = fs.statSync(filePath).size; } catch { /* file may not exist yet; offset stays 0 */ }
-  let snapshot = "";
   let buf = "";
   let stopped = false;
 
@@ -161,8 +161,7 @@ function tailTranscript(filePath: string, onDelta: (d: StreamDelta) => void): Tr
       const lines = buf.split("\n");
       buf = lines.pop() ?? "";
       for (const l of lines) {
-        for (const d of parseTranscriptLine(l, snapshot)) {
-          if (d.type === "text_snapshot") snapshot = d.content;
+        for (const d of parseTranscriptLine(l)) {
           onDelta(d);
         }
       }
@@ -173,16 +172,18 @@ function tailTranscript(filePath: string, onDelta: (d: StreamDelta) => void): Tr
 
   let watcher: fs.FSWatcher | undefined;
   try { watcher = fs.watch(filePath, () => readNew()); } catch { /* file may not exist yet */ }
-  const poll = setInterval(readNew, 150); // 100ms batched writes — poll a bit slower
-  if (poll.unref) poll.unref();
-  // Do NOT initial-drain — that would replay the resumed conversation history
-  // as fresh deltas. Poll/watch picks up new appends from `offset` onward.
+  // One-shot drain shortly after attach in case the file was appended between
+  // SessionStart hook and watcher install. NOT a poll — just a single catch-up.
+  const initialDrain = setTimeout(readNew, 30);
+  if (initialDrain.unref) initialDrain.unref();
+  // Do NOT initial-drain at offset 0 — that would replay the resumed conversation
+  // history as fresh deltas. fs.watch picks up new appends from `offset` onward.
 
   return {
     stop() {
       stopped = true;
       watcher?.close();
-      clearInterval(poll);
+      clearTimeout(initialDrain);
     },
   };
 }
