@@ -466,6 +466,15 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
         try { sub.control?.({ type: "reset" }); } catch { /* ignore */ }
       }
     }
+    // node-pty's internal socket error handler (unixTerminal.js) throws synchronously when
+    // proc.listeners('error').length < 2. Without this listener the count stays at 1 (the
+    // internal handler), so any socket error (EIO on claude exit, EPIPE, etc.) propagates as
+    // an uncaught exception and kills the daemon. Adding a handler here bumps the count to 2
+    // and prevents the throw; we log it and let the onExit path handle cleanup.
+    (proc as any).on?.("error", (err: Error) => {
+      logger.warn(`PTY socket error for session ${jinnSessionId}: ${err.message}`);
+    });
+
     proc.onData((d) => {
       // Convert string to Buffer once; push to ring; evict head until under cap.
       const chunk = Buffer.from(d, "utf-8");
