@@ -25,6 +25,14 @@ export class HookRegistry {
   }
 
   register(jinnSessionId: string, listener: HookListener): void {
+    if (this.listeners.has(jinnSessionId)) {
+      // Engine guards against concurrent turns per session, so this should
+      // never happen. Warn loudly if it does — silently overwriting the
+      // previous listener would mean the prior turn's resolver never fires.
+      console.warn(
+        `[HookRegistry] duplicate listener registration for session ${jinnSessionId}; previous listener will be replaced`,
+      );
+    }
     this.listeners.set(jinnSessionId, listener);
     const pending = this.buffer.get(jinnSessionId);
     if (pending) {
