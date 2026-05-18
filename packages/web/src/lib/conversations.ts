@@ -28,56 +28,6 @@ export interface Message {
   toolCall?: string
 }
 
-export interface Conversation {
-  sessionId: string
-  messages: Message[]
-  lastActivity: number
-}
-
-export type ConversationStore = Record<string, Conversation>
-
-const STORAGE_KEY = 'jinn-conversations'
-
-export function loadConversations(): ConversationStore {
-  if (typeof window === 'undefined') return {}
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? JSON.parse(raw) : {}
-  } catch {
-    return {}
-  }
-}
-
-export function saveConversations(store: ConversationStore): void {
-  if (typeof window === 'undefined') return
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(store))
-  } catch { /* storage full — silently skip */ }
-}
-
-export function addMessage(
-  store: ConversationStore,
-  sessionId: string,
-  msg: Message,
-): ConversationStore {
-  const conv = store[sessionId] || {
-    sessionId,
-    messages: [],
-    lastActivity: Date.now(),
-  }
-  return {
-    ...store,
-    [sessionId]: {
-      ...conv,
-      messages: [...conv.messages, msg],
-      lastActivity: Date.now(),
-    },
-  }
-}
-
-/**
- * Extract image / audio URLs from markdown content.
- */
 // --- Intermediate message persistence (localStorage) ---
 
 const INTERMEDIATE_PREFIX = 'jinn-intermediate-'

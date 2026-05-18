@@ -1,6 +1,6 @@
 "use client"
 import React, { useEffect, useRef, useState, useCallback } from 'react'
-import { formatDuration } from '@/lib/audio-recorder'
+import { formatDuration } from '@/lib/utils'
 
 interface VoiceMessageProps {
   src: string

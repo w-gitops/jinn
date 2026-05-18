@@ -16,7 +16,6 @@ export interface ChatTab {
 }
 
 const STORAGE_KEY = 'jinn-chat-tabs'
-const DRAFT_PREFIX = 'jinn-chat-draft-'
 const MAX_TABS = 12
 
 interface TabState {
@@ -127,9 +126,6 @@ export function useChatTabs() {
 
   const closeTab = useCallback((index: number) => {
     setState((current) => {
-      const sessionId = current.tabs[index]?.sessionId
-      if (sessionId) localStorage.removeItem(DRAFT_PREFIX + sessionId)
-
       const nextTabs = current.tabs.filter((_, i) => i !== index)
       if (nextTabs.length === 0) return { tabs: [], activeIndex: -1 }
 
@@ -202,18 +198,6 @@ export function useChatTabs() {
     setState((current) => ({ ...current, activeIndex: -1 }))
   }, [])
 
-  const saveDraft = useCallback((sessionId: string, text: string) => {
-    if (text.trim()) {
-      localStorage.setItem(DRAFT_PREFIX + sessionId, text)
-    } else {
-      localStorage.removeItem(DRAFT_PREFIX + sessionId)
-    }
-  }, [])
-
-  const loadDraft = useCallback((sessionId: string) => {
-    return localStorage.getItem(DRAFT_PREFIX + sessionId) || ''
-  }, [])
-
   const updateTabStatus = useCallback((sessionId: string, updates: Partial<ChatTab>) => {
     setState((current) => {
       const idx = current.tabs.findIndex((t) => t.sessionId === sessionId)
@@ -231,9 +215,9 @@ export function useChatTabs() {
     tabs, activeTab, activeIndex,
     openTab, closeTab, switchTab, nextTab, prevTab,
     pinTab, moveTab,
-    clearActiveTab, saveDraft, loadDraft, updateTabStatus,
+    clearActiveTab, updateTabStatus,
   }), [tabs, activeTab, activeIndex,
     openTab, closeTab, switchTab, nextTab, prevTab,
     pinTab, moveTab,
-    clearActiveTab, saveDraft, loadDraft, updateTabStatus])
+    clearActiveTab, updateTabStatus])
 }
