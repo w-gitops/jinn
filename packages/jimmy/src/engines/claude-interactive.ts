@@ -337,8 +337,11 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     });
 
     if (warm) {
-      this.injectPrompt(warm, opts);
+      // Mark the turn started BEFORE injecting so the sweep timer can't
+      // theoretically release the PTY mid-paste if its grace window expired
+      // between getWarm() above and the proc.write() inside injectPrompt.
       this.lifecycle.turnStarted(jinnSessionId);
+      this.injectPrompt(warm, opts);
     } else {
       const handle = this.spawn(jinnSessionId, opts, settingsPath);
       this.lifecycle.adopt(jinnSessionId, handle, { cronOrigin: opts.source === "cron" });
