@@ -3,17 +3,19 @@
 import { useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
+import dynamic from "next/dynamic"
 import { useSettings } from "@/app/settings-provider"
 import { Sidebar } from "./sidebar"
-import { GlobalSearch } from "./global-search"
-import { LiveStreamWidget } from "./live-stream-widget"
-import { OnboardingWizard } from "./onboarding-wizard"
 import { NotificationBell } from "./notifications/notification-bell"
 import { BreadcrumbBar } from "./breadcrumb-bar"
 import { useBreadcrumbs } from "@/context/breadcrumb-context"
 import { Menu, X } from "lucide-react"
 import { NAV_ITEMS } from "@/lib/nav"
 import { cn } from "@/lib/utils"
+
+const GlobalSearch = dynamic(() => import("./global-search").then(m => m.GlobalSearch), { ssr: false })
+const LiveStreamWidget = dynamic(() => import("./live-stream-widget").then(m => m.LiveStreamWidget), { ssr: false })
+const OnboardingWizard = dynamic(() => import("./onboarding-wizard").then(m => m.OnboardingWizard), { ssr: false })
 
 function MobileHeader({ actions }: { actions?: React.ReactNode }) {
   const [open, setOpen] = useState(false)
