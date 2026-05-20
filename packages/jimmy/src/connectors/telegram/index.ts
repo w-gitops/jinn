@@ -40,6 +40,7 @@ export class TelegramConnector implements Connector {
 
   private readonly sttConfig?: TelegramConnectorConfig["stt"];
   private sttChain: Promise<unknown> = Promise.resolve();
+  private sttPending = 0;
 
   constructor(config: TelegramConnectorConfig) {
     this.bot = new TelegramBot(config.botToken, { polling: false });
@@ -139,6 +140,20 @@ export class TelegramConnector implements Connector {
         const language = langs.length === 1 ? langs[0] : "auto";
 
         // Serialize transcriptions: parallel whisper-cli runs OOM on small hosts.
+        // If another transcription is already in flight, send a one-line ack so
+        // the user doesn't sit through ~duration × queue position in silence.
+        this.sttPending++;
+        if (this.sttPending > 1) {
+          try {
+            await this.bot.sendMessage(
+              telegramMsg.chat.id,
+              "⏳ Transcribing a previous voice message — yours is queued.",
+            );
+          } catch {
+            /* non-fatal */
+          }
+        }
+
         const myTurn = this.sttChain.then(async () => {
           try {
             await this.bot.sendChatAction(telegramMsg.chat.id, "typing");
@@ -163,7 +178,11 @@ export class TelegramConnector implements Connector {
             }
           }
         });
-        this.sttChain = myTurn.catch(() => undefined);
+        this.sttChain = myTurn
+          .catch(() => undefined)
+          .finally(() => {
+            this.sttPending = Math.max(0, this.sttPending - 1);
+          });
 
         let transcript: string | undefined;
         try {
