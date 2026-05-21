@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.14.0] - 2026-05-21
+
+### ✨ Features
+- **Telegram voice/audio transcription** (#59) — `voice`, `audio`, and `video_note` messages are transcribed through the bundled `stt/stt.ts` (whisper.cpp) before reaching the engine, fixing the empty-`text` session-resume crash. Multi-language config → `auto`; concurrent voice notes are serialized to avoid OOM on small hosts, with a one-line "queued" ack. If STT is unavailable/empty, the message is dropped with a user-facing explanation instead of forwarding empty text.
+- **Telegram file attachments** (#60) — documents, photos, videos, animations, and stickers are downloaded and surfaced via `msg.attachments` (UUID-named in `TMP_DIR` to avoid collisions), so the engine actually receives files instead of silently dropping them. `video_note` is routed to transcription (above), not attached, to avoid double-handling.
+
 ## [0.13.3] - 2026-05-20
 
 ### ✨ Features
