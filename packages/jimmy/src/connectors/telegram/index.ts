@@ -1,5 +1,9 @@
 import TelegramBot from "node-telegram-bot-api";
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import type {
+  Attachment,
   Connector,
   ConnectorCapabilities,
   ConnectorHealth,
@@ -11,6 +15,7 @@ import type {
 import { deriveSessionKey, buildReplyContext, isOldTelegramMessage } from "./threads.js";
 import { formatResponse } from "./format.js";
 import { logger } from "../../shared/logger.js";
+import { TMP_DIR } from "../../shared/paths.js";
 
 export class TelegramConnector implements Connector {
   name = "telegram";
@@ -89,6 +94,85 @@ export class TelegramConnector implements Connector {
       const username =
         telegramMsg.from?.username || telegramMsg.from?.first_name || "unknown";
 
+      let messageText: string =
+        (telegramMsg as any).text || (telegramMsg as any).caption || "";
+
+      // File attachments: download via bot token and push to msg.attachments.
+      // sessions/manager.ts pulls localPath and engines auto-inject
+      // "Attached files: …" — no manual text formatting needed here.
+      const tg = telegramMsg as any;
+      type Spec = { file_id: string; name?: string; mime?: string };
+      const specs: Spec[] = [];
+      if (tg.document) {
+        specs.push({
+          file_id: tg.document.file_id,
+          name: tg.document.file_name,
+          mime: tg.document.mime_type,
+        });
+      }
+      if (tg.photo && tg.photo.length > 0) {
+        // Telegram returns size variants; the last is the largest.
+        specs.push({
+          file_id: tg.photo[tg.photo.length - 1].file_id,
+          mime: "image/jpeg",
+        });
+      }
+      if (tg.video) {
+        specs.push({
+          file_id: tg.video.file_id,
+          name: tg.video.file_name,
+          mime: tg.video.mime_type || "video/mp4",
+        });
+      }
+      if (tg.video_note) {
+        specs.push({ file_id: tg.video_note.file_id, mime: "video/mp4" });
+      }
+      if (tg.animation) {
+        specs.push({
+          file_id: tg.animation.file_id,
+          name: tg.animation.file_name,
+          mime: tg.animation.mime_type || "video/mp4",
+        });
+      }
+      if (tg.sticker) {
+        specs.push({
+          file_id: tg.sticker.file_id,
+          mime: tg.sticker.is_animated
+            ? "application/x-tgsticker"
+            : "image/webp",
+        });
+      }
+
+      const attachments: Attachment[] = [];
+      if (specs.length > 0) {
+        fs.mkdirSync(TMP_DIR, { recursive: true });
+        for (const spec of specs) {
+          try {
+            const downloaded: string = await (this.bot as any).downloadFile(
+              spec.file_id,
+              TMP_DIR,
+            );
+            // Rename to a UUID so repeat Telegram basenames don't collide
+            // (matches the Slack connector's downloadAttachment pattern).
+            const ext =
+              path.extname(downloaded) ||
+              (spec.name ? path.extname(spec.name) : "");
+            const localPath = path.join(TMP_DIR, `${randomUUID()}${ext}`);
+            fs.renameSync(downloaded, localPath);
+            attachments.push({
+              name: spec.name || path.basename(downloaded),
+              url: localPath,
+              mimeType: spec.mime || "application/octet-stream",
+              localPath,
+            });
+          } catch (err) {
+            logger.warn(
+              `[telegram] Failed to download attachment: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+        }
+      }
+
       const msg: IncomingMessage = {
         connector: this.name,
         source: "telegram",
@@ -98,8 +182,8 @@ export class TelegramConnector implements Connector {
         channel: String(telegramMsg.chat.id),
         user: username,
         userId: String(userId ?? "unknown"),
-        text: telegramMsg.text || "",
-        attachments: [],
+        text: messageText,
+        attachments,
         raw: telegramMsg,
         transportMeta: {
           chatType: telegramMsg.chat.type,
