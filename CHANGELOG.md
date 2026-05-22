@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.15.1] - 2026-05-22
+
+### 🐛 Fixes
+- **`jinn --version` reported the wrong version** — the CLI reads its version from `dist/package.json` (emitted by tsc from the `import pkg from "../package.json"` in `bin/jinn.ts`). v0.15.0 was published with a stale `dist/` built before the version bump, so it reported `0.14.0` and the Homebrew formula's `--version` test would mismatch. Rebuilt after the bump; `dist/package.json` and `jinn --version` now match the package version.
+
 ## [0.15.0] - 2026-05-22
 
 ### ♻️ Refactor
