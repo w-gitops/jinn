@@ -43,7 +43,7 @@ Thanks for your interest in contributing. This guide covers the basics.
 
 ## Project Layout
 
-- `packages/jimmy` -- Core gateway daemon and CLI (package dir).
+- `packages/jinn` -- Core gateway daemon and CLI (package dir).
 - `packages/web` -- Web dashboard frontend.
 
 ## Questions?

@@ -178,12 +178,12 @@ Skips services provided by the employee's own department. Skipped entirely if no
 
 | File | Change |
 |------|--------|
-| `packages/jimmy/src/shared/types.ts` | Add `ServiceDeclaration` interface, add `provides?: ServiceDeclaration[]` to `Employee` |
-| `packages/jimmy/src/gateway/org.ts` | Parse `provides` from YAML in `scanOrg()` |
-| `packages/jimmy/src/gateway/services.ts` | **New file** — `findCommonAncestor()`, `buildRoutePath()`, `resolveManagerChain()`, `buildServiceRegistry()` |
-| `packages/jimmy/src/gateway/api.ts` | Add `GET /api/org/services` and `POST /api/org/cross-request` endpoints |
-| `packages/jimmy/src/sessions/context.ts` | Replace `reportsToLine`/`directReportsLine` with `buildChainOfCommand()`, add `buildServicesContext()` |
-| `packages/jimmy/src/gateway/__tests__/services.test.ts` | **New file** — tests for LCA, route path, manager chain, service registry |
+| `packages/jinn/src/shared/types.ts` | Add `ServiceDeclaration` interface, add `provides?: ServiceDeclaration[]` to `Employee` |
+| `packages/jinn/src/gateway/org.ts` | Parse `provides` from YAML in `scanOrg()` |
+| `packages/jinn/src/gateway/services.ts` | **New file** — `findCommonAncestor()`, `buildRoutePath()`, `resolveManagerChain()`, `buildServiceRegistry()` |
+| `packages/jinn/src/gateway/api.ts` | Add `GET /api/org/services` and `POST /api/org/cross-request` endpoints |
+| `packages/jinn/src/sessions/context.ts` | Replace `reportsToLine`/`directReportsLine` with `buildChainOfCommand()`, add `buildServicesContext()` |
+| `packages/jinn/src/gateway/__tests__/services.test.ts` | **New file** — tests for LCA, route path, manager chain, service registry |
 | Template `CLAUDE.md` + `AGENTS.md` | Add service routing docs to API reference table |
 
 ## Non-goals

@@ -5,13 +5,13 @@ description: Use when cutting a new jinn-cli release for this repo — bumping t
 
 # Releasing jinn-cli
 
-The published npm package is **`jinn-cli`** (lives in `packages/jimmy`). The root
+The published npm package is **`jinn-cli`** (lives in `packages/jinn`). The root
 package (`jinn`) is private; `packages/web` is internal (its version isn't shipped).
-Version lives in **one place**: `packages/jimmy/package.json`.
+Version lives in **one place**: `packages/jinn/package.json`.
 
 ## How the pieces connect
 
-- **npm**: published manually with `npm publish` from `packages/jimmy`. The package
+- **npm**: published manually with `npm publish` from `packages/jinn`. The package
   ships `dist/` and `template/` (see its `files`), so you MUST build first.
 - **GitHub release**: created for tag `vX.Y.Z`.
 - **Homebrew**: `.github/workflows/bump-formula.yml` fires on `release: published`.
@@ -33,27 +33,27 @@ Version lives in **one place**: `packages/jimmy/package.json`.
 
 3. **Bump + commit** (no `Co-Authored-By: Claude` trailer — repo convention):
    ```bash
-   # edit packages/jimmy/package.json "version"
+   # edit packages/jinn/package.json "version"
    git commit -am "chore(release): jinn-cli vX.Y.Z"
    ```
 
 4. **Build + verify** from repo root:
    ```bash
-   pnpm build      # turbo build + copies packages/web/out -> packages/jimmy/dist/web
+   pnpm build      # turbo build + copies packages/web/out -> packages/jinn/dist/web
    pnpm typecheck && pnpm test
    ```
 
 5. **Publish to npm.** A gitignored npm **automation token** lives at
-   **`packages/jimmy/.npmrc`** (`//registry.npmjs.org/:_authToken=...`). npm reads
+   **`packages/jinn/.npmrc`** (`//registry.npmjs.org/:_authToken=...`). npm reads
    it automatically when publishing from that directory, so it bypasses the
    account's interactive login + 2FA OTP. Publish:
    ```bash
-   cd packages/jimmy && npm publish && cd -
+   cd packages/jinn && npm publish && cd -
    ```
    - This is the irreversible step — confirm with the maintainer first.
    - If publish fails with `E401`/`EOTP`, the token file is missing or revoked.
      Recreate it at npmjs.com → Access Tokens → Classic → **Automation**, then
-     write `//registry.npmjs.org/:_authToken=<token>` to `packages/jimmy/.npmrc`
+     write `//registry.npmjs.org/:_authToken=<token>` to `packages/jinn/.npmrc`
      (it's already in `.gitignore` — never commit it).
 
 6. **Tag + push:**
@@ -71,6 +71,6 @@ Version lives in **one place**: `packages/jimmy/package.json`.
    (check the bump-formula workflow run), and `npm view jinn-cli version` is X.Y.Z.
 
 ## Notes
-- Don't bump `package.json` in the root or `packages/web` — only `packages/jimmy`.
+- Don't bump `package.json` in the root or `packages/web` — only `packages/jinn`.
 - If the formula job fails, it's almost always the npm tarball not being live yet;
   re-run the workflow once `npm view jinn-cli@X.Y.Z` resolves.

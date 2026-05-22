@@ -77,8 +77,11 @@ export class SessionQueue {
         if (!this.cancelled.has(sessionKey)) {
           await fn();
         }
-        if (queueItemId) markQueueItemCompleted(queueItemId);
       } finally {
+        // Mark the DB row done in finally so an errored/cancelled task can't
+        // leave the item stuck as 'running' (getQueueItems returns 'running'
+        // rows, so a stuck row would keep the UI badge from draining).
+        if (queueItemId) markQueueItemCompleted(queueItemId);
         this.running.delete(sessionKey);
         this.decrementPending(sessionKey);
       }

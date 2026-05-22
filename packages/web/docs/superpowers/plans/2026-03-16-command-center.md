@@ -52,7 +52,7 @@ These corrections apply across the plan. The implementer MUST follow these over 
 
 ## File Structure
 
-### Gateway (`packages/jimmy/src/`)
+### Gateway (`packages/jinn/src/`)
 
 | File | Action | Responsibility |
 |------|--------|---------------|
@@ -94,7 +94,7 @@ These corrections apply across the plan. The implementer MUST follow these over 
 ### Task 1.1: Extend shared types
 
 **Files:**
-- Modify: `packages/jimmy/src/shared/types.ts`
+- Modify: `packages/jinn/src/shared/types.ts`
 
 - [ ] **Step 1: Add Project interface**
 
@@ -165,22 +165,22 @@ Find the `CronJob` interface/type and add:
 
 - [ ] **Step 5: Verify build compiles**
 
-Run: `cd ~/Projects/jimmy && npm run build --workspace=packages/jimmy 2>&1 | head -30`
+Run: `cd ~/Projects/jinn && npm run build --workspace=packages/jinn 2>&1 | head -30`
 
 Fix any type errors in existing code that now requires the new Session fields. Existing session creation code should default to `projects: []`, `attentionRequired: false`, `priority: null`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/jimmy/src/shared/types.ts
+git add packages/jinn/src/shared/types.ts
 git commit -m "feat(types): add Project, Task interfaces and extend Session with priority/attention fields"
 ```
 
 ### Task 1.2: Project storage module
 
 **Files:**
-- Create: `packages/jimmy/src/gateway/projects.ts`
-- Create: `packages/jimmy/src/gateway/projects.test.ts`
+- Create: `packages/jinn/src/gateway/projects.ts`
+- Create: `packages/jinn/src/gateway/projects.test.ts`
 
 - [ ] **Step 1: Write failing tests for project CRUD**
 
@@ -247,7 +247,7 @@ test('deleteProject removes from array', () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/Projects/jimmy && node --test packages/jimmy/src/gateway/projects.test.ts`
+Run: `cd ~/Projects/jinn && node --test packages/jinn/src/gateway/projects.test.ts`
 Expected: FAIL (module not found)
 
 - [ ] **Step 3: Implement projects.ts**
@@ -307,21 +307,21 @@ export function deleteProject(projects: Project[], id: string): Project[] {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/Projects/jimmy && node --test packages/jimmy/src/gateway/projects.test.ts`
+Run: `cd ~/Projects/jinn && node --test packages/jinn/src/gateway/projects.test.ts`
 Expected: All 6 tests PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/jimmy/src/gateway/projects.ts packages/jimmy/src/gateway/projects.test.ts
+git add packages/jinn/src/gateway/projects.ts packages/jinn/src/gateway/projects.test.ts
 git commit -m "feat(gateway): add project storage module with CRUD and tests"
 ```
 
 ### Task 1.3: Task storage module
 
 **Files:**
-- Create: `packages/jimmy/src/gateway/tasks.ts`
-- Create: `packages/jimmy/src/gateway/tasks.test.ts`
+- Create: `packages/jinn/src/gateway/tasks.ts`
+- Create: `packages/jinn/src/gateway/tasks.test.ts`
 
 - [ ] **Step 1: Write failing tests for task CRUD**
 
@@ -379,7 +379,7 @@ test('deleteTask removes by id', () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/Projects/jimmy && node --test packages/jimmy/src/gateway/tasks.test.ts`
+Run: `cd ~/Projects/jinn && node --test packages/jinn/src/gateway/tasks.test.ts`
 Expected: FAIL (module not found)
 
 - [ ] **Step 3: Implement tasks.ts**
@@ -443,21 +443,21 @@ export function deleteTask(tasks: Task[], id: string): Task[] {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/Projects/jimmy && node --test packages/jimmy/src/gateway/tasks.test.ts`
+Run: `cd ~/Projects/jinn && node --test packages/jinn/src/gateway/tasks.test.ts`
 Expected: All 5 tests PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/jimmy/src/gateway/tasks.ts packages/jimmy/src/gateway/tasks.test.ts
+git add packages/jinn/src/gateway/tasks.ts packages/jinn/src/gateway/tasks.test.ts
 git commit -m "feat(gateway): add task storage module with CRUD, blocked auto-attention, and tests"
 ```
 
 ### Task 1.4: Auto-tagger module
 
 **Files:**
-- Create: `packages/jimmy/src/gateway/project-tagger.ts`
-- Create: `packages/jimmy/src/gateway/project-tagger.test.ts`
+- Create: `packages/jinn/src/gateway/project-tagger.ts`
+- Create: `packages/jinn/src/gateway/project-tagger.test.ts`
 
 - [ ] **Step 1: Write failing tests for auto-tagging**
 
@@ -527,7 +527,7 @@ test('does not duplicate tags', () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/Projects/jimmy && node --test packages/jimmy/src/gateway/project-tagger.test.ts`
+Run: `cd ~/Projects/jinn && node --test packages/jinn/src/gateway/project-tagger.test.ts`
 Expected: FAIL (module not found)
 
 - [ ] **Step 3: Implement project-tagger.ts**
@@ -614,13 +614,13 @@ export function autoTagSession(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/Projects/jimmy && node --test packages/jimmy/src/gateway/project-tagger.test.ts`
+Run: `cd ~/Projects/jinn && node --test packages/jinn/src/gateway/project-tagger.test.ts`
 Expected: All 7 tests PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/jimmy/src/gateway/project-tagger.ts packages/jimmy/src/gateway/project-tagger.test.ts
+git add packages/jinn/src/gateway/project-tagger.ts packages/jinn/src/gateway/project-tagger.test.ts
 git commit -m "feat(gateway): add auto-tagger module with 5-step waterfall and tests"
 ```
 
@@ -631,7 +631,7 @@ git commit -m "feat(gateway): add auto-tagger module with 5-step waterfall and t
 ### Task 2.1: Add `patch` helper and project stats computation
 
 **Files:**
-- Modify: `packages/jimmy/src/gateway/api.ts`
+- Modify: `packages/jinn/src/gateway/api.ts`
 
 - [ ] **Step 1: Add PATCH /api/sessions/:id route**
 
@@ -795,21 +795,21 @@ if (delTask && req.method === 'DELETE') {
 
 - [ ] **Step 4: Verify gateway compiles**
 
-Run: `cd ~/Projects/jimmy && npm run build --workspace=packages/jimmy 2>&1 | head -30`
+Run: `cd ~/Projects/jinn && npm run build --workspace=packages/jinn 2>&1 | head -30`
 Expected: No errors
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/jimmy/src/gateway/api.ts
+git add packages/jinn/src/gateway/api.ts
 git commit -m "feat(gateway): add project/task CRUD routes and session PATCH for priority/attention"
 ```
 
 ### Task 2.2: Integrate auto-tagger into session creation
 
 **Files:**
-- Modify: `packages/jimmy/src/gateway/api.ts` (session creation section)
-- Modify: `packages/jimmy/src/cron/runner.ts`
+- Modify: `packages/jinn/src/gateway/api.ts` (session creation section)
+- Modify: `packages/jinn/src/cron/runner.ts`
 
 - [ ] **Step 1: Hook auto-tagger into POST /api/sessions**
 
@@ -877,13 +877,13 @@ Ensure the session created by `sessionManager.route()` picks up these fields.
 
 - [ ] **Step 3: Verify build**
 
-Run: `cd ~/Projects/jimmy && npm run build --workspace=packages/jimmy 2>&1 | head -30`
+Run: `cd ~/Projects/jinn && npm run build --workspace=packages/jinn 2>&1 | head -30`
 Expected: No errors
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add packages/jimmy/src/gateway/api.ts packages/jimmy/src/cron/runner.ts
+git add packages/jinn/src/gateway/api.ts packages/jinn/src/cron/runner.ts
 git commit -m "feat(gateway): integrate auto-tagger into session creation and cron attention propagation"
 ```
 
@@ -1506,7 +1506,7 @@ export default function CommandCenterPage() {
 
 - [ ] **Step 4: Verify page loads**
 
-Run: `cd ~/Projects/jimmy && npm run dev --workspace=packages/web`
+Run: `cd ~/Projects/jinn && npm run dev --workspace=packages/web`
 Navigate to `/command` — should see the page shell with tab buttons and filter.
 
 - [ ] **Step 5: Commit**
@@ -1678,7 +1678,7 @@ git commit -m "feat(web): add Dashboard view with project cards, status indicato
 
 - [ ] **Step 1: Install dependency**
 
-Run: `cd ~/Projects/jimmy/packages/web && npm install @xyflow/react`
+Run: `cd ~/Projects/jinn/packages/web && npm install @xyflow/react`
 
 - [ ] **Step 2: Commit**
 
@@ -2727,7 +2727,7 @@ git commit -m "feat(web): apply smart decay filter to Command Center session vie
 ### Task 8.4: Seed default projects from org departments
 
 **Files:**
-- Modify: `packages/jimmy/src/gateway/api.ts` (or create a startup migration)
+- Modify: `packages/jinn/src/gateway/api.ts` (or create a startup migration)
 
 - [ ] **Step 1: Add project seeding on first load**
 
@@ -2767,7 +2767,7 @@ Delete `~/.jinn/projects.json` if it exists. Hit `GET /api/projects`. Should ret
 - [ ] **Step 3: Commit**
 
 ```bash
-git add packages/jimmy/src/gateway/api.ts
+git add packages/jinn/src/gateway/api.ts
 git commit -m "feat(gateway): auto-seed projects from org departments on first load"
 ```
 
@@ -2775,18 +2775,18 @@ git commit -m "feat(gateway): auto-seed projects from org departments on first l
 
 - [ ] **Step 1: Run all gateway tests**
 
-Run: `cd ~/Projects/jimmy && node --test packages/jimmy/src/gateway/projects.test.ts packages/jimmy/src/gateway/tasks.test.ts packages/jimmy/src/gateway/project-tagger.test.ts`
+Run: `cd ~/Projects/jinn && node --test packages/jinn/src/gateway/projects.test.ts packages/jinn/src/gateway/tasks.test.ts packages/jinn/src/gateway/project-tagger.test.ts`
 Expected: All tests PASS
 
 - [ ] **Step 2: Run full build**
 
-Run: `cd ~/Projects/jimmy && npm run build 2>&1 | tail -20`
+Run: `cd ~/Projects/jinn && npm run build 2>&1 | tail -20`
 Expected: No errors
 
 - [ ] **Step 3: End-to-end manual smoke test**
 
-1. Start gateway: `cd ~/Projects/jimmy && npm run dev --workspace=packages/jimmy`
-2. Start web: `cd ~/Projects/jimmy && npm run dev --workspace=packages/web`
+1. Start gateway: `cd ~/Projects/jinn && npm run dev --workspace=packages/jinn`
+2. Start web: `cd ~/Projects/jinn && npm run dev --workspace=packages/web`
 3. Navigate to `/command`
 4. Verify: Graph view shows project nodes, draggable, positions persist
 5. Verify: Dashboard view shows project cards, sorted by attention

@@ -4,20 +4,20 @@
   "packageManager": "pnpm@10.6.4",
   "scripts": {
     "postinstall": "chmod +x node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true",
-    "build": "turbo build && rm -rf packages/jimmy/dist/web && cp -r packages/web/out packages/jimmy/dist/web",
+    "build": "turbo build && rm -rf packages/jinn/dist/web && cp -r packages/web/out packages/jinn/dist/web",
     "dev": "turbo dev",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "test": "turbo run test",
     "test:e2e": "playwright test",
     "clean": "rm -rf .turbo node_modules/.cache && turbo clean",
-    "jinn": "node packages/jimmy/dist/bin/jimmy.js",
-    "setup": "pnpm build && node packages/jimmy/dist/bin/jimmy.js setup",
-    "setup:force": "pnpm build && node packages/jimmy/dist/bin/jimmy.js setup --force",
-    "start": "pnpm clean && pnpm build && node packages/jimmy/dist/bin/jimmy.js start",
-    "stop": "node packages/jimmy/dist/bin/jimmy.js stop",
-    "nuke": "node packages/jimmy/dist/bin/jimmy.js nuke",
-    "status": "node packages/jimmy/dist/bin/jimmy.js status"
+    "jinn": "node packages/jinn/dist/bin/jinn.js",
+    "setup": "pnpm build && node packages/jinn/dist/bin/jinn.js setup",
+    "setup:force": "pnpm build && node packages/jinn/dist/bin/jinn.js setup --force",
+    "start": "pnpm clean && pnpm build && node packages/jinn/dist/bin/jinn.js start",
+    "stop": "node packages/jinn/dist/bin/jinn.js stop",
+    "nuke": "node packages/jinn/dist/bin/jinn.js nuke",
+    "status": "node packages/jinn/dist/bin/jinn.js status"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

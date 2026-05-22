@@ -1,11 +1,11 @@
 {
   "name": "jinn-cli",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Lightweight AI gateway daemon orchestrating Claude Code, Codex, and Gemini CLI",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "jinn": "./dist/bin/jimmy.js"
+    "jinn": "./dist/bin/jinn.js"
   },
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build": "tsc && rm -rf dist/web && cp -r ../web/out dist/web 2>/dev/null || true",
-    "dev": "tsc && (tsc --watch &) && node --watch-path=dist dist/bin/jimmy.js start",
+    "dev": "tsc && (tsc --watch &) && node --watch-path=dist dist/bin/jinn.js start",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

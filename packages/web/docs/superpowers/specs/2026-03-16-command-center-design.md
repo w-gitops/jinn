@@ -277,7 +277,7 @@ This follows the existing pattern used by `cron/jobs.json` and session storage �
 
 ### Session Schema Migration
 
-The `Session` interface in `packages/jimmy/src/shared/types.ts` gains three new fields:
+The `Session` interface in `packages/jinn/src/shared/types.ts` gains three new fields:
 
 ```typescript
 projects: string[]              // default: []
@@ -289,7 +289,7 @@ priority: 'urgent' | 'normal' | 'low' | null  // default: null
 
 ### New Gateway Routes
 
-In `packages/jimmy/src/gateway/api.ts`:
+In `packages/jinn/src/gateway/api.ts`:
 
 - `PATCH /api/sessions/:id` — new route accepting `{projects?, priority?, attentionRequired?}`, updates session in registry and emits `session:updated` WebSocket event
 - `GET/POST /api/projects` — CRUD for projects (read/write `projects.json`)
@@ -316,7 +316,7 @@ deleteTask(id: string): Promise<void>
 
 ### Auto-Tagger Module
 
-New module `packages/jimmy/src/gateway/project-tagger.ts`:
+New module `packages/jinn/src/gateway/project-tagger.ts`:
 - Exported function `autoTagSession(session: Session, projects: Project[], org: OrgRegistry): string[]`
 - Called synchronously by the session create/update handlers
 - Returns array of project IDs to assign

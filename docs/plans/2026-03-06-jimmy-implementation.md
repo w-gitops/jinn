@@ -139,13 +139,13 @@ git commit -m "chore: initialize monorepo with pnpm + turborepo"
 ### Task 1.2: Create jinn-cli package scaffold
 
 **Files:**
-- Create: `packages/jimmy/package.json`
-- Create: `packages/jimmy/tsconfig.json`
-- Create: `packages/jimmy/bin/jimmy.ts`
-- Create: `packages/jimmy/src/shared/types.ts`
-- Create: `packages/jimmy/src/shared/paths.ts`
-- Create: `packages/jimmy/src/shared/config.ts`
-- Create: `packages/jimmy/src/shared/logger.ts`
+- Create: `packages/jinn/package.json`
+- Create: `packages/jinn/tsconfig.json`
+- Create: `packages/jinn/bin/jinn.ts`
+- Create: `packages/jinn/src/shared/types.ts`
+- Create: `packages/jinn/src/shared/paths.ts`
+- Create: `packages/jinn/src/shared/config.ts`
+- Create: `packages/jinn/src/shared/logger.ts`
 
 **Step 1: Create package.json**
 
@@ -156,7 +156,7 @@ git commit -m "chore: initialize monorepo with pnpm + turborepo"
   "description": "Lightweight AI gateway daemon orchestrating Claude Code and Codex",
   "license": "MIT",
   "bin": {
-    "jinn": "./dist/bin/jimmy.js"
+    "jinn": "./dist/bin/jinn.js"
   },
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
@@ -295,7 +295,7 @@ Reads and parses `~/.jinn/config.yaml` using js-yaml. Returns typed `JinnConfig`
 
 Simple logger that writes to both `~/.jinn/logs/gateway.log` (append) and stdout. Supports levels: debug, info, warn, error. Timestamps each line. Respects config `logging.level` and `logging.stdout` settings.
 
-**Step 7: Create CLI entry point (`bin/jimmy.ts`)**
+**Step 7: Create CLI entry point (`bin/jinn.ts`)**
 
 ```typescript
 #!/usr/bin/env node
@@ -328,10 +328,10 @@ program.parse();
 
 **Step 8: Build and verify**
 
-Run: `cd packages/jimmy && pnpm build`
+Run: `cd packages/jinn && pnpm build`
 Expected: compiles to `dist/` without errors
 
-Run: `node dist/bin/jimmy.js --help`
+Run: `node dist/bin/jinn.js --help`
 Expected: shows help text with setup/start/stop/status commands
 
 **Step 9: Commit**
@@ -350,7 +350,7 @@ Build the core: SQLite session registry and both engine wrappers.
 ### Task 2.1: Session registry (SQLite)
 
 **Files:**
-- Create: `packages/jimmy/src/sessions/registry.ts`
+- Create: `packages/jinn/src/sessions/registry.ts`
 
 **Step 1: Write registry module**
 
@@ -382,8 +382,8 @@ git commit -m "feat: add SQLite session registry"
 ### Task 2.2: Engine types and Claude engine
 
 **Files:**
-- Create: `packages/jimmy/src/engines/types.ts` (extract from shared/types.ts if needed)
-- Create: `packages/jimmy/src/engines/claude.ts`
+- Create: `packages/jinn/src/engines/types.ts` (extract from shared/types.ts if needed)
+- Create: `packages/jinn/src/engines/claude.ts`
 
 **Step 1: Write Claude engine**
 
@@ -469,7 +469,7 @@ git commit -m "feat: add Claude Code engine wrapper"
 ### Task 2.3: Codex engine
 
 **Files:**
-- Create: `packages/jimmy/src/engines/codex.ts`
+- Create: `packages/jinn/src/engines/codex.ts`
 
 **Step 1: Write Codex engine**
 
@@ -536,9 +536,9 @@ git commit -m "feat: add Codex SDK engine wrapper"
 ### Task 2.4: Session manager
 
 **Files:**
-- Create: `packages/jimmy/src/sessions/manager.ts`
-- Create: `packages/jimmy/src/sessions/context.ts`
-- Create: `packages/jimmy/src/sessions/queue.ts`
+- Create: `packages/jinn/src/sessions/manager.ts`
+- Create: `packages/jinn/src/sessions/context.ts`
+- Create: `packages/jinn/src/sessions/queue.ts`
 
 **Step 1: Write context builder (`context.ts`)**
 
@@ -613,10 +613,10 @@ Wire everything into a running process.
 ### Task 3.1: Gateway server
 
 **Files:**
-- Create: `packages/jimmy/src/gateway/server.ts`
-- Create: `packages/jimmy/src/gateway/api.ts`
-- Create: `packages/jimmy/src/gateway/watcher.ts`
-- Create: `packages/jimmy/src/gateway/lifecycle.ts`
+- Create: `packages/jinn/src/gateway/server.ts`
+- Create: `packages/jinn/src/gateway/api.ts`
+- Create: `packages/jinn/src/gateway/watcher.ts`
+- Create: `packages/jinn/src/gateway/lifecycle.ts`
 
 **Step 1: Write HTTP + WebSocket server (`server.ts`)**
 
@@ -682,11 +682,11 @@ git commit -m "feat: add gateway server with API, file watcher, and lifecycle ma
 ### Task 3.2: Wire CLI commands
 
 **Files:**
-- Modify: `packages/jimmy/bin/jimmy.ts`
-- Create: `packages/jimmy/src/cli/setup.ts`
-- Create: `packages/jimmy/src/cli/start.ts`
-- Create: `packages/jimmy/src/cli/stop.ts`
-- Create: `packages/jimmy/src/cli/status.ts`
+- Modify: `packages/jinn/bin/jinn.ts`
+- Create: `packages/jinn/src/cli/setup.ts`
+- Create: `packages/jinn/src/cli/start.ts`
+- Create: `packages/jinn/src/cli/stop.ts`
+- Create: `packages/jinn/src/cli/status.ts`
 
 **Step 1: Write setup command (`cli/setup.ts`)**
 
@@ -712,22 +712,22 @@ Call `lifecycle.stop()`. Print confirmation or "not running".
 
 Call `lifecycle.getStatus()`. Print running/stopped, PID, uptime, port. If running, also call `/api/status` via HTTP to get live stats.
 
-**Step 5: Wire into bin/jimmy.ts**
+**Step 5: Wire into bin/jinn.ts**
 
 Replace TODO placeholders with actual imports and calls.
 
 **Step 6: Build and test end-to-end**
 
-Run: `pnpm build && node dist/bin/jimmy.js setup`
+Run: `pnpm build && node dist/bin/jinn.js setup`
 Expected: creates `~/.jinn/` directory with all template files
 
-Run: `node dist/bin/jimmy.js start`
+Run: `node dist/bin/jinn.js start`
 Expected: gateway starts on port 7777, logs to stdout
 
 Run (in another terminal): `curl http://localhost:7777/api/status`
 Expected: JSON response with gateway status
 
-Run: `node dist/bin/jimmy.js status`
+Run: `node dist/bin/jinn.js status`
 Expected: shows "running" with PID and port
 
 Ctrl+C the gateway.
@@ -748,8 +748,8 @@ Create the brain — the files that make engines understand Jinn.
 ### Task 4.1: Write CLAUDE.md and AGENTS.md
 
 **Files:**
-- Create: `packages/jimmy/template/CLAUDE.md`
-- Create: `packages/jimmy/template/AGENTS.md`
+- Create: `packages/jinn/template/CLAUDE.md`
+- Create: `packages/jinn/template/AGENTS.md`
 
 **Step 1: Write CLAUDE.md**
 
@@ -781,11 +781,11 @@ git commit -m "feat: add CLAUDE.md and AGENTS.md template files"
 ### Task 4.2: Write pre-packaged skills
 
 **Files:**
-- Create: `packages/jimmy/template/skills/management/SKILL.md`
-- Create: `packages/jimmy/template/skills/cron-manager/SKILL.md`
-- Create: `packages/jimmy/template/skills/skill-creator/SKILL.md`
-- Create: `packages/jimmy/template/skills/self-heal/SKILL.md`
-- Create: `packages/jimmy/template/skills/onboarding/SKILL.md`
+- Create: `packages/jinn/template/skills/management/SKILL.md`
+- Create: `packages/jinn/template/skills/cron-manager/SKILL.md`
+- Create: `packages/jinn/template/skills/skill-creator/SKILL.md`
+- Create: `packages/jinn/template/skills/self-heal/SKILL.md`
+- Create: `packages/jinn/template/skills/onboarding/SKILL.md`
 
 **Step 1: Write management skill**
 
@@ -819,13 +819,13 @@ git commit -m "feat: add pre-packaged skills (management, cron-manager, skill-cr
 ### Task 4.3: Write docs
 
 **Files:**
-- Create: `packages/jimmy/template/docs/overview.md`
-- Create: `packages/jimmy/template/docs/architecture.md`
-- Create: `packages/jimmy/template/docs/skills.md`
-- Create: `packages/jimmy/template/docs/cron.md`
-- Create: `packages/jimmy/template/docs/connectors.md`
-- Create: `packages/jimmy/template/docs/org.md`
-- Create: `packages/jimmy/template/docs/self-modification.md`
+- Create: `packages/jinn/template/docs/overview.md`
+- Create: `packages/jinn/template/docs/architecture.md`
+- Create: `packages/jinn/template/docs/skills.md`
+- Create: `packages/jinn/template/docs/cron.md`
+- Create: `packages/jinn/template/docs/connectors.md`
+- Create: `packages/jinn/template/docs/org.md`
+- Create: `packages/jinn/template/docs/self-modification.md`
 
 **Step 1: Write each doc**
 
@@ -840,7 +840,7 @@ These are for Jinn's self-awareness. Each doc should be concise and technical:
 
 **Step 2: Write default config.yaml template**
 
-Create: `packages/jimmy/template/config.default.yaml` with the config from the design doc.
+Create: `packages/jinn/template/config.default.yaml` with the config from the design doc.
 
 **Step 3: Commit**
 
@@ -856,9 +856,9 @@ git commit -m "feat: add docs and default config template"
 ### Task 5.1: Implement Slack connector
 
 **Files:**
-- Create: `packages/jimmy/src/connectors/slack/index.ts`
-- Create: `packages/jimmy/src/connectors/slack/threads.ts`
-- Create: `packages/jimmy/src/connectors/slack/format.ts`
+- Create: `packages/jinn/src/connectors/slack/index.ts`
+- Create: `packages/jinn/src/connectors/slack/threads.ts`
+- Create: `packages/jinn/src/connectors/slack/format.ts`
 
 **Step 1: Write thread mapper (`threads.ts`)**
 
@@ -946,9 +946,9 @@ git commit -m "feat: add Slack connector with thread mapping and reactions"
 ### Task 6.1: Implement cron scheduler
 
 **Files:**
-- Create: `packages/jimmy/src/cron/jobs.ts`
-- Create: `packages/jimmy/src/cron/scheduler.ts`
-- Create: `packages/jimmy/src/cron/runner.ts`
+- Create: `packages/jinn/src/cron/jobs.ts`
+- Create: `packages/jinn/src/cron/scheduler.ts`
+- Create: `packages/jinn/src/cron/runner.ts`
 
 **Step 1: Write job loader (`jobs.ts`)**
 
@@ -1001,7 +1001,7 @@ git commit -m "feat: add cron scheduler with job loader and runner"
 ### Task 7.1: Employee registry in gateway
 
 **Files:**
-- Create: `packages/jimmy/src/gateway/org.ts`
+- Create: `packages/jinn/src/gateway/org.ts`
 
 **Step 1: Write org scanner**
 
@@ -1215,8 +1215,8 @@ git commit -m "feat: add cron, skills, logs, and settings pages"
 ### Task 8.6: Bundle web UI into CLI package
 
 **Files:**
-- Modify: `packages/jimmy/package.json` (add build script that copies web output)
-- Modify: `packages/jimmy/src/gateway/server.ts` (serve static files from bundled web)
+- Modify: `packages/jinn/package.json` (add build script that copies web output)
+- Modify: `packages/jinn/src/gateway/server.ts` (serve static files from bundled web)
 - Modify: `turbo.json` (ensure web builds before jinn-cli)
 
 **Step 1: Add build pipeline**
@@ -1230,7 +1230,7 @@ In `server.ts`, if request doesn't match `/api/*` or `/ws`, serve from the bundl
 **Step 3: End-to-end test**
 
 Run: `pnpm build` (builds both packages)
-Run: `node dist/bin/jimmy.js start`
+Run: `node dist/bin/jinn.js start`
 Open: `http://localhost:7777`
 Expected: web UI loads, dashboard shows gateway status
 

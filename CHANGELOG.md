@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.15.0] - 2026-05-22
+
+### ♻️ Refactor
+- **Kill the "jimmy" naming soup** — the repo, home dir, npm package, and binary all converged on **jinn**, but the project folder (`~/Projects/jimmy`) and the inner package (`packages/jimmy`) were the lone holdouts. Renamed the project root to `~/Projects/jinn`, `packages/jimmy` → `packages/jinn`, and the CLI entry `bin/jimmy.ts` → `bin/jinn.ts`. The published npm package (`jinn-cli`), the `jinn` binary, and the `~/.jinn` workspace are unchanged — no action needed for existing installs. All workspace/build/Formula/workflow/release-skill path references updated to match.
+
 ## [0.14.0] - 2026-05-21
 
 ### ✨ Features

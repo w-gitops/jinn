@@ -166,10 +166,20 @@ function dispatchWebSessionRun(
   opts?: { delayMs?: number; queueItemId?: string; attachments?: string[] },
 ): void {
   const run = async () => {
-    await context.sessionManager.getQueue().enqueue(session.sessionKey || session.sourceRef, async () => {
-      context.emit("session:started", { sessionId: session.id });
-      await runWebSession(session, prompt, engine, config, context, opts?.attachments);
-    }, opts?.queueItemId);
+    const sessionKey = session.sessionKey || session.sourceRef;
+    try {
+      await context.sessionManager.getQueue().enqueue(sessionKey, async () => {
+        context.emit("session:started", { sessionId: session.id });
+        // Item moved pending → running: refresh the queue panel.
+        if (opts?.queueItemId) context.emit("queue:updated", { sessionId: session.id, sessionKey });
+        await runWebSession(session, prompt, engine, config, context, opts?.attachments);
+      }, opts?.queueItemId);
+    } finally {
+      // Item settled (completed/cancelled/errored): refresh so the "N queued"
+      // panel drains. Without this the panel only refreshes on enqueue and the
+      // badge sticks at its peak. (queue.ts marks the DB row done in its finally.)
+      if (opts?.queueItemId) context.emit("queue:updated", { sessionId: session.id, sessionKey });
+    }
   };
 
   const launch = () => {
@@ -886,7 +896,7 @@ export async function handleApiRequest(
           // SessionQueue serializes per-session; the new turn enqueued below will
           // wait for the killed run()'s promise to settle before starting.
           context.emit("session:interrupted", { sessionId: session.id, reason: "new message" });
-        } else {
+        } else if (!isNotification) {
           context.emit("session:queued", { sessionId: session.id, message: prompt });
         }
       }
@@ -908,8 +918,15 @@ export async function handleApiRequest(
       const attachmentPaths = resolveAttachmentPaths(body.attachments);
 
       const sessionKey = session.sessionKey || session.sourceRef || session.id;
-      const queueItemId = enqueueQueueItem(session.id, sessionKey, prompt);
-      context.emit("queue:updated", { sessionId: session.id, sessionKey });
+      // Internal notification-role messages (child-completion callbacks) are
+      // serialized via the in-memory queue but must NOT appear in the user's
+      // queue panel — they already surface as banners. Only real user messages
+      // get a visible queue item.
+      let queueItemId: string | undefined;
+      if (!isNotification) {
+        queueItemId = enqueueQueueItem(session.id, sessionKey, prompt);
+        context.emit("queue:updated", { sessionId: session.id, sessionKey });
+      }
 
       dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined });
 
