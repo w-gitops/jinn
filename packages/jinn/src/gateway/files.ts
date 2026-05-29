@@ -575,11 +575,14 @@ async function finalizeAttachment(
     sessionId,
   }, context);
   const media = buildMessageMedia(meta);
+  // Insert FIRST so the row is committed before we emit — the WS payload carries the
+  // canonical message id so the web client can append optimistically AND dedupe/merge
+  // it against the next history fetch (no disappear, no double-render).
+  const messageId = insertMessage(sessionId, "assistant", caption, [media]);
   const timestamp = Date.now();
-  insertMessage(sessionId, "assistant", caption, [media]);
-  context.emit("session:attachment", { sessionId, content: caption, media: [media], timestamp });
+  context.emit("session:attachment", { sessionId, id: messageId, content: caption, media: [media], timestamp });
   logger.info(`Attachment pushed to session ${sessionId}: ${meta.filename} (${meta.id})`);
-  json(res, { ...meta, media, message: { role: "assistant", content: caption, media: [media], timestamp } }, 201);
+  json(res, { ...meta, media, message: { id: messageId, role: "assistant", content: caption, media: [media], timestamp } }, 201);
 }
 
 /** Handle POST /api/sessions/:id/attachments — multipart upload from the running agent. */

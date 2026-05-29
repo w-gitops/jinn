@@ -11,7 +11,7 @@ const CliTerminal = lazy(() => import('@/components/cli-terminal').then(m => ({ 
 import { buildNewSessionParams } from '@/components/chat/new-chat-helpers'
 import type { Employee } from '@/lib/api'
 import type { Message, MediaAttachment } from '@/lib/conversations'
-import { saveIntermediateMessages, loadIntermediateMessages, clearIntermediateMessages } from '@/lib/conversations'
+import { saveIntermediateMessages, loadIntermediateMessages, clearIntermediateMessages, reconcileMessages } from '@/lib/conversations'
 
 type Listener = (event: string, payload: unknown) => void
 
@@ -190,17 +190,23 @@ export function ChatPane({
 
       if (event === 'session:attachment') {
         const media = Array.isArray(p.media) ? (p.media as MediaAttachment[]) : []
+        // Use the server's canonical message id so the next history fetch merges
+        // (not duplicates) this message. Guard against re-append if the event fires twice.
+        const attachmentId = typeof p.id === 'string' ? p.id : crypto.randomUUID()
         if (media.length > 0) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: 'assistant' as const,
-              content: String(p.content || ''),
-              timestamp: p.timestamp ? Number(p.timestamp) : Date.now(),
-              media,
-            },
-          ])
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === attachmentId)) return prev
+            return [
+              ...prev,
+              {
+                id: attachmentId,
+                role: 'assistant' as const,
+                content: String(p.content || ''),
+                timestamp: p.timestamp ? Number(p.timestamp) : Date.now(),
+                media,
+              },
+            ]
+          })
         }
       }
 
@@ -230,7 +236,10 @@ export function ChatPane({
           setMessages((prev) => {
             const cleaned = [...prev]
             const last = cleaned[cleaned.length - 1]
-            if (last && last.role === 'assistant' && !last.toolCall) {
+            // Pop the optimistic streaming-text bubble so the canonical result replaces it,
+            // but NEVER pop an attachment (media) message — it's already persisted and would
+            // otherwise vanish until reload.
+            if (last && last.role === 'assistant' && !last.toolCall && !(last.media && last.media.length > 0)) {
               cleaned.pop()
             }
             return [
@@ -281,7 +290,9 @@ export function ChatPane({
       const history = session.messages || session.history || []
       const backendMessages: Message[] = Array.isArray(history)
         ? history.map((m: Record<string, unknown>) => ({
-            id: crypto.randomUUID(),
+            // Preserve the server's stable message id so live-pushed messages
+            // (e.g. attachments) merge/dedupe by id instead of duplicating.
+            id: typeof m.id === 'string' ? m.id : crypto.randomUUID(),
             role: (m.role as 'user' | 'assistant' | 'notification') || 'assistant',
             content: String(m.content || m.text || ''),
             timestamp: m.timestamp ? Number(m.timestamp) : Date.now(),
@@ -309,7 +320,8 @@ export function ChatPane({
         const cached = loadIntermediateMessages(id)
         if (cached.length > 0) {
           intermediateStartRef.current = backendMessages.length
-          setMessages([...backendMessages, ...cached])
+          // Reconcile so a live-pushed attachment not yet in the snapshot survives.
+          setMessages((current) => reconcileMessages(current, [...backendMessages, ...cached]))
         } else {
           intermediateStartRef.current = backendMessages.length
           setMessages((current) => {
@@ -320,7 +332,7 @@ export function ChatPane({
               return current
             }
             const next = backendMessages.length > 0 ? backendMessages : current
-            return next
+            return reconcileMessages(current, next)
           })
         }
         // Loading state is owned by handleSend (sets true) + WS session:completed/stopped (sets false).
@@ -337,7 +349,7 @@ export function ChatPane({
             return current
           }
           const next = backendMessages.length > 0 ? backendMessages : current
-          return next
+          return reconcileMessages(current, next)
         })
       }
     } catch {
