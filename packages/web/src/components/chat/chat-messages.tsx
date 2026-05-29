@@ -1,8 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { Message, MediaAttachment } from '@/lib/conversations'
-import { parseMedia } from '@/lib/conversations'
-import { FileAttachment } from './file-attachment'
-import { VoiceMessage } from './voice-message'
+import type { Message } from '@/lib/conversations'
+import { parseMedia, stripAttachedFilesBlock } from '@/lib/conversations'
+import { MessageMedia } from './message-media'
 
 /* ── Tool grouping ──────────────────────────────────────── */
 
@@ -340,50 +339,6 @@ function shouldShowTimestamp(messages: Message[], index: number): boolean {
   return gap > 5 * 60 * 1000
 }
 
-/* ── Render media helpers ─────────────────────────────── */
-
-function renderMedia(media: MediaAttachment[], isUser: boolean) {
-  const images = media.filter(m => m.type === 'image')
-  const audio = media.filter(m => m.type === 'audio')
-  const files = media.filter(m => m.type === 'file')
-
-  return (
-    <>
-      {images.map((m, mi) => (
-        <div key={`img-${mi}`} className="mt-[var(--space-2)] rounded-[var(--radius-lg)] overflow-hidden max-w-[280px]">
-          <img
-            src={m.url}
-            alt={m.name || 'Image'}
-            className="w-full block rounded-[var(--radius-lg)] cursor-pointer"
-            onClick={() => window.open(m.url, '_blank')}
-          />
-        </div>
-      ))}
-      {audio.map((m, mi) => (
-        <div key={`audio-${mi}`} className="mt-[var(--space-2)]">
-          <VoiceMessage
-            src={m.url}
-            duration={m.duration || 0}
-            waveform={m.waveform || []}
-            isUser={isUser}
-          />
-        </div>
-      ))}
-      {files.map((m, mi) => (
-        <div key={`file-${mi}`} className="mt-[var(--space-2)]">
-          <FileAttachment
-            name={m.name || 'File'}
-            size={m.size}
-            mimeType={m.mimeType}
-            url={m.url}
-            isUser={isUser}
-          />
-        </div>
-      ))}
-    </>
-  )
-}
-
 /* ── MessageRow — memoized per-message renderer ─────────── */
 
 interface MessageRowProps {
@@ -407,6 +362,9 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, messages }: M
     })
     textContent = textContent.trim()
   }
+  // Defensive: never show the engine-only "Attached files:\n- /abs/path" block that
+  // gets appended to the prompt for the CLI. Attachments render as chips/thumbnails.
+  textContent = stripAttachedFilesBlock(textContent)
   // Hide auto-generated content labels for media-only messages
   if (msg.media && msg.media.length > 0) {
     const isAutoLabel = textContent.startsWith('[') && textContent.endsWith(']')
@@ -456,7 +414,7 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, messages }: M
           )}
           {media.length > 0 && (
             <div className="user-msg-bubble">
-              {renderMedia(media, true)}
+              <MessageMedia media={media} isUser={true} />
             </div>
           )}
         </div>
@@ -474,7 +432,7 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, messages }: M
             )}
 
             {/* Media attachments */}
-            {media.length > 0 && renderMedia(media, false)}
+            {media.length > 0 && <MessageMedia media={media} isUser={false} />}
           </div>
         </div>
       )}

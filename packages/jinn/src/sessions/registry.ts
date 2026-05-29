@@ -758,3 +758,9 @@ export function deleteFile(id: string): boolean {
   const result = db.prepare('DELETE FROM files WHERE id = ?').run(id);
   return result.changes > 0;
 }
+
+/** Update the recorded on-disk path for a file (used when re-homing into the uploads dir). */
+export function setFilePath(id: string, filePath: string): void {
+  const db = initDb();
+  db.prepare('UPDATE files SET path = ? WHERE id = ?').run(filePath, id);
+}

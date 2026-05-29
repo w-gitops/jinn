@@ -8,7 +8,7 @@ import { Readable } from "node:stream";
 import Busboy from "busboy";
 import { FILES_DIR, UPLOADS_DIR } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
-import { insertFile, getFile, listFiles, deleteFile, insertMessage, type FileMeta, type MessageMedia } from "../sessions/registry.js";
+import { insertFile, getFile, listFiles, deleteFile, setFilePath, insertMessage, type FileMeta, type MessageMedia } from "../sessions/registry.js";
 import type { ApiContext } from "./api.js";
 
 // Ensure managed files directory exists
@@ -508,6 +508,53 @@ function buildMessageMedia(meta: FileMeta): MessageMedia {
     mimeType: meta.mimetype ?? undefined,
     size: meta.size,
   };
+}
+
+/** Resolve uploaded file IDs to media descriptors for persisting on a (user) message. */
+export function fileIdsToMedia(fileIds: unknown): MessageMedia[] {
+  if (!Array.isArray(fileIds)) return [];
+  const media: MessageMedia[] = [];
+  for (const id of fileIds) {
+    if (typeof id !== "string" || !id.trim()) continue;
+    const meta = getFile(id);
+    if (meta) media.push(buildMessageMedia(meta));
+  }
+  return media;
+}
+
+/**
+ * Re-home first-message attachments: files uploaded before a session existed land
+ * in FILES_DIR/<id>/. Once the session is created, move them into the date-bucketed
+ * uploads dir and record the new path so they're co-located with the session.
+ */
+export function rehomeAttachmentsToSession(fileIds: unknown, sessionId: string): void {
+  if (!Array.isArray(fileIds)) return;
+  const destDir = uploadDir(sessionId);
+  for (const id of fileIds) {
+    if (typeof id !== "string" || !id.trim()) continue;
+    const meta = getFile(id);
+    if (!meta) continue;
+    const current = path.join(FILES_DIR, meta.id, meta.filename);
+    if (!fs.existsSync(current)) continue; // already session-scoped or missing
+    fs.mkdirSync(destDir, { recursive: true });
+    const dest = path.join(destDir, sanitizeUploadFilename(meta.filename));
+    try {
+      fs.renameSync(current, dest);
+    } catch (err) {
+      // Cross-device fallback: copy then remove.
+      if ((err as NodeJS.ErrnoException).code === "EXDEV") {
+        fs.copyFileSync(current, dest);
+        fs.rmSync(current, { force: true });
+      } else {
+        logger.warn(`Failed to re-home attachment ${id}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+    }
+    // Remove the now-empty FILES_DIR/<id> dir (best-effort).
+    try { fs.rmdirSync(path.join(FILES_DIR, meta.id)); } catch { /* not empty / gone */ }
+    setFilePath(meta.id, dest);
+    logger.info(`Re-homed attachment ${meta.filename} (${id}) into session ${sessionId} uploads`);
+  }
 }
 
 /** Persist a session-scoped file, attach it as an assistant message, and push it to the UI. */

@@ -56,7 +56,7 @@ import { reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
 import QRCode from "qrcode";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
-import { handleFilesRequest, handleSessionAttachment, ensureFilesDir } from "./files.js";
+import { handleFilesRequest, handleSessionAttachment, fileIdsToMedia, rehomeAttachmentsToSession, ensureFilesDir } from "./files.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
 import { handleHookPost, LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
@@ -789,7 +789,12 @@ export async function handleApiRequest(
         portalName: config.portal?.portalName,
       });
       logger.info(`Web session created: ${session.id} (model=${body.model || "default"})`);
-      insertMessage(session.id, "user", prompt);
+      // First-message attachments were uploaded before the session existed (FILES_DIR).
+      // Re-home them under uploads/<date>/<sessionId>/ now that we have an id, then persist
+      // the media on the user message so the bubble renders chips/thumbnails on reload.
+      rehomeAttachmentsToSession(body.attachments, session.id);
+      const newSessionMedia = fileIdsToMedia(body.attachments);
+      insertMessage(session.id, "user", prompt, newSessionMedia.length > 0 ? newSessionMedia : undefined);
 
       // Run engine asynchronously — respond immediately, push result via WebSocket.
       // CLI-mode session creation (mode: "interactive") uses the PTY-backed engine
@@ -862,7 +867,18 @@ export async function handleApiRequest(
       // Persist the message immediately. For notifications, store the clean
       // human-facing `displayMessage` (what the UI banner renders) — the engine
       // still runs on the full `prompt` via the dispatch below.
-      insertMessage(session.id, messageRole, isNotification ? displayMessage : prompt);
+      // For user messages, attach media (file IDs → descriptors) so the bubble
+      // shows chips/thumbnails on reload — never the raw injected path text.
+      const userMedia = isNotification ? [] : fileIdsToMedia(body.attachments);
+      // Re-home any attachments uploaded without a sessionId (defensive; usually a no-op
+      // since the web client now scopes uploads to the session).
+      if (!isNotification) rehomeAttachmentsToSession(body.attachments, session.id);
+      insertMessage(
+        session.id,
+        messageRole,
+        isNotification ? displayMessage : prompt,
+        userMedia.length > 0 ? userMedia : undefined,
+      );
       // Push the banner live to any connected web client viewing the parent.
       if (isNotification) {
         context.emit("session:notification", { sessionId: session.id, message: displayMessage });
