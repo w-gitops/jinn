@@ -612,13 +612,14 @@ function parseMediaColumn(value: unknown): MessageMedia[] | undefined {
   }
 }
 
-export function insertMessage(sessionId: string, role: string, content: string, media?: MessageMedia[]): void {
+export function insertMessage(sessionId: string, role: string, content: string, media?: MessageMedia[]): string {
   const db = initDb();
   const id = uuidv4();
   const mediaJson = media && media.length > 0 ? JSON.stringify(media) : null;
   db.prepare('INSERT INTO messages (id, session_id, role, content, timestamp, media) VALUES (?, ?, ?, ?, ?, ?)').run(
     id, sessionId, role, content, Date.now(), mediaJson,
   );
+  return id;
 }
 
 export function getMessages(sessionId: string): SessionMessage[] {
