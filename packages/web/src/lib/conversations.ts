@@ -28,6 +28,26 @@ export interface Message {
   toolCall?: string
 }
 
+/**
+ * Merge a server history snapshot with the current in-memory messages, keyed by id.
+ *
+ * A message pushed live (e.g. an agent attachment via the `session:attachment` WS
+ * event) is persisted server-side, but a history refetch that races ahead of that
+ * commit returns a snapshot WITHOUT it. Replacing wholesale would make the live
+ * message vanish until the next reload. We therefore keep any locally-known
+ * attachment (media-bearing) message whose id is absent from the snapshot, and
+ * re-sort by timestamp. Because the WS payload and the DB row share the same id,
+ * once the snapshot catches up the message appears exactly once — no duplicate.
+ */
+export function reconcileMessages(current: Message[], snapshot: Message[]): Message[] {
+  const snapshotIds = new Set(snapshot.map((m) => m.id))
+  const pending = current.filter(
+    (m) => m.media && m.media.length > 0 && m.id && !snapshotIds.has(m.id),
+  )
+  if (pending.length === 0) return snapshot
+  return [...snapshot, ...pending].sort((a, b) => a.timestamp - b.timestamp)
+}
+
 // --- Intermediate message persistence (localStorage) ---
 
 const INTERMEDIATE_PREFIX = 'jinn-intermediate-'
