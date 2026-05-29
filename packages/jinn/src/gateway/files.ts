@@ -6,14 +6,75 @@ import os from "node:os";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import Busboy from "busboy";
-import { FILES_DIR } from "../shared/paths.js";
+import { FILES_DIR, UPLOADS_DIR } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
-import { insertFile, getFile, listFiles, deleteFile, type FileMeta } from "../sessions/registry.js";
+import { insertFile, getFile, listFiles, deleteFile, insertMessage, type FileMeta, type MessageMedia } from "../sessions/registry.js";
 import type { ApiContext } from "./api.js";
 
 // Ensure managed files directory exists
 export function ensureFilesDir(): void {
   fs.mkdirSync(FILES_DIR, { recursive: true });
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+// ── Upload path safety helpers ───────────────────────────────────
+
+/** Strip any directory components from an uploaded filename (path-traversal guard). */
+export function sanitizeUploadFilename(name: string): string {
+  // basename drops directory parts; also handle backslashes some clients send.
+  const base = path.basename(String(name ?? "").replace(/\\/g, "/")).trim();
+  // Reject "", ".", ".." and anything that's only dots.
+  if (!base || /^\.+$/.test(base)) return "file";
+  return base;
+}
+
+/** Restrict a sessionId to a safe single path segment (no separators / traversal). */
+export function sanitizeSessionId(id: string): string {
+  // Drop separators/unsafe chars, then strip leading dots so no "."/".." segment survives.
+  const cleaned = String(id ?? "").replace(/[^A-Za-z0-9._-]/g, "").replace(/^\.+/, "");
+  if (!cleaned) return "unknown";
+  return cleaned;
+}
+
+/** Today's date bucket (UTC) as YYYY-MM-DD. */
+function todayBucket(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** Date-bucketed, session-scoped upload directory under UPLOADS_DIR. */
+export function uploadDir(sessionId: string, date?: string): string {
+  const bucket = date || todayBucket();
+  return path.join(UPLOADS_DIR, bucket, sanitizeSessionId(sessionId));
+}
+
+/** True only when absPath resolves inside FILES_DIR or UPLOADS_DIR (no arbitrary reads). */
+export function isServablePath(absPath: string): boolean {
+  const resolved = path.resolve(absPath);
+  return [FILES_DIR, UPLOADS_DIR].some((root) => {
+    const r = path.resolve(root);
+    return resolved === r || resolved.startsWith(r + path.sep);
+  });
+}
+
+/** Delete date-bucket directories under UPLOADS_DIR older than maxAgeDays. Returns count removed. */
+export function cleanupOldUploads(maxAgeDays = 30): number {
+  if (!fs.existsSync(UPLOADS_DIR)) return 0;
+  const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+  let removed = 0;
+  for (const entry of fs.readdirSync(UPLOADS_DIR, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    // Bucket dirs are YYYY-MM-DD; parse and compare. Skip anything unexpected.
+    const ts = Date.parse(`${entry.name}T00:00:00.000Z`);
+    if (Number.isNaN(ts) || ts >= cutoff) continue;
+    try {
+      fs.rmSync(path.join(UPLOADS_DIR, entry.name), { recursive: true, force: true });
+      removed++;
+    } catch (err) {
+      logger.warn(`Failed to remove old upload bucket ${entry.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  if (removed > 0) logger.info(`Cleaned up ${removed} upload bucket(s) older than ${maxAgeDays} days`);
+  return removed;
 }
 
 // MIME type lookup by extension
@@ -100,22 +161,32 @@ interface UploadResult {
   buffer: Buffer;
   customPath: string | null;
   open: boolean;
+  /** When set, the file is stored date-bucketed under UPLOADS_DIR/<date>/<sessionId>/ instead of FILES_DIR. */
+  sessionId?: string | null;
 }
 
 /** Save buffer to managed storage and optionally to a custom path. */
 async function saveFile(result: UploadResult, context: ApiContext): Promise<FileMeta> {
-  const fileDir = path.join(FILES_DIR, result.id);
-  fs.mkdirSync(fileDir, { recursive: true });
-  const storagePath = path.join(fileDir, result.filename);
+  // Always sanitize the filename — it ends up as a path segment on disk and in headers.
+  const safeName = sanitizeUploadFilename(result.filename);
+
+  // Session-scoped uploads land in date-bucketed dirs; everything else stays in FILES_DIR/<id>/.
+  const sessionScoped = !!result.sessionId;
+  const storageDir = sessionScoped
+    ? uploadDir(result.sessionId!)
+    : path.join(FILES_DIR, result.id);
+  fs.mkdirSync(storageDir, { recursive: true });
+  const storagePath = path.join(storageDir, safeName);
   fs.writeFileSync(storagePath, result.buffer);
 
-  const mimetype = mimeFromFilename(result.filename);
+  const mimetype = mimeFromFilename(safeName);
   const meta = insertFile({
     id: result.id,
-    filename: result.filename,
+    filename: safeName,
     size: result.buffer.length,
     mimetype,
-    path: result.customPath,
+    // For session uploads, record the absolute on-disk path so download + path-injection can find it.
+    path: sessionScoped ? storagePath : result.customPath,
   });
 
   // Write to custom path if provided
@@ -147,6 +218,7 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
     let fileBuffer: Buffer | null = null;
     let customPath: string | null = null;
     let open = false;
+    let sessionId: string | null = null;
     let fileTruncated = false;
 
     busboy.on("file", (_fieldname: string, file: NodeJS.ReadableStream, info: { filename: string }) => {
@@ -160,6 +232,7 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
     busboy.on("field", (name: string, val: string) => {
       if (name === "path") customPath = val;
       if (name === "open") open = val === "true" || val === "1";
+      if (name === "sessionId") sessionId = val;
     });
 
     busboy.on("finish", async () => {
@@ -180,6 +253,7 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
           buffer: fileBuffer,
           customPath,
           open,
+          sessionId,
         }, context);
         json(res, meta, 201);
       } catch (err) {
@@ -211,6 +285,7 @@ async function handleJsonUpload(req: HttpRequest, res: ServerResponse, context: 
   const url = body.url as string | undefined;
   const customPath = (body.path as string) || null;
   const open = !!body.open;
+  const sessionId = (body.sessionId as string) || null;
 
   if (!filename) return badRequest(res, "filename is required");
   if (content && url) return badRequest(res, "content and url are mutually exclusive");
@@ -246,6 +321,7 @@ async function handleJsonUpload(req: HttpRequest, res: ServerResponse, context: 
       buffer,
       customPath,
       open,
+      sessionId,
     }, context);
     json(res, meta, 201);
   } catch (err) {
@@ -416,6 +492,162 @@ async function handleTransfer(req: HttpRequest, res: ServerResponse, context: Ap
   json(res, { destination: destUrl, results, summary: { ok, failed, total: results.length } });
 }
 
+// ── Session attachments (outbound: session → web UI) ─────────────
+
+function mediaTypeFromMime(mime: string | null): MessageMedia["type"] {
+  if (mime?.startsWith("image/")) return "image";
+  if (mime?.startsWith("audio/")) return "audio";
+  return "file";
+}
+
+function buildMessageMedia(meta: FileMeta): MessageMedia {
+  return {
+    type: mediaTypeFromMime(meta.mimetype),
+    url: `/api/files/${meta.id}`,
+    name: meta.filename,
+    mimeType: meta.mimetype ?? undefined,
+    size: meta.size,
+  };
+}
+
+/** Persist a session-scoped file, attach it as an assistant message, and push it to the UI. */
+async function finalizeAttachment(
+  res: ServerResponse,
+  sessionId: string,
+  filename: string,
+  buffer: Buffer,
+  caption: string,
+  context: ApiContext,
+): Promise<void> {
+  const meta = await saveFile({
+    id: crypto.randomUUID(),
+    filename,
+    buffer,
+    customPath: null,
+    open: false,
+    sessionId,
+  }, context);
+  const media = buildMessageMedia(meta);
+  const timestamp = Date.now();
+  insertMessage(sessionId, "assistant", caption, [media]);
+  context.emit("session:attachment", { sessionId, content: caption, media: [media], timestamp });
+  logger.info(`Attachment pushed to session ${sessionId}: ${meta.filename} (${meta.id})`);
+  json(res, { ...meta, media, message: { role: "assistant", content: caption, media: [media], timestamp } }, 201);
+}
+
+/** Handle POST /api/sessions/:id/attachments — multipart upload from the running agent. */
+async function handleAttachmentMultipart(
+  req: HttpRequest,
+  res: ServerResponse,
+  sessionId: string,
+  context: ApiContext,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+    const busboy = Busboy({ headers: req.headers, limits: { fileSize: MAX_FILE_SIZE } });
+    let filename = "";
+    let fileBuffer: Buffer | null = null;
+    let caption = "";
+    let fileTruncated = false;
+
+    busboy.on("file", (_f: string, file: NodeJS.ReadableStream, info: { filename: string }) => {
+      filename = info.filename;
+      const chunks: Buffer[] = [];
+      file.on("data", (c: Buffer) => chunks.push(c));
+      (file as NodeJS.EventEmitter).on("limit", () => { fileTruncated = true; });
+      file.on("end", () => { fileBuffer = Buffer.concat(chunks); });
+    });
+    busboy.on("field", (name: string, val: string) => {
+      if (name === "text" || name === "caption") caption = val;
+    });
+    busboy.on("finish", async () => {
+      if (fileTruncated) { badRequest(res, `File exceeds ${MAX_FILE_SIZE / 1024 / 1024} MB limit`); resolve(); return; }
+      if (!fileBuffer || !filename) { badRequest(res, "No file provided"); resolve(); return; }
+      try {
+        await finalizeAttachment(res, sessionId, filename, fileBuffer, caption, context);
+      } catch (err) {
+        serverError(res, err instanceof Error ? err.message : "Attachment failed");
+      }
+      resolve();
+    });
+    busboy.on("error", (err: Error) => { serverError(res, err.message); resolve(); });
+    req.pipe(busboy);
+  });
+}
+
+/** Handle POST /api/sessions/:id/attachments — JSON body ({path|content|url}). */
+async function handleAttachmentJson(
+  req: HttpRequest,
+  res: ServerResponse,
+  sessionId: string,
+  context: ApiContext,
+): Promise<void> {
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(await readBody(req));
+  } catch {
+    return badRequest(res, "Invalid JSON body");
+  }
+
+  const localPath = body.path as string | undefined;
+  const content = body.content as string | undefined;
+  const url = body.url as string | undefined;
+  const caption = typeof body.text === "string" ? body.text : (typeof body.caption === "string" ? body.caption : "");
+  let filename = body.filename as string | undefined;
+
+  const provided = [localPath, content, url].filter(Boolean).length;
+  if (provided === 0) return badRequest(res, "one of path, content (base64), or url is required");
+  if (provided > 1) return badRequest(res, "path, content, and url are mutually exclusive");
+
+  const MAX = 50 * 1024 * 1024;
+  let buffer: Buffer;
+
+  if (localPath) {
+    const expanded = expandPath(localPath);
+    if (!fs.existsSync(expanded) || !fs.statSync(expanded).isFile()) {
+      return badRequest(res, `File not found: ${localPath}`);
+    }
+    if (fs.statSync(expanded).size > MAX) return badRequest(res, "File exceeds 50 MB limit");
+    buffer = fs.readFileSync(expanded);
+    if (!filename) filename = path.basename(expanded);
+  } else if (content) {
+    buffer = Buffer.from(content, "base64");
+    if (buffer.length > MAX) return badRequest(res, "File exceeds 50 MB limit");
+    if (!filename) return badRequest(res, "filename is required when sending base64 content");
+  } else {
+    try {
+      const response = await fetch(url!);
+      if (!response.ok) return serverError(res, `Failed to fetch URL: ${response.status} ${response.statusText}`);
+      buffer = Buffer.from(await response.arrayBuffer());
+      if (buffer.length > MAX) return badRequest(res, "File exceeds 50 MB limit");
+      if (!filename) filename = path.basename(new URL(url!).pathname) || "download";
+    } catch (err) {
+      return serverError(res, `Failed to fetch URL: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  try {
+    await finalizeAttachment(res, sessionId, filename!, buffer, caption, context);
+  } catch (err) {
+    serverError(res, err instanceof Error ? err.message : "Attachment failed");
+  }
+}
+
+/** Entry point for POST /api/sessions/:id/attachments (called from api.ts after session validation). */
+export async function handleSessionAttachment(
+  req: HttpRequest,
+  res: ServerResponse,
+  sessionId: string,
+  context: ApiContext,
+): Promise<void> {
+  const contentType = (req.headers["content-type"] || "").toLowerCase();
+  if (contentType.includes("multipart/form-data")) {
+    await handleAttachmentMultipart(req, res, sessionId, context);
+  } else {
+    await handleAttachmentJson(req, res, sessionId, context);
+  }
+}
+
 /** Route handler for all /api/files endpoints. Returns true if handled. */
 export async function handleFilesRequest(
   req: HttpRequest,
@@ -461,8 +693,13 @@ export async function handleFilesRequest(
   if (method === "GET" && dlMatch) {
     const meta = getFile(dlMatch[1]);
     if (!meta) { notFound(res); return true; }
-    const filePath = path.join(FILES_DIR, meta.id, meta.filename);
-    if (!fs.existsSync(filePath)) {
+    // Managed storage first, then the recorded path (e.g. session uploads under UPLOADS_DIR).
+    // Only ever serve files that resolve inside FILES_DIR/UPLOADS_DIR — never an arbitrary path.
+    const candidates = [path.join(FILES_DIR, meta.id, meta.filename), meta.path].filter(
+      (p): p is string => !!p,
+    );
+    const filePath = candidates.find((p) => isServablePath(p) && fs.existsSync(p) && fs.statSync(p).isFile());
+    if (!filePath) {
       notFound(res);
       return true;
     }
@@ -491,6 +728,10 @@ export async function handleFilesRequest(
     const fileDir = path.join(FILES_DIR, id);
     if (fs.existsSync(fileDir)) {
       fs.rmSync(fileDir, { recursive: true, force: true });
+    }
+    // Session-scoped uploads live under UPLOADS_DIR (recorded in meta.path) — remove that too.
+    if (meta.path && isServablePath(meta.path) && fs.existsSync(meta.path)) {
+      fs.rmSync(meta.path, { force: true });
     }
 
     deleteFile(id);

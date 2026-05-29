@@ -56,7 +56,7 @@ import { reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
 import QRCode from "qrcode";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
-import { handleFilesRequest, ensureFilesDir } from "./files.js";
+import { handleFilesRequest, handleSessionAttachment, ensureFilesDir } from "./files.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
 import { handleHookPost, LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
@@ -931,6 +931,18 @@ export async function handleApiRequest(
       dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined });
 
       return json(res, { status: "queued", sessionId: session.id });
+    }
+
+    // POST /api/sessions/:id/attachments — running agent pushes a file/image into the chat.
+    // Accepts multipart (file + optional text/caption) OR JSON ({path|content|url, filename?, text?}).
+    // The file is stored under ~/.jinn/uploads/<date>/<sessionId>/ and surfaced as an assistant
+    // message with rendered media (image/audio/file). Only the path/URL reaches the UI — never raw bytes in the prompt.
+    params = matchRoute("/api/sessions/:id/attachments", pathname);
+    if (method === "POST" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+      await handleSessionAttachment(req, res, params.id, context);
+      return;
     }
 
     // GET /api/cron

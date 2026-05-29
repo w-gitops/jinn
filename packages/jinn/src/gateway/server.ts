@@ -23,7 +23,7 @@ import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, JINN_HOME, CLAUDE_SETTINGS_DIR } 
 import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
 import { pickEncoding, isCompressibleExt, compressStream } from "./compress.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
-import { ensureFilesDir } from "./files.js";
+import { ensureFilesDir, cleanupOldUploads } from "./files.js";
 import { initStt } from "../stt/stt.js";
 import { startWatchers, stopWatchers, syncSkillSymlinks } from "./watcher.js";
 import { SlackConnector } from "../connectors/slack/index.js";
@@ -127,6 +127,12 @@ export async function startGateway(
   // Initialize database and recover any sessions stuck from a previous run
   initDb();
   ensureFilesDir();
+  // Retention: drop session-upload buckets older than 30 days on boot, then daily.
+  try { cleanupOldUploads(30); } catch { /* best-effort */ }
+  const uploadCleanupTimer = setInterval(() => {
+    try { cleanupOldUploads(30); } catch { /* best-effort */ }
+  }, 24 * 60 * 60 * 1000);
+  uploadCleanupTimer.unref?.();
   const recovered = recoverStaleSessions();
   if (recovered > 0) {
     logger.info(`Recovered ${recovered} stale session(s) — marked as "interrupted" for resume`);
