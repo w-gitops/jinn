@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.16.1] - 2026-05-30
+
+### 🐛 Fixes
+- **User messages with attachments no longer render twice.** The v0.16.0 outbound-vanishing fix deduped reconciled history by message id only. A sent user message is appended optimistically with a client-side random id while the server persists it under a different canonical id, so on the next history refresh the optimistic copy was kept *alongside* the server copy — duplicating the whole message (text + every image/video). `reconcileMessages` now also matches on a content-identity key (role + content + media filenames, media-type-agnostic so videos work), collapsing the optimistic message into its server twin while still preserving genuinely-live agent attachments missing from a racing snapshot.
+
 ## [0.16.0] - 2026-05-30
 
 ### ✨ Features
