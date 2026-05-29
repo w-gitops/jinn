@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.16.0] - 2026-05-30
+
+### ✨ Features
+- **File & image attachments in the web chat, both directions.** Attach any file type (images, PDFs, zip, docs, anything) from the composer via drag-drop, click, or paste — the bytes are stored locally under `~/.jinn/uploads/YYYY-MM-DD/<sessionId>/` and **only the file path** is injected into the engine prompt, so Claude/Codex/Gemini read it with their own tools instead of being fed raw bytes. First-message uploads are re-homed into the session bucket once it's created (no orphans).
+- **Outbound attachments API** — a running session can push files/images back **into** the chat via `POST /api/sessions/:id/attachments` (accepts `multipart`, or JSON `{path|content|url}`), exactly like agents already curl `POST /api/sessions` to spawn children. Renders in the web chat view (documented limitation: the raw CLI/xterm stream can't render inline). Messages now persist a `media` column.
+- **Rich file UX** — images render as inline thumbnails that open a full-screen lightbox (Esc/click to close, with download); non-image files render as download chips with name + size; multiple files in one message are handled without clobbering. Image loading uses a skeleton shimmer that cross-fades to the image (no layout shift) with a graceful broken-image fallback.
+
+### ⚡ Performance
+- **Immutable browser caching for file responses** — `GET /api/files/:id` now sends `Cache-Control: public, max-age=31536000, immutable` plus a strong `ETag` and `Last-Modified`, and answers conditional `If-None-Match`/`If-Modified-Since` requests with `304 Not Modified`. Re-opening a chat no longer re-downloads every image — a big win on slow connections.
+
+### 🐛 Fixes
+- **Pushed attachments no longer vanish from the chat** — the `session:completed` handler was popping the last assistant bubble (to swap the optimistic streaming text), which also ate a freshly-pushed attachment message until a page reload. It now never pops a message carrying `media`, uses the server's canonical message id, and merges (rather than replaces) on history refresh so the attachment shows exactly once.
+
 ## [0.15.1] - 2026-05-22
 
 ### 🐛 Fixes
