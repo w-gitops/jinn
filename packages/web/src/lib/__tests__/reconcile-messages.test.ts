@@ -58,3 +58,51 @@ describe('reconcileMessages — attachment disappear regression', () => {
     expect(merged.find((m) => m.id === 's1')).toBeUndefined()
   })
 })
+
+describe('reconcileMessages — inbound user-message duplicate regression (v0.16.0)', () => {
+  // Optimistic user message with image + video, appended with a CLIENT random id
+  // and base64 preview urls.
+  const optimisticUserMsg: Message = {
+    id: 'client-random-uuid',
+    role: 'user',
+    content: 'what you see here?',
+    timestamp: 5000,
+    media: [
+      { type: 'image', url: 'data:image/jpeg;base64,AAAA', name: 'chest-front.jpg' },
+      { type: 'file', url: 'data:video/mp4;base64,BBBB', name: 'clip.mp4' },
+    ],
+  }
+  // Server-persisted twin: DIFFERENT (canonical) id, /api/files urls, same names.
+  const serverUserMsg: Message = {
+    id: 'server-canonical-id',
+    role: 'user',
+    content: 'what you see here?',
+    timestamp: 5001,
+    media: [
+      { type: 'image', url: '/api/files/img-id', name: 'chest-front.jpg' },
+      { type: 'file', url: '/api/files/vid-id', name: 'clip.mp4' },
+    ],
+  }
+
+  it('shows the user message with 2 media (incl. video) EXACTLY once, not twice', () => {
+    const merged = reconcileMessages([optimisticUserMsg], [serverUserMsg])
+    const userMsgs = merged.filter((m) => m.role === 'user' && m.content === 'what you see here?')
+    expect(userMsgs).toHaveLength(1)
+    // the surviving copy is the server one (canonical /api/files urls)
+    expect(userMsgs[0].id).toBe('server-canonical-id')
+    expect(userMsgs[0].media).toHaveLength(2)
+  })
+
+  it('still preserves an outbound agent attachment that the snapshot lacks (no regression)', () => {
+    const merged = reconcileMessages([attachment], [userMsg])
+    expect(merged.map((m) => m.id)).toEqual(['u1', 'a1'])
+  })
+
+  it('does not collapse two genuinely different files with empty captions', () => {
+    const a: Message = { id: 's-a', role: 'assistant', content: '', timestamp: 10, media: [{ type: 'file', url: '/api/files/a', name: 'a.zip' }] }
+    const b: Message = { id: 'local-b', role: 'assistant', content: '', timestamp: 11, media: [{ type: 'file', url: '/api/files/b', name: 'b.zip' }] }
+    // snapshot has only A; B is a distinct local attachment not yet in snapshot → preserved
+    const merged = reconcileMessages([a, b], [a])
+    expect(merged.map((m) => m.id)).toEqual(['s-a', 'local-b'])
+  })
+})
