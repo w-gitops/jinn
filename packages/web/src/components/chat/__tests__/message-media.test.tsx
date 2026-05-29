@@ -45,6 +45,35 @@ describe('MessageMedia (multi-file)', () => {
   })
 })
 
+describe('MessageMedia image loading states', () => {
+  it('shows a skeleton before load, then swaps to the image on onLoad', () => {
+    render(<MessageMedia media={[mixed[0]]} isUser={false} />)
+    // Skeleton placeholder is present while the image loads.
+    expect(screen.getByTestId('image-skeleton')).toBeTruthy()
+    const img = screen.getByAltText('one.png') as HTMLImageElement
+    expect(img).toBeTruthy()
+    // After the image fires onLoad, the skeleton is removed (image is revealed).
+    fireEvent.load(img)
+    expect(screen.queryByTestId('image-skeleton')).toBeNull()
+  })
+
+  it('renders one skeleton per image in a multi-image grid', () => {
+    render(<MessageMedia media={mixed} isUser={false} />)
+    // 3 images → 3 skeletons before any load fires.
+    expect(screen.getAllByTestId('image-skeleton')).toHaveLength(3)
+  })
+
+  it('falls back to a broken-image placeholder on error (no infinite skeleton)', () => {
+    render(<MessageMedia media={[mixed[0]]} isUser={false} />)
+    const img = screen.getByAltText('one.png') as HTMLImageElement
+    fireEvent.error(img)
+    expect(screen.queryByTestId('image-skeleton')).toBeNull()
+    // graceful fallback labelled, original <img> gone
+    expect(screen.getByLabelText('one.png (failed to load)')).toBeTruthy()
+    expect(screen.queryByAltText('one.png')).toBeNull()
+  })
+})
+
 describe('stripAttachedFilesBlock', () => {
   it('removes the appended engine-only Attached files block', () => {
     const text = 'Please analyze this\n\nAttached files:\n- /Users/x/.jinn/uploads/2026-05-30/s/report.pdf'

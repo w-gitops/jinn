@@ -698,6 +698,39 @@ export async function handleSessionAttachment(
   }
 }
 
+// ── HTTP caching for immutable file content ──────────────────────
+// Files are stored by id and never mutated, so their bytes are content-immutable.
+// We can cache aggressively and revalidate cheaply with ETag / Last-Modified.
+
+/** Strong ETag derived from the immutable id + byte size. */
+export function fileEtag(id: string, size: number): string {
+  return `"${id}-${size}"`;
+}
+
+/**
+ * Decide whether a conditional GET can be answered with 304 Not Modified.
+ * If-None-Match wins over If-Modified-Since (per RFC 7232). ETag comparison
+ * tolerates weak prefixes and comma-separated lists; "*" always matches.
+ */
+export function isFileNotModified(
+  headers: HttpRequest["headers"],
+  etag: string,
+  lastModifiedMs: number,
+): boolean {
+  const inm = headers["if-none-match"];
+  if (inm) {
+    const norm = (t: string) => t.trim().replace(/^W\//, "");
+    return inm === "*" || inm.split(",").some((t) => norm(t) === norm(etag));
+  }
+  const ims = headers["if-modified-since"];
+  if (ims) {
+    const since = Date.parse(ims);
+    // HTTP dates have 1s precision — floor mtime to seconds before comparing.
+    if (!Number.isNaN(since)) return Math.floor(lastModifiedMs / 1000) * 1000 <= since;
+  }
+  return false;
+}
+
 /** Route handler for all /api/files endpoints. Returns true if handled. */
 export async function handleFilesRequest(
   req: HttpRequest,
@@ -754,6 +787,19 @@ export async function handleFilesRequest(
       return true;
     }
     const stat = fs.statSync(filePath);
+    // Content-immutable: cache forever + revalidate cheaply with ETag/Last-Modified.
+    const etag = fileEtag(meta.id, stat.size);
+    const cacheHeaders = {
+      "Cache-Control": "public, max-age=31536000, immutable",
+      ETag: etag,
+      "Last-Modified": stat.mtime.toUTCString(),
+    };
+    // Conditional GET → 304 with no body (validators only). Cheaper than re-streaming.
+    if (isFileNotModified(req.headers, etag, stat.mtimeMs)) {
+      res.writeHead(304, cacheHeaders);
+      res.end();
+      return true;
+    }
     // Sanitize filename to prevent Content-Disposition header injection.
     // Strip anything that isn't alphanumeric, dash, underscore, period, or space,
     // then use the RFC 5987 filename* parameter with percent-encoding.
@@ -762,6 +808,7 @@ export async function handleFilesRequest(
       "Content-Type": meta.mimetype || "application/octet-stream",
       "Content-Disposition": `attachment; filename="${sanitizedFilename}"; filename*=UTF-8''${encodeURIComponent(meta.filename)}`,
       "Content-Length": stat.size,
+      ...cacheHeaders,
     });
     fs.createReadStream(filePath).pipe(res);
     return true;

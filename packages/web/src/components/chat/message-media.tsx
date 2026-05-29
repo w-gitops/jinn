@@ -2,6 +2,73 @@ import React, { useState, useEffect, useCallback } from 'react'
 import type { MediaAttachment } from '@/lib/conversations'
 import { FileAttachment } from './file-attachment'
 import { VoiceMessage } from './voice-message'
+import { Skeleton } from '@/components/ui/skeleton'
+import { cn } from '@/lib/utils'
+
+/**
+ * Thumbnail image with a shimmer skeleton while it loads/decodes, a cross-fade in
+ * on `onLoad`, and a graceful broken-image fallback on error (never an infinite
+ * skeleton). The skeleton overlays the reserved slot so there's no layout shift.
+ */
+function LoadingImage({
+  src,
+  alt,
+  variant,
+}: {
+  src: string
+  alt: string
+  variant: 'single' | 'grid'
+}) {
+  const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading')
+  const isGrid = variant === 'grid'
+
+  if (status === 'error') {
+    return (
+      <div
+        role="img"
+        aria-label={`${alt} (failed to load)`}
+        className={cn(
+          'flex items-center justify-center rounded-[var(--radius-lg)] bg-[var(--fill-secondary)] text-[var(--text-tertiary)]',
+          isGrid ? 'h-[130px] w-full' : 'h-[140px] w-full',
+        )}
+      >
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+          <circle cx="9" cy="9" r="2" />
+          <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+          <line x1="3" y1="3" x2="21" y2="21" />
+        </svg>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      className="relative"
+      // Reserve the slot so the skeleton has size and the image swap causes no jump.
+      style={!isGrid && status === 'loading' ? { minHeight: 140 } : undefined}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={alt}
+        onLoad={() => setStatus('loaded')}
+        onError={() => setStatus('error')}
+        className={cn(
+          'block rounded-[var(--radius-lg)] transition-opacity duration-300',
+          isGrid ? 'h-[130px] w-full object-cover' : 'w-full',
+          status === 'loaded' ? 'opacity-100' : 'opacity-0',
+        )}
+      />
+      {status === 'loading' && (
+        <Skeleton
+          data-testid="image-skeleton"
+          className="absolute inset-0 h-full w-full rounded-[var(--radius-lg)]"
+        />
+      )}
+    </div>
+  )
+}
 
 /* Full-screen image viewer with close + download. Closes on backdrop click or Esc. */
 function ImageLightbox({
@@ -99,15 +166,10 @@ export function MessageMedia({ media, isUser }: { media: MediaAttachment[]; isUs
               aria-label={`Open ${m.name || 'image'}`}
               className="block overflow-hidden rounded-[var(--radius-lg)] p-0 border-0 bg-transparent cursor-pointer"
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
+              <LoadingImage
                 src={m.url}
                 alt={m.name || 'Image'}
-                className={
-                  images.length > 1
-                    ? 'block h-[130px] w-full rounded-[var(--radius-lg)] object-cover'
-                    : 'block w-full rounded-[var(--radius-lg)]'
-                }
+                variant={images.length > 1 ? 'grid' : 'single'}
               />
             </button>
           ))}
