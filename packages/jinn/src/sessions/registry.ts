@@ -116,6 +116,7 @@ export function initDb(): Database.Database {
   db.exec(CREATE_TABLE);
   db.exec(CREATE_MESSAGES_TABLE);
   db.exec(CREATE_MESSAGES_INDEX);
+  migrateMessagesSchema(db);
   migrateSessionsSchema(db);
   db.exec(CREATE_SESSION_KEY_INDEX);
   db.exec(CREATE_LAST_ACTIVITY_INDEX);
@@ -138,6 +139,18 @@ export function initDb(): Database.Database {
   db.exec(CREATE_FILES_TABLE);
 
   return db;
+}
+
+/**
+ * Additive, nullable migration: add the `media` column to an existing messages
+ * table. Safe to run repeatedly and on legacy DBs created before media support.
+ */
+export function migrateMessagesSchema(database: Database.Database): void {
+  const cols = database.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
+  const colNames = new Set(cols.map((c) => c.name));
+  if (!colNames.has('media')) {
+    database.exec('ALTER TABLE messages ADD COLUMN media TEXT');
+  }
 }
 
 export function migrateSessionsSchema(database: Database.Database): void {
@@ -509,8 +522,8 @@ export function duplicateSession(sourceId: string, newTitle?: string): { session
 
   // Copy session + messages in a single transaction for consistency
   const messages = db.prepare(
-    'SELECT role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC',
-  ).all(sourceId) as Array<{ role: string; content: string; timestamp: number }>;
+    'SELECT role, content, timestamp, media FROM messages WHERE session_id = ? ORDER BY timestamp ASC',
+  ).all(sourceId) as Array<{ role: string; content: string; timestamp: number; media: string | null }>;
 
   const txn = db.transaction(() => {
     db.prepare(`
@@ -540,10 +553,10 @@ export function duplicateSession(sourceId: string, newTitle?: string): { session
     );
 
     const insertMsg = db.prepare(
-      'INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO messages (id, session_id, role, content, timestamp, media) VALUES (?, ?, ?, ?, ?, ?)',
     );
     for (const msg of messages) {
-      insertMsg.run(uuidv4(), newId, msg.role, msg.content, msg.timestamp);
+      insertMsg.run(uuidv4(), newId, msg.role, msg.content, msg.timestamp, msg.media ?? null);
     }
   });
   txn();
@@ -571,22 +584,54 @@ export function deleteSessions(ids: string[]): number {
   return txn();
 }
 
+/** Attachment descriptor stored alongside a message and rendered by the web UI. */
+export interface MessageMedia {
+  type: 'image' | 'audio' | 'file';
+  url: string;
+  name?: string;
+  mimeType?: string;
+  size?: number;
+}
+
 export interface SessionMessage {
   id: string;
   role: string;
   content: string;
   timestamp: number;
+  /** Parsed from the `media` JSON column; undefined when the message has no attachments. */
+  media?: MessageMedia[];
 }
 
-export function insertMessage(sessionId: string, role: string, content: string): void {
+function parseMediaColumn(value: unknown): MessageMedia[] | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.length > 0 ? (parsed as MessageMedia[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function insertMessage(sessionId: string, role: string, content: string, media?: MessageMedia[]): void {
   const db = initDb();
   const id = uuidv4();
-  db.prepare('INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?)').run(id, sessionId, role, content, Date.now());
+  const mediaJson = media && media.length > 0 ? JSON.stringify(media) : null;
+  db.prepare('INSERT INTO messages (id, session_id, role, content, timestamp, media) VALUES (?, ?, ?, ?, ?, ?)').run(
+    id, sessionId, role, content, Date.now(), mediaJson,
+  );
 }
 
 export function getMessages(sessionId: string): SessionMessage[] {
   const db = initDb();
-  return db.prepare('SELECT id, role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC').all(sessionId) as SessionMessage[];
+  const rows = db
+    .prepare('SELECT id, role, content, timestamp, media FROM messages WHERE session_id = ? ORDER BY timestamp ASC')
+    .all(sessionId) as Array<{ id: string; role: string; content: string; timestamp: number; media: string | null }>;
+  return rows.map((r) => {
+    const msg: SessionMessage = { id: r.id, role: r.role, content: r.content, timestamp: r.timestamp };
+    const media = parseMediaColumn(r.media);
+    if (media) msg.media = media;
+    return msg;
+  });
 }
 
 export interface QueueItem {
@@ -712,4 +757,10 @@ export function deleteFile(id: string): boolean {
   const db = initDb();
   const result = db.prepare('DELETE FROM files WHERE id = ?').run(id);
   return result.changes > 0;
+}
+
+/** Update the recorded on-disk path for a file (used when re-homing into the uploads dir). */
+export function setFilePath(id: string, filePath: string): void {
+  const db = initDb();
+  db.prepare('UPDATE files SET path = ? WHERE id = ?').run(filePath, id);
 }

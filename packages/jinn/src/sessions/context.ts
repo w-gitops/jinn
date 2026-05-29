@@ -713,7 +713,18 @@ You can call these endpoints with curl to inspect and manage the gateway:
 | \`/api/sessions/:id\` | GET | Session detail (includes messages) |
 | \`/api/sessions\` | POST | Create new session (\`{prompt, engine?, employee?, parentSessionId?}\`) |
 | \`/api/sessions/:id/message\` | POST | Send follow-up message to existing session (\`{message}\`) |
+| \`/api/sessions/:id/attachments\` | POST | Push a file/image into THIS chat so the web UI renders it (\`{path}\` or \`{url}\` or \`{content}\` base64, optional \`text\`) |
 | \`/api/sessions/:id/children\` | GET | List child sessions of a parent |
+
+**Sending a file/image back into the chat** — when you produce a file (chart, screenshot, PDF, export) and want it to appear in the web dashboard, POST its local path to your own session. Only the path is read server-side; the file is copied into \`~/.jinn/uploads/\` and rendered inline (images/audio inline, other types as a download card):
+
+\`\`\`bash
+curl -s -X POST ${gatewayUrl}/api/sessions/<your-session-id>/attachments \\
+  -H 'Content-Type: application/json' \\
+  -d '{"path":"/tmp/chart.png","text":"Here is the revenue chart"}'
+\`\`\`
+
+Note: attachments render in the web **chat view** only — they cannot appear in the raw CLI/xterm terminal stream.
 | \`/api/cron\` | GET | List cron jobs |
 | \`/api/cron/:id\` | PUT | Update cron job (toggle enabled, etc.) |
 | \`/api/cron/:id/runs\` | GET | Cron run history |

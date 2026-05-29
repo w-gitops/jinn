@@ -188,6 +188,22 @@ export function ChatPane({
         }
       }
 
+      if (event === 'session:attachment') {
+        const media = Array.isArray(p.media) ? (p.media as MediaAttachment[]) : []
+        if (media.length > 0) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: 'assistant' as const,
+              content: String(p.content || ''),
+              timestamp: p.timestamp ? Number(p.timestamp) : Date.now(),
+              media,
+            },
+          ])
+        }
+      }
+
       if (event === 'session:interrupted') {
         streamingTextRef.current = ''
         setStreamingText('')
@@ -269,6 +285,9 @@ export function ChatPane({
             role: (m.role as 'user' | 'assistant' | 'notification') || 'assistant',
             content: String(m.content || m.text || ''),
             timestamp: m.timestamp ? Number(m.timestamp) : Date.now(),
+            ...(Array.isArray(m.media) && m.media.length > 0
+              ? { media: m.media as MediaAttachment[] }
+              : {}),
           }))
         : []
       if (session.status === 'error' && session.lastError) {
@@ -392,7 +411,7 @@ export function ChatPane({
         if (media && media.length > 0) {
           const uploadPromises = media
             .filter((att) => att.file)
-            .map((att) => api.uploadFile(att.file!))
+            .map((att) => api.uploadFile(att.file!, sessionIdRef.current || undefined))
           if (uploadPromises.length > 0) {
             const uploaded = await Promise.all(uploadPromises)
             attachmentIds = uploaded.map((u) => u.id)

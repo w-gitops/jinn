@@ -59,6 +59,15 @@ export function clearIntermediateMessages(sessionId: string): void {
   } catch { /* ignore */ }
 }
 
+/**
+ * Remove the engine-only "Attached files:\n- /abs/path" block that the gateway
+ * appends to the prompt for the CLI. It must never be shown in the chat bubble —
+ * attachments render as chips/thumbnails instead. Safe on text without the block.
+ */
+export function stripAttachedFilesBlock(text: string): string {
+  return text.replace(/\n*Attached files:\n(?:- .*(?:\n|$))+/g, '').trimEnd()
+}
+
 // --- Media parsing ---
 
 export function parseMedia(content: string): MediaAttachment[] {

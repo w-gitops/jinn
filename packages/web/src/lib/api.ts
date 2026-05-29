@@ -213,9 +213,11 @@ export const api = {
     post<{ status: string }>(`/api/sessions/${sessionId}/queue/resume`, {}),
   getSessionTranscript: (id: string) =>
     get<TranscriptEntry[]>(`/api/sessions/${id}/transcript`),
-  uploadFile: async (file: File): Promise<UploadedFile> => {
+  uploadFile: async (file: File, sessionId?: string): Promise<UploadedFile> => {
     const form = new FormData()
     form.append('file', file)
+    // When known, scope the upload to the session so it lands in the date-bucketed uploads dir.
+    if (sessionId) form.append('sessionId', sessionId)
     const res = await fetch(`${BASE}/api/files`, { method: 'POST', body: form })
     if (!res.ok) throw new Error(await extractErrorMessage(res))
     return res.json()

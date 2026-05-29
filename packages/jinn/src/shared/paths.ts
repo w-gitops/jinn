@@ -35,6 +35,8 @@ export const CLAUDE_SKILLS_DIR = path.join(JINN_HOME, ".claude", "skills");
 export const AGENTS_SKILLS_DIR = path.join(JINN_HOME, ".agents", "skills");
 export const TEMPLATE_DIR = path.join(__dirname, "..", "..", "..", "template");
 export const FILES_DIR = path.join(JINN_HOME, "files");
+/** Date-bucketed storage for files attached to / emitted by sessions. */
+export const UPLOADS_DIR = path.join(JINN_HOME, "uploads");
 export const MIGRATIONS_DIR = path.join(JINN_HOME, "migrations");
 export const TEMPLATE_MIGRATIONS_DIR = path.join(TEMPLATE_DIR, "migrations");
 
