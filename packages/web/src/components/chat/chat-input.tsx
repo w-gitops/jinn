@@ -47,6 +47,8 @@ interface ChatInputProps {
   focusTrigger?: number
   /** Callback to open keyboard shortcuts overlay */
   onShortcutsClick?: () => void
+  /** Optional Engine/Model/Effort selector row, rendered just above the input. */
+  selectorSlot?: React.ReactNode
 }
 
 /* ── File to MediaAttachment ─────────────────────────────── */
@@ -119,6 +121,7 @@ export function ChatInput({
   onDroppedFilesConsumed,
   focusTrigger,
   onShortcutsClick,
+  selectorSlot,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -509,6 +512,11 @@ export function ChatInput({
             onRemove={removePendingAttachment}
           />
         </div>
+      )}
+
+      {/* Engine / Model / Effort selector row */}
+      {selectorSlot && (
+        <div className="mb-[var(--space-2)]">{selectorSlot}</div>
       )}
 
       <div className={`flex items-center gap-[var(--space-2)] bg-[var(--fill-secondary)] rounded-[var(--radius-lg)] py-1.5 px-[var(--space-3)] min-h-11 transition-[border-color] duration-200 ease-in-out border ${loading ? 'border-[var(--accent)]' : 'border-[var(--separator)]'}`}>

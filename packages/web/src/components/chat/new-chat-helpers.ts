@@ -7,6 +7,12 @@ export function buildNewSessionParams(opts: {
   message: string
   selectedEmployee: string | null
   attachmentIds?: string[]
+  /** Engine for the new session (new-chat only). Omit to use the employee/global default. */
+  engine?: string | null
+  /** Model id for the new session. */
+  model?: string | null
+  /** Effort level for the new session (only sent for effort-capable models). */
+  effortLevel?: string | null
 }): Record<string, unknown> {
   const params: Record<string, unknown> = {
     source: 'web',
@@ -20,6 +26,10 @@ export function buildNewSessionParams(opts: {
   if (opts.attachmentIds && opts.attachmentIds.length > 0) {
     params.attachments = opts.attachmentIds
   }
+
+  if (opts.engine) params.engine = opts.engine
+  if (opts.model) params.model = opts.model
+  if (opts.effortLevel) params.effortLevel = opts.effortLevel
 
   return params
 }

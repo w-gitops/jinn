@@ -20,6 +20,9 @@ export const queryKeys = {
     all: ['skills'] as const,
     detail: (name: string) => ['skills', name] as const,
   },
+  engines: {
+    all: ['engines'] as const,
+  },
   config: ['config'] as const,
   status: ['status'] as const,
 } as const

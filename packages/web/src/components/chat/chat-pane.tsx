@@ -6,6 +6,7 @@ import { ChatMessages } from '@/components/chat/chat-messages'
 import { ChatInput } from '@/components/chat/chat-input'
 import { ChatEmployeePicker } from '@/components/chat/chat-employee-picker'
 import { QueuePanel } from '@/components/chat/queue-panel'
+import { ModelSelectorRow, type SelectorValue } from '@/components/chat/model-selector-row'
 
 const CliTerminal = lazy(() => import('@/components/cli-terminal').then(m => ({ default: m.CliTerminal })))
 import { buildNewSessionParams } from '@/components/chat/new-chat-helpers'
@@ -92,6 +93,43 @@ export function ChatPane({
       }))
     : []
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
+
+  // Engine/Model/Effort selector state (composer). Engine is editable on a new
+  // chat only; model + effort are editable in existing chats too.
+  const [selector, setSelector] = useState<SelectorValue>({})
+  const [effortPendingNote, setEffortPendingNote] = useState(false)
+
+  // Pre-fill for a NEW chat from the chosen employee's config (engine/model);
+  // COO / no employee → empty so the row shows the global default.
+  useEffect(() => {
+    if (sessionId) return
+    const emp = selectedEmployee && Array.isArray(orgData?.employees)
+      ? orgData.employees.find((e) => e.name === selectedEmployee)
+      : undefined
+    setSelector(emp ? { engine: emp.engine, model: emp.model } : {})
+    setEffortPendingNote(false)
+  }, [selectedEmployee, sessionId, orgData])
+
+  // Pre-fill for an EXISTING chat from the loaded session.
+  useEffect(() => {
+    if (!sessionId || !currentSession) return
+    setSelector({
+      engine: currentSession.engine as string | undefined,
+      model: currentSession.model as string | undefined,
+      effortLevel: (currentSession.effortLevel ?? currentSession.effort_level) as string | undefined,
+    })
+    setEffortPendingNote(false)
+  }, [sessionId, currentSession])
+
+  // Apply a selector change. New chat: just track it (sent on first message).
+  // Existing chat: persist model/effort via PATCH (engine is fixed mid-chat).
+  const handleSelectorChange = useCallback((next: SelectorValue) => {
+    setSelector(next)
+    if (sessionIdRef.current) {
+      api.updateSession(sessionIdRef.current, { model: next.model, effortLevel: next.effortLevel }).catch(() => {})
+      setEffortPendingNote(true)
+    }
+  }, [])
 
   // Helper: persist intermediate messages to localStorage
   const persistIntermediate = useCallback((msgs: Message[], sid: string | null) => {
@@ -437,6 +475,9 @@ export function ChatPane({
             message,
             selectedEmployee,
             attachmentIds,
+            engine: selector.engine,
+            model: selector.model,
+            effortLevel: selector.effortLevel,
           })
           if (viewMode === 'cli') (params as Record<string, unknown>).mode = 'interactive'
           const session = (await api.createSession(params)) as Record<string, unknown>
@@ -466,7 +507,7 @@ export function ChatPane({
     // viewMode MUST be in deps — without it, toggling chat↔CLI keeps the stale
     // closure value and routes CLI sends to the headless engine, which is
     // exactly what made "the xterm shows stale content" reproducible.
-    [sessionId, selectedEmployee, onSessionCreated, onRefresh, viewMode, loading]
+    [sessionId, selectedEmployee, onSessionCreated, onRefresh, viewMode, loading, selector]
   )
 
   const handleStatusRequest = useCallback(async () => {
@@ -668,6 +709,15 @@ export function ChatPane({
         onDroppedFilesConsumed={() => setDroppedFiles(undefined)}
         focusTrigger={focusTrigger}
         onShortcutsClick={onShortcutsClick}
+        selectorSlot={
+          <ModelSelectorRow
+            mode={sessionId ? 'existing' : 'new'}
+            value={selector}
+            onChange={handleSelectorChange}
+            pendingNote={effortPendingNote}
+            disabled={loading}
+          />
+        }
       />
     </div>
   )
