@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import type { Message } from '@/lib/conversations'
 import { parseMedia, stripAttachedFilesBlock } from '@/lib/conversations'
 import { MessageMedia } from './message-media'
+import { useOpenFile } from '@/components/chat/file-open-context'
 
 /* ── Tool grouping ──────────────────────────────────────── */
 
@@ -81,10 +82,63 @@ function ToolGroup({ msgs, isActive }: { msgs: Message[]; isActive: boolean }) {
 
 /* ── Markdown rendering ─────────────────────────────────── */
 
+// Single source of truth for the file-path pattern: optional ~/ or / prefix,
+// ≥1 slash-separated segment, ending in a short extension. Requiring a slash +
+// an extension filters out branch names (feat/clickable-file-paths), mime types
+// (text/markdown), version numbers (0.16.1) and bare words (config.yaml — no slash).
+// Both the anchored test (isFilePath) and the inline-formatter alternative below
+// derive from this core string so the two can never drift apart.
+const FILE_PATH_CORE = String.raw`(?:~\/|\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]{1,8}`
+const FILE_PATH_RE = new RegExp(`^${FILE_PATH_CORE}$`)
+export function isFilePath(s: string): boolean {
+  return FILE_PATH_RE.test(s.trim())
+}
+
+// Inline-formatter pattern, assembled from the shared FILE_PATH_CORE so the
+// bare-path alternative (capture group 9) stays identical to FILE_PATH_RE.
+// Groups: 1,2 md-link · 3 url · 4,5 bold · 6,7 inline-code · 8 italic · 9 path.
+const INLINE_RE_SOURCE =
+  String.raw`\[([^\]]+)\]\(([^)]+)\)` +                 // [text](url)
+  String.raw`|(https?:\/\/[^\s<]+[^\s<.,;:!?)}\]'"])` + // bare URL
+  String.raw`|(\*\*(.+?)\*\*)` +                        // **bold**
+  '|(`([^`]+)`)' +                                      // `inline code`
+  String.raw`|\*([^*]+)\*` +                            // *italic*
+  `|(${FILE_PATH_CORE})`                                // bare file path
+
+// Render a file path as a clean clickable link. Opens the file in an in-app tab
+// when a FileOpenContext provider is present (chat page); otherwise / on
+// modified clicks it falls back to the real `/file?path=` browser route.
+// Monospace + blue underline (no code-box background — that looked like an empty highlight).
+function FileLink({ path }: { path: string }) {
+  const openFile = useOpenFile()
+  const trimmed = path.trim()
+  const href = `/file?path=${encodeURIComponent(trimmed)}`
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={`Open ${trimmed} in viewer`}
+      onClick={(e) => {
+        // Let modified clicks (cmd/ctrl/shift/middle) fall through to a real browser tab.
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
+        if (openFile) { e.preventDefault(); openFile(trimmed) }
+      }}
+      className="text-[var(--system-blue)] underline decoration-[var(--system-blue)]/40 hover:decoration-[var(--system-blue)] underline-offset-2 font-['SF_Mono',Menlo,monospace] text-[0.88em]"
+    >
+      {path}
+    </a>
+  )
+}
+
+function renderPathLink(p: string, key: React.Key): React.ReactNode {
+  return <FileLink key={key} path={p} />
+}
+
 function inlineFormat(text: string): React.ReactNode {
   const parts: React.ReactNode[] = []
-  // Markdown links (any href), bare URLs, bold, inline code, italic — in priority order
-  const regex = /\[([^\]]+)\]\(([^)]+)\)|(https?:\/\/[^\s<]+[^\s<.,;:!?)}\]'"])|(\*\*(.+?)\*\*)|(`([^`]+)`)|\*([^*]+)\*/g
+  // Fresh regex per call (own lastIndex — inlineFormat recurses for table cells).
+  const regex = new RegExp(INLINE_RE_SOURCE, 'g')
   let last = 0
   let match
 
@@ -119,11 +173,20 @@ function inlineFormat(text: string): React.ReactNode {
     } else if (match[4]) {
       parts.push(<strong key={match.index} className="font-[var(--weight-bold)]">{match[5]}</strong>)
     } else if (match[6]) {
-      parts.push(
-        <code key={match.index} className="bg-[var(--fill-secondary)] border border-[var(--separator)] rounded-[5px] py-px px-[5px] text-[0.88em] font-['SF_Mono',Menlo,monospace] text-[var(--accent)]">{match[7]}</code>
-      )
+      // Inline `code` — but if it's actually a file path, make it a viewer link.
+      // Agents almost always wrap paths in backticks, so this is the common case.
+      if (isFilePath(match[7])) {
+        parts.push(renderPathLink(match[7], match.index))
+      } else {
+        parts.push(
+          <code key={match.index} className="bg-[var(--fill-secondary)] border border-[var(--separator)] rounded-[5px] py-px px-[5px] text-[0.88em] font-['SF_Mono',Menlo,monospace] text-[var(--accent)]">{match[7]}</code>
+        )
+      }
     } else if (match[8]) {
       parts.push(<em key={match.index} className="italic opacity-[0.85]">{match[8]}</em>)
+    } else if (match[9]) {
+      // Bare (un-backticked) file path → viewer link
+      parts.push(renderPathLink(match[9], match.index))
     }
     last = match.index + match[0].length
   }

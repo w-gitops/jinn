@@ -1,7 +1,7 @@
 
 import { useRef, useState, type MouseEvent, type DragEvent, type ReactNode } from 'react'
-import { X, Plus, PanelLeftOpen, PanelLeftClose } from 'lucide-react'
-import type { ChatTab } from '@/hooks/use-chat-tabs'
+import { X, Plus, PanelLeftOpen, PanelLeftClose, FileText } from 'lucide-react'
+import { tabKey, type ChatTab } from '@/hooks/use-chat-tabs'
 import { cn } from '@/lib/utils'
 import { EmployeeAvatar } from '@/components/ui/employee-avatar'
 import { cleanPreview } from '@/lib/clean-preview'
@@ -93,7 +93,7 @@ export function ChatTabBar({ tabs, activeIndex, onSwitch, onClose, onNew, onPin,
         >
           {tabs.map((tab, i) => (
             <button
-              key={tab.sessionId}
+              key={tabKey(tab)}
               onClick={() => onSwitch(i)}
               onDoubleClick={() => handleDoubleClick(i)}
               onMouseDown={(e) => handleMiddleClick(e, i)}
@@ -107,18 +107,21 @@ export function ChatTabBar({ tabs, activeIndex, onSwitch, onClose, onNew, onPin,
                 i === activeIndex
                   ? "border-b-2 border-b-[var(--accent)] bg-background text-foreground"
                   : "text-muted-foreground hover:bg-[var(--fill-quaternary)] hover:text-foreground",
-                tab.unread && i !== activeIndex && "font-bold",
+                tab.kind === 'session' && tab.unread && i !== activeIndex && "font-bold",
                 // Drop target indicator
                 dropTarget === i && dragIndex !== null && dragIndex !== i && "border-l-2 border-l-[var(--accent)]",
               )}
             >
-              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_COLORS[tab.status] || STATUS_COLORS.idle}`} />
-              {tab.employeeName && <EmployeeAvatar name={tab.employeeName} size={16} />}
+              {tab.kind === 'session' && (
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_COLORS[tab.status] || STATUS_COLORS.idle}`} />
+              )}
+              {tab.kind === 'session' && tab.employeeName && <EmployeeAvatar name={tab.employeeName} size={16} />}
+              {tab.kind === 'file' && <FileText size={14} className="shrink-0 text-[var(--text-tertiary)]" />}
               <span className={cn(
                 "truncate",
                 tab.pinned ? "font-medium" : "font-normal italic",
               )}>
-                {cleanPreview(tab.label)}
+                {tab.kind === 'file' ? tab.label : cleanPreview(tab.label)}
               </span>
               <span
                 onClick={(e) => { e.stopPropagation(); onClose(i) }}
