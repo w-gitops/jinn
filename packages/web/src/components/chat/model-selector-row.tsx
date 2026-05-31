@@ -4,6 +4,8 @@ import {
   DropdownMenuContent,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import { useModelRegistry, engineList, effortLevelsFor, findModel, defaultEffort, clampEffort, contextWindowFor } from '@/hooks/use-model-registry'
 
@@ -29,6 +31,8 @@ interface ModelSelectorRowProps {
   /** Most recent turn's input-context token count (session.lastContextTokens),
    *  for the inline context meter. Omitted/0 → meter hidden (e.g. fresh chat). */
   contextTokens?: number | null
+  /** Start-a-new-chat handler — offered inside the locked-engine explainer popover. */
+  onNewChat?: () => void
 }
 
 const ENGINE_LABELS: Record<string, string> = {
@@ -71,7 +75,7 @@ const Sep = () => <span aria-hidden className="opacity-40 select-none">·</span>
  * Cascading: changing engine resets model to that engine's default; changing model
  * clamps effort to a level valid for the new model.
  */
-export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled, contextTokens }: ModelSelectorRowProps) {
+export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled, contextTokens, onNewChat }: ModelSelectorRowProps) {
   const { data: registry, isLoading } = useModelRegistry()
   if (isLoading || !registry) return null
 
@@ -119,9 +123,19 @@ export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled,
           </DropdownMenuRadioGroup>
         </InlineTrigger>
       ) : (
-        <span title="Engine can't be changed mid-chat — start a new chat to switch engines">
-          {engineLabel(engine)}
-        </span>
+        // Existing chat: engine is locked, but render as a clickable trigger
+        // identical to model/effort. Clicking explains-and-stops (no engine list).
+        <InlineTrigger label="Engine (locked)" value={engineLabel(engine)} disabled={disabled}>
+          <div className="max-w-[230px] px-2 py-1.5 text-[length:var(--text-caption1)] leading-snug text-[var(--text-secondary)]">
+            Engine is locked for this chat. Start a new chat to use a different engine.
+          </div>
+          {onNewChat && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={onNewChat}>+ New chat</DropdownMenuItem>
+            </>
+          )}
+        </InlineTrigger>
       )}
 
       <Sep />

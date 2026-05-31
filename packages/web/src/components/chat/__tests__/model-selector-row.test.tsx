@@ -40,10 +40,11 @@ describe('ModelSelectorRow', () => {
     expect(screen.getByText('Opus 4.8')).toBeTruthy()
   })
 
-  it('existing-chat mode: Engine is a read-only chip, not a dropdown', () => {
+  it('existing-chat mode: Engine is a locked trigger (explainer popover), not an engine list; model stays editable', () => {
     render(<ModelSelectorRow mode="existing" value={{ engine: 'claude', model: 'opus' }} onChange={() => {}} />)
+    // The locked engine is a clickable trigger labelled "Engine (locked)", not a plain "Engine" dropdown.
     expect(screen.queryByRole('button', { name: 'Engine' })).toBeNull()
-    // model remains editable
+    expect(screen.getByRole('button', { name: /engine \(locked\)/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Model' })).toBeTruthy()
   })
 

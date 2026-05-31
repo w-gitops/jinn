@@ -717,6 +717,7 @@ export function ChatPane({
             pendingNote={effortPendingNote}
             disabled={loading}
             contextTokens={(currentSession?.lastContextTokens as number | null | undefined) ?? undefined}
+            onNewChat={handleNewSession}
           />
         }
       />
