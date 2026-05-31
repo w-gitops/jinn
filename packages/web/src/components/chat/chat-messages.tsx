@@ -81,6 +81,31 @@ function ToolGroup({ msgs, isActive }: { msgs: Message[]; isActive: boolean }) {
 
 /* ── Markdown rendering ─────────────────────────────────── */
 
+// A file path = optional ~/ or / prefix, ≥1 slash-separated segment, ending in a
+// short extension. Requiring a slash + extension filters out branch names
+// (feat/clickable-file-paths), mime types (text/markdown), version numbers (0.16.1).
+const FILE_PATH_RE = /^(?:~\/|\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]{1,8}$/
+function isFilePath(s: string): boolean {
+  return FILE_PATH_RE.test(s.trim())
+}
+
+// Render a file path as a clean clickable link that opens the in-browser viewer.
+// Monospace + blue underline (no code-box background — that looked like an empty highlight).
+function renderPathLink(p: string, key: React.Key): React.ReactNode {
+  return (
+    <a
+      key={key}
+      href={`/file?path=${encodeURIComponent(p.trim())}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={`Open ${p.trim()} in viewer`}
+      className="text-[var(--system-blue)] underline decoration-[var(--system-blue)]/40 hover:decoration-[var(--system-blue)] underline-offset-2 font-['SF_Mono',Menlo,monospace] text-[0.88em]"
+    >
+      {p}
+    </a>
+  )
+}
+
 function inlineFormat(text: string): React.ReactNode {
   const parts: React.ReactNode[] = []
   // Markdown links (any href), bare URLs, bold, inline code, italic, file paths — in priority order
@@ -119,24 +144,20 @@ function inlineFormat(text: string): React.ReactNode {
     } else if (match[4]) {
       parts.push(<strong key={match.index} className="font-[var(--weight-bold)]">{match[5]}</strong>)
     } else if (match[6]) {
-      parts.push(
-        <code key={match.index} className="bg-[var(--fill-secondary)] border border-[var(--separator)] rounded-[5px] py-px px-[5px] text-[0.88em] font-['SF_Mono',Menlo,monospace] text-[var(--accent)]">{match[7]}</code>
-      )
+      // Inline `code` — but if it's actually a file path, make it a viewer link.
+      // Agents almost always wrap paths in backticks, so this is the common case.
+      if (isFilePath(match[7])) {
+        parts.push(renderPathLink(match[7], match.index))
+      } else {
+        parts.push(
+          <code key={match.index} className="bg-[var(--fill-secondary)] border border-[var(--separator)] rounded-[5px] py-px px-[5px] text-[0.88em] font-['SF_Mono',Menlo,monospace] text-[var(--accent)]">{match[7]}</code>
+        )
+      }
     } else if (match[8]) {
       parts.push(<em key={match.index} className="italic opacity-[0.85]">{match[8]}</em>)
     } else if (match[9]) {
-      // File path → open in file-viewer route in a new tab
-      parts.push(
-        <a
-          key={match.index}
-          href={`/file?path=${encodeURIComponent(match[9])}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-[var(--system-blue)] underline underline-offset-2"
-        >
-          {match[9]}
-        </a>
-      )
+      // Bare (un-backticked) file path → viewer link
+      parts.push(renderPathLink(match[9], match.index))
     }
     last = match.index + match[0].length
   }
