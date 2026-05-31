@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### 💥 Breaking / Removed
+- **Removed the Gemini CLI engine.** Google is sunsetting Gemini CLI for individual/free and AI Pro/Ultra users on **2026-06-18**, directing them to Antigravity. The `gemini` engine option (`engines.gemini`, `engine: gemini` on employees/cron/sessions) has been removed; `engines.default` is now `"claude" | "codex"`. Any config still referencing `engines.gemini` is ignored. **Gemini *API* usage is unaffected** — `GEMINI_API_KEY`-based features (deep-research, nano-banana image generation) continue to work. An Antigravity engine replaces this slot in a following change.
+
 ## [0.16.1] - 2026-05-30
 
 ### 🐛 Fixes

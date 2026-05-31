@@ -448,7 +448,6 @@ export async function handleApiRequest(
           default: config.engines.default,
           claude: { model: config.engines.claude.model, available: true },
           codex: { model: config.engines.codex.model, available: true },
-          ...(config.engines.gemini ? { gemini: { model: config.engines.gemini.model, available: true } } : {}),
         },
         sessions: { total: sessions.length, running, active: running },
         connectors,
@@ -633,7 +632,7 @@ export async function handleApiRequest(
         const { session: newSession, messageCount } = duplicateSession(params.id);
         newSessionId = newSession.id;
 
-        // 2. Fork the engine session (Claude/Codex/Gemini) via headless fork.
+        // 2. Fork the engine session (Claude/Codex) via headless fork.
         const forkResult = forkEngineSession(source.engine, source.engineSessionId, JINN_HOME);
 
         // 3. Store the new engine session ID
@@ -1967,9 +1966,7 @@ async function runWebSession(
 
     const engineConfig = currentSession.engine === "codex"
       ? config.engines.codex
-      : currentSession.engine === "gemini"
-        ? config.engines.gemini ?? config.engines.claude
-        : config.engines.claude;
+      : config.engines.claude;
     const effortLevel = resolveEffort(engineConfig, currentSession, employee);
 
     let lastHeartbeatAt = 0;
