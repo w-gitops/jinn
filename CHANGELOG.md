@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.17.0] - 2026-05-31
+
+### ✨ Features
+- **Clickable file paths → in-app file viewer.** File paths mentioned in chat messages (e.g. `docs/superpowers/specs/2026-05-31-movekit-support-design.md`) are now auto-detected and rendered as links — including the common case where agents wrap them in backticks. Clicking opens the file as a new **in-app tab** (the same VS Code-style tab bar as chats, labelled with the basename), rendering markdown via `react-markdown` + `remark-gfm` and code with Prism syntax highlighting. Lets you read any referenced artifact without leaving the dashboard — ideal over Tailscale where the file isn't directly reachable.
+- **Standalone `/file?path=` route** — the same viewer as a full page, for opening files in a real browser tab (a subtle ⧉ button inside the in-app viewer pops it out) and for direct/remote access.
+- **File-read endpoint** `GET /api/files/read?path=` — reads any file on disk (single-user/Tailscale threat model, no allowlist) with a 5 MB size cap and binary detection. Relative paths resolve `~/.jinn` first, then `~/Projects`, then gateway cwd, then literal; absolute/`~` paths used verbatim.
+- **Mobile back button** in the embedded viewer that returns to the chat the link was opened from; sticky frosted control chips (back + pop-out) that stay reachable while scrolling.
+
+### 🐛 Fixes
+- File-viewer content wraps to the available width — no more horizontal scrollbar on long code lines or unbroken tokens (prose wraps, code blocks contain their own overflow).
+
 ## [0.16.1] - 2026-05-30
 
 ### 🐛 Fixes
