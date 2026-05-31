@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.17.1] - 2026-05-31
+
+### 🐛 Fixes
+- **Slack reaction approvals work again on older messages.** The `reaction_added` handler gated on the *reacted-to message's* age via `ignoreOldMessagesOnBoot`, so any reaction on a message posted before the gateway's last boot was silently dropped. This broke human-in-the-loop approval flows where a card waits hours for a ✅ (and every gateway restart made all pending cards un-reactable). The boot-replay guard now checks the **reaction event's own `event_ts`**, so a fresh reaction on an old message is always honored while genuinely replayed-on-boot reactions are still skipped.
+- **Instant `:eyes:` ack on reactions.** The connector now adds an `:eyes:` reaction the moment it accepts a user reaction, giving immediate visual confirmation the gateway heard it.
+
 ## [0.17.0] - 2026-05-31
 
 ### ✨ Features
