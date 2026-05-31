@@ -14,7 +14,7 @@ export interface SelectorValue {
 }
 
 interface ModelSelectorRowProps {
-  /** 'new' = engine editable; 'existing' = engine is a read-only chip. */
+  /** 'new' = engine editable; 'existing' = engine is read-only (locked mid-chat). */
   mode: 'new' | 'existing'
   value: SelectorValue
   onChange: (next: SelectorValue) => void
@@ -29,19 +29,21 @@ const ENGINE_LABELS: Record<string, string> = {
   antigravity: 'Antigravity',
 }
 
-function Pill({ label, value, disabled, children }: { label: string; value: string; disabled?: boolean; children: React.ReactNode }) {
+// Inline metadata trigger — matches the composer hint strip exactly (caption2 +
+// text-quaternary, no border/background), brightens to tertiary on hover with a
+// faint chevron only on hover/focus. Reads as quiet metadata, not a button.
+function InlineTrigger({ label, value, disabled, children }: { label: string; value: string; disabled?: boolean; children: React.ReactNode }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild disabled={disabled}>
         <button
           type="button"
           disabled={disabled}
-          className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--surface-2)] px-[var(--space-2)] py-[2px] text-[var(--text-xs)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)] disabled:opacity-50"
           aria-label={label}
+          className="group inline-flex items-center gap-0.5 bg-transparent border-none p-0 font-[inherit] text-[var(--text-quaternary)] hover:text-[var(--text-tertiary)] focus-visible:text-[var(--text-tertiary)] transition-colors cursor-pointer disabled:cursor-default"
         >
-          <span className="text-[var(--text-muted)]">{label}</span>
-          <span className="font-medium text-[var(--text-primary)]">{value}</span>
-          <span aria-hidden className="text-[var(--text-muted)]">▾</span>
+          <span>{value}</span>
+          <span aria-hidden className="opacity-0 group-hover:opacity-60 group-focus-visible:opacity-60 transition-opacity text-[8px] leading-none">▾</span>
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">{children}</DropdownMenuContent>
@@ -49,10 +51,13 @@ function Pill({ label, value, disabled, children }: { label: string; value: stri
   )
 }
 
+const Sep = () => <span aria-hidden className="opacity-40 select-none">·</span>
+
 /**
- * Engine / Model / Effort selector for the chat composer. All options come from
- * the live registry (GET /api/engines) — nothing hardcoded.
- *  - Engine: editable on a NEW chat only; a read-only chip in an existing chat.
+ * Engine / Model / Effort selector for the chat composer — rendered as quiet
+ * inline metadata on the hint strip below the input (e.g. `Claude · Opus 4.8 · medium`).
+ * All options come from the live registry (GET /api/engines); nothing hardcoded.
+ *  - Engine: editable on a NEW chat only; plain locked text in an existing chat.
  *  - Model: editable always.
  *  - Effort: editable always; hidden entirely for models with no effort levels.
  * Cascading: changing engine resets model to that engine's default; changing model
@@ -84,7 +89,6 @@ export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled 
   }
 
   const pickModel = (nextModel: string) => {
-    // Clamp effort to a level valid for the new model.
     const nextEffort = clampEffort(effortLevelsFor(registry, engine, nextModel), value.effortLevel)
     onChange({ engine, model: nextModel, effortLevel: nextEffort })
   }
@@ -94,10 +98,10 @@ export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled 
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-[var(--space-2)]">
-      {/* Engine — editable on new chat, read-only chip in existing chat */}
+    <div className="flex items-center gap-1 min-w-0 text-[length:var(--text-caption2)] text-[var(--text-quaternary)]">
+      {/* Engine — editable on new chat, plain locked text in an existing chat */}
       {mode === 'new' ? (
-        <Pill label="Engine" value={engineLabel(engine)} disabled={disabled}>
+        <InlineTrigger label="Engine" value={engineLabel(engine)} disabled={disabled}>
           <DropdownMenuRadioGroup value={engine} onValueChange={pickEngine}>
             {engines.map((e) => (
               <DropdownMenuRadioItem key={e.name} value={e.name}>
@@ -105,19 +109,17 @@ export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled 
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>
-        </Pill>
+        </InlineTrigger>
       ) : (
-        <span
-          className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--surface-1)] px-[var(--space-2)] py-[2px] text-[var(--text-xs)] text-[var(--text-muted)]"
-          title="Engine can't be changed mid-chat — start a new chat to switch engines"
-        >
-          <span className="text-[var(--text-muted)]">Engine</span>
-          <span className="font-medium text-[var(--text-secondary)]">{engineLabel(engine)}</span>
+        <span title="Engine can't be changed mid-chat — start a new chat to switch engines">
+          {engineLabel(engine)}
         </span>
       )}
 
+      <Sep />
+
       {/* Model — always editable */}
-      <Pill label="Model" value={modelLabel(modelId)} disabled={disabled || models.length === 0}>
+      <InlineTrigger label="Model" value={modelLabel(modelId)} disabled={disabled || models.length === 0}>
         <DropdownMenuRadioGroup value={modelId} onValueChange={pickModel}>
           {models.map((m) => (
             <DropdownMenuRadioItem key={m.id} value={m.id}>
@@ -125,23 +127,26 @@ export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled 
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
-      </Pill>
+      </InlineTrigger>
 
       {/* Effort — hidden when the model has no effort levels */}
       {efforts.length > 0 && (
-        <Pill label="Effort" value={value.effortLevel ?? 'medium'} disabled={disabled}>
-          <DropdownMenuRadioGroup value={value.effortLevel ?? 'medium'} onValueChange={pickEffort}>
-            {efforts.map((lvl) => (
-              <DropdownMenuRadioItem key={lvl} value={lvl}>
-                {lvl}
-              </DropdownMenuRadioItem>
-            ))}
-          </DropdownMenuRadioGroup>
-        </Pill>
+        <>
+          <Sep />
+          <InlineTrigger label="Effort" value={value.effortLevel ?? 'medium'} disabled={disabled}>
+            <DropdownMenuRadioGroup value={value.effortLevel ?? 'medium'} onValueChange={pickEffort}>
+              {efforts.map((lvl) => (
+                <DropdownMenuRadioItem key={lvl} value={lvl}>
+                  {lvl}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </InlineTrigger>
+        </>
       )}
 
       {mode === 'existing' && pendingNote && (
-        <span className="text-[var(--text-xs)] text-[var(--text-muted)]">· applies to next message</span>
+        <span className="ml-1 italic opacity-70">· applies next message</span>
       )}
     </div>
   )
