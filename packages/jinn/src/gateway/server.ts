@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee, Engine } from "../shared/types.js";
 import { loadConfig, normalizeClaudeEngineConfig } from "../shared/config.js";
+import { invalidateModelRegistry } from "../shared/models.js";
 import { configureLogger, logger } from "../shared/logger.js";
 import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession, getSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
@@ -824,6 +825,7 @@ export async function startGateway(
       try {
         currentConfig = loadConfig();
         apiContext.config = currentConfig;
+        invalidateModelRegistry(); // rebuild the model/capability registry from the new config
         logger.info("Config reloaded successfully");
         emit("config:reloaded", {});
       } catch (err) {

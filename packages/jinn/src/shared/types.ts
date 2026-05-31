@@ -371,6 +371,63 @@ export interface PortalConfig {
   onboarded?: boolean;
 }
 
+/**
+ * Model + capability registry.
+ *
+ * The resolved registry (see shared/models.ts) is the single source of truth for
+ * which engines/models exist and what they support. A NEW model shipping is a
+ * config edit (`models:` block in config.yaml), zero code change. When the block
+ * is absent, the registry is synthesized from `engines.<name>.model` so existing
+ * configs keep working.
+ */
+
+/** How an engine conveys reasoning-effort to its CLI. */
+export type EffortMechanism = "claude-flag" | "codex-config" | "none";
+
+/** A single model and its capabilities, as exposed to the UI / validation. */
+export interface ModelInfo {
+  id: string;
+  label: string;
+  supportsEffort: boolean;
+  /** Valid effort levels for THIS model (empty when supportsEffort is false). */
+  effortLevels: string[];
+  supportsFast: boolean;
+}
+
+/** Resolved per-engine registry entry. */
+export interface EngineRegistryEntry {
+  name: string;
+  /** Engine is registered/usable in this build. */
+  available: boolean;
+  /** Default model id for new sessions on this engine. */
+  defaultModel: string;
+  effortMechanism: EffortMechanism;
+  models: ModelInfo[];
+}
+
+/** Resolved registry, keyed by engine name. */
+export type ModelRegistry = Record<string, EngineRegistryEntry>;
+
+// --- config.yaml `models:` block shapes (all fields optional/forgiving) ---
+
+export interface ModelConfigEntry {
+  id: string;
+  label?: string;
+  supportsEffort?: boolean;
+  effortLevels?: string[];
+  supportsFast?: boolean;
+}
+
+export interface EngineModelsConfig {
+  /** Default model id; falls back to the first listed model. */
+  default?: string;
+  effortMechanism?: EffortMechanism;
+  models: ModelConfigEntry[];
+}
+
+/** `models:` block keyed by engine name (claude | codex | antigravity). */
+export type ModelsConfig = Record<string, EngineModelsConfig>;
+
 export interface JinnConfig {
   jinn?: { version?: string };
   gateway: { port: number; host: string; streaming?: boolean };
@@ -390,6 +447,8 @@ export interface JinnConfig {
      *  today, so those fields are forward-looking. */
     antigravity?: { bin?: string; model?: string; effortLevel?: string; childEffortOverride?: string };
   };
+  /** Optional model + capability registry. When absent, synthesized from engines.<name>.model. */
+  models?: ModelsConfig;
   connectors: Record<string, any> & {
     web?: WebConnectorConfig;
     slack?: SlackConnectorConfig;

@@ -6,6 +6,7 @@ import path from "node:path";
 import yaml from "js-yaml";
 import type { CronJob, Engine, IncomingMessage, JinnConfig, Session, StreamDelta, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
+import { getModelRegistry, invalidateModelRegistry } from "../shared/models.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
 import {
@@ -1227,6 +1228,15 @@ export async function handleApiRequest(
       return json(res, { status: "removed", name: params.name });
     }
 
+    // GET /api/engines — resolved model + capability registry (single source of truth
+    // for the UI model/effort/fast selectors). Synthesized from engines.<name>.model
+    // when no `models:` block is configured.
+    if (method === "GET" && pathname === "/api/engines") {
+      const config = context.getConfig();
+      const registry = getModelRegistry(config);
+      return json(res, { default: config.engines.default, engines: registry });
+    }
+
     // GET /api/config
     if (method === "GET" && pathname === "/api/config") {
       const config = context.getConfig();
@@ -1267,6 +1277,7 @@ export async function handleApiRequest(
         "jinn",
         "gateway",
         "engines",
+        "models",
         "connectors",
         "logging",
         "mcp",
@@ -1304,6 +1315,7 @@ export async function handleApiRequest(
       const merged = deepMerge(existing, body);
       const yamlStr = yaml.dump(merged);
       fs.writeFileSync(CONFIG_PATH, yamlStr);
+      invalidateModelRegistry(); // models/engines may have changed — rebuild on next read
       logger.info("Config updated via API");
       return json(res, { status: "ok" });
     }
