@@ -351,6 +351,8 @@ export class SessionManager {
         attachments: attachments.length > 0 ? attachments : undefined,
         sessionId: session.id,
         source: session.source,
+        employeeName: employee?.name ?? session.employee ?? undefined,
+        department: employee?.department,
       });
 
       const wasInterrupted = result.error?.startsWith("Interrupted");

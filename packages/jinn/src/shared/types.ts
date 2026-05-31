@@ -43,6 +43,10 @@ export interface EngineRunOpts {
   sessionId?: string;
   /** Session source ("cron", "web", "slack", …) — used by the interactive engine for lifecycle policy. */
   source?: string;
+  /** Employee name driving this session — used to resolve the command-gate scope. */
+  employeeName?: string;
+  /** Employee department — fallback for command-gate scope resolution. */
+  department?: string;
 }
 
 export interface EngineResult {

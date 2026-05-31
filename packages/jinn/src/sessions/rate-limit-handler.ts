@@ -218,6 +218,8 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
         cliFlags: employee?.cliFlags ?? cliFlags,
         attachments: attachments?.length ? attachments : undefined,
         sessionId: session.id,
+        employeeName: employee?.name ?? session.employee ?? undefined,
+        department: employee?.department,
         ...(hooks.onFallbackStream ? { onStream: hooks.onFallbackStream } : {}),
       });
 
@@ -302,6 +304,8 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
         attachments: attachments?.length ? attachments : undefined,
         sessionId: session.id,
         source: session.source,
+        employeeName: employee?.name ?? session.employee ?? undefined,
+        department: employee?.department,
         ...(hooks.onRetryStream ? { onStream: hooks.onRetryStream } : {}),
       });
 

@@ -19,7 +19,9 @@ import { GeminiEngine } from "../engines/gemini.js";
 import { HookRegistry } from "./hook-registry.js";
 import { writeGatewayInfo, readGatewayInfo, updateGatewayPtyPids } from "./gateway-info.js";
 import { seedTrust, cleanupSessionSettings } from "../shared/claude-settings.js";
-import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, JINN_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
+import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, COMMAND_TIER1_SCRIPT, POLICY_PATH, JINN_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
+import { CommandGate, initCommandGate } from "./command-gate.js";
+import { makeClaudeClassifier } from "./command-classifier.js";
 import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
 import { pickEncoding, isCompressibleExt, compressStream } from "./compress.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
@@ -192,22 +194,69 @@ export async function startGateway(
   //   • InteractiveClaudeEngine (PTY): used only by /ws/pty/:sessionId for the live xterm CLI view.
   const claudeEngine = new ClaudeEngine();
 
-  // Copy hook-relay asset next to JINN_HOME so PTY-spawned Claude can find it.
-  const relayCandidates = [
-    path.join(__dirname, "..", "..", "..", "assets", "hook-relay.mjs"),
-    path.join(__dirname, "..", "..", "assets", "hook-relay.mjs"),
-    path.join(__dirname, "..", "assets", "hook-relay.mjs"),
+  // Copy hook-relay asset + shared Tier-1 matcher next to JINN_HOME so PTY/headless
+  // Claude can find them. The matcher must sit beside the relay so the relay can
+  // import ./command-tier1.mjs for its local Tier-1 floor.
+  const assetCandidateDirs = [
+    path.join(__dirname, "..", "..", "..", "assets"),
+    path.join(__dirname, "..", "..", "assets"),
+    path.join(__dirname, "..", "assets"),
+  ];
+  const assetDir = assetCandidateDirs.find((d) => fs.existsSync(path.join(d, "hook-relay.mjs")));
+  const copyAsset = (name: string, dest: string, label: string) => {
+    try {
+      if (assetDir) {
+        fs.copyFileSync(path.join(assetDir, name), dest);
+        // Gate self-protection (honest, single-uid): keep these 0600 so a casual
+        // mistake can't clobber them. Not a defense against a hostile same-uid agent (v2).
+        fs.chmodSync(dest, 0o600);
+      } else {
+        logger.warn(`${label} asset not found in any candidate location; command gate may not work`);
+      }
+    } catch (err) {
+      logger.warn(`Failed to copy ${label}: ${err instanceof Error ? err.message : err}`);
+    }
+  };
+  copyAsset("hook-relay.mjs", HOOK_RELAY_SCRIPT, "hook-relay.mjs");
+  copyAsset("command-tier1.mjs", COMMAND_TIER1_SCRIPT, "command-tier1.mjs");
+
+  // Deploy the command-safety policy into JINN_HOME (canonical source is the repo
+  // policy/command-safety.json). The gate + relay read it from JINN_HOME; the
+  // watcher hot-reloads on change.
+  const policyCandidates = [
+    path.join(__dirname, "..", "..", "..", "..", "policy", "command-safety.json"),
+    path.join(__dirname, "..", "..", "..", "policy", "command-safety.json"),
+    path.join(__dirname, "..", "..", "policy", "command-safety.json"),
   ];
   try {
-    const relaySrc = relayCandidates.find((p) => fs.existsSync(p));
-    if (relaySrc) {
-      fs.copyFileSync(relaySrc, HOOK_RELAY_SCRIPT);
-    } else {
-      logger.warn(`hook-relay.mjs asset not found in any candidate location; interactive Claude hooks may not work`);
+    const policySrc = policyCandidates.find((p) => fs.existsSync(p));
+    fs.mkdirSync(path.dirname(POLICY_PATH), { recursive: true });
+    // Don't overwrite a policy already deployed to JINN_HOME (operators may hot-edit it);
+    // only seed it from the repo when missing.
+    if (policySrc && !fs.existsSync(POLICY_PATH)) {
+      fs.copyFileSync(policySrc, POLICY_PATH);
+      fs.chmodSync(POLICY_PATH, 0o600);
+      logger.info(`command-gate: seeded policy to ${POLICY_PATH} from ${policySrc}`);
+    } else if (!policySrc && !fs.existsSync(POLICY_PATH)) {
+      logger.warn(`command-gate: no policy found in repo candidates and none at ${POLICY_PATH}; gate will deny non-readonly (fail-closed)`);
     }
   } catch (err) {
-    logger.warn(`Failed to copy hook-relay.mjs: ${err instanceof Error ? err.message : err}`);
+    logger.warn(`Failed to deploy command-safety policy: ${err instanceof Error ? err.message : err}`);
   }
+
+  // Instantiate the command gate (Tier-1/2/3 + token store) and register it as a
+  // module singleton so engines + the hook endpoint can reach it.
+  const commandGate = new CommandGate(
+    POLICY_PATH,
+    makeClaudeClassifier(claudeCfg.bin),
+    (sessionId, command, detail) => {
+      // Out-of-scope deny → escalate to Jinn. Logged loudly here; the deny itself
+      // is returned to the relay. (Dashboard event wiring is intentionally omitted
+      // to avoid a boot-order dependency on the later-defined `emit`.)
+      logger.warn(`command-gate: OUT-OF-SCOPE deny (notify Jinn) for session ${sessionId}: ${detail} :: ${command.slice(0, 200)}`);
+    },
+  );
+  initCommandGate(commandGate);
 
   // Seed trust for the Jinn project dir so interactive Claude doesn't prompt.
   try {
@@ -694,6 +743,7 @@ export async function startGateway(
     reloadConnectorInstances,
     hookRegistry,
     hookSecret: gatewayInfo.secret,
+    commandGate,
     interactiveClaudeEngine,
   };
 
@@ -820,6 +870,11 @@ export async function startGateway(
     onSkillsChange: () => {
       logger.info("Skills changed, notifying clients");
       emit("skills:changed", {});
+    },
+    onPolicyReload: () => {
+      commandGate.reload();
+      logger.info("command-safety policy reloaded");
+      emit("policy:reloaded", {});
     },
   });
 

@@ -1,6 +1,37 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { EngineRateLimitInfo, InterruptibleEngine, EngineRunOpts, EngineResult, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
+import { writeSessionSettings } from "../shared/claude-settings.js";
+import { CLAUDE_SETTINGS_DIR, HOOK_RELAY_SCRIPT } from "../shared/paths.js";
+import { getCommandGate } from "../gateway/command-gate.js";
+
+/**
+ * Wire the PreToolUse command gate for a headless `claude -p` session:
+ *   1. resolve + register the session's declared scope in the command gate, and
+ *   2. write a per-session --settings file that wires the hook-relay.
+ * Returns the settings path to pass as --settings, or undefined on failure.
+ * Best-effort: a failure here is logged loudly — the relay's local Tier-1 floor
+ * still applies via the settings the interactive path writes, but a headless
+ * session with no settings file is UNGATED, so we surface it.
+ */
+function prepareGatedHeadlessSession(opts: EngineRunOpts): string | undefined {
+  if (!opts.sessionId) return undefined;
+  try {
+    const gate = getCommandGate();
+    if (gate?.hasPolicy()) {
+      const scope = gate.resolveScope(opts.employeeName, opts.department);
+      gate.setScope(opts.sessionId, scope);
+    }
+    return writeSessionSettings(CLAUDE_SETTINGS_DIR, opts.sessionId, {
+      sessionId: opts.sessionId,
+      relayScript: HOOK_RELAY_SCRIPT,
+      // systemPrompt is already passed via --append-system-prompt; don't double it.
+    });
+  } catch (err) {
+    logger.error(`command-gate: FAILED to wire headless session ${opts.sessionId} (session will be UNGATED): ${err instanceof Error ? err.message : err}`);
+    return undefined;
+  }
+}
 
 const TRANSIENT_PATTERNS = [
   /ECONNRESET/i,
@@ -77,6 +108,12 @@ export class ClaudeEngine implements InterruptibleEngine {
   private async runOnce(opts: EngineRunOpts): Promise<EngineResult> {
     const streaming = !!opts.onStream;
     const args = ["-p", "--output-format", streaming ? "stream-json" : "json", "--verbose", "--dangerously-skip-permissions", "--chrome", "--disallowedTools", "AskUserQuestion", "ExitPlanMode"];
+
+    // Wire the PreToolUse command gate (relay + per-session scope). Honored even
+    // under --dangerously-skip-permissions because hooks are separate from the
+    // permission-prompt system.
+    const settingsPath = prepareGatedHeadlessSession(opts);
+    if (settingsPath) args.push("--settings", settingsPath);
 
     if (streaming) args.push("--include-partial-messages");
     if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
