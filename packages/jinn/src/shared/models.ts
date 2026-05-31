@@ -9,7 +9,7 @@ import type {
 
 /**
  * Model + capability registry — the single source of truth for which engines and
- * models exist and what they support (effort levels, fast mode). Built from the
+ * models exist and what they support (effort levels). Built from the
  * optional `models:` block in config.yaml; when that block is absent (or an engine
  * is missing from it) the entry is synthesized from `engines.<name>.model` so
  * existing configs keep working. Adding a NEW model is a config edit, no code change.
@@ -89,7 +89,6 @@ export function synthesizeFromEngineConfig(config: JinnConfig): ModelRegistry {
       label: modelId,
       supportsEffort: defaults.supportsEffort,
       effortLevels: defaults.supportsEffort ? [...defaults.effortLevels] : [],
-      supportsFast: false, // never assume fast support for an unknown model
     };
     registry[name] = {
       name,
@@ -110,7 +109,6 @@ function fromEngineModelsConfig(name: EngineName, block: EngineModelsConfig): En
       label: m.label || m.id,
       supportsEffort,
       effortLevels: supportsEffort ? (m.effortLevels ?? []) : [],
-      supportsFast: m.supportsFast ?? false,
     };
   });
   const defaultModel = block.default || models[0]?.id || SYNTH_DEFAULTS[name].fallbackModel;

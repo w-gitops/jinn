@@ -69,9 +69,9 @@ describe("effortLevelsForModel (registry lookup)", () => {
         antigravity: { model: "gemini-3-flash-preview" },
       },
       models: {
-        claude: { default: "opus", models: [{ id: "opus", supportsEffort: true, effortLevels: CLAUDE, supportsFast: true }] },
-        codex: { default: "gpt-5.4", models: [{ id: "gpt-5.4", supportsEffort: true, effortLevels: CODEX, supportsFast: false }] },
-        antigravity: { models: [{ id: "gemini-3-flash-preview", supportsEffort: false, effortLevels: [], supportsFast: false }] },
+        claude: { default: "opus", models: [{ id: "opus", supportsEffort: true, effortLevels: CLAUDE }] },
+        codex: { default: "gpt-5.4", models: [{ id: "gpt-5.4", supportsEffort: true, effortLevels: CODEX }] },
+        antigravity: { models: [{ id: "gemini-3-flash-preview", supportsEffort: false, effortLevels: [] }] },
       },
       connectors: {},
     } as unknown as JinnConfig;

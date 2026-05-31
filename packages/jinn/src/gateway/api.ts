@@ -1229,7 +1229,7 @@ export async function handleApiRequest(
     }
 
     // GET /api/engines — resolved model + capability registry (single source of truth
-    // for the UI model/effort/fast selectors). Synthesized from engines.<name>.model
+    // for the UI model/effort selectors). Synthesized from engines.<name>.model
     // when no `models:` block is configured.
     if (method === "GET" && pathname === "/api/engines") {
       const config = context.getConfig();

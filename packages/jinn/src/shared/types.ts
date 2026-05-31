@@ -391,7 +391,6 @@ export interface ModelInfo {
   supportsEffort: boolean;
   /** Valid effort levels for THIS model (empty when supportsEffort is false). */
   effortLevels: string[];
-  supportsFast: boolean;
 }
 
 /** Resolved per-engine registry entry. */
@@ -415,7 +414,6 @@ export interface ModelConfigEntry {
   label?: string;
   supportsEffort?: boolean;
   effortLevels?: string[];
-  supportsFast?: boolean;
 }
 
 export interface EngineModelsConfig {

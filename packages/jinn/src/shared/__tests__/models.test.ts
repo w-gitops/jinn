@@ -27,13 +27,6 @@ describe("synthesizeFromEngineConfig (backward-compat fallback)", () => {
     expect(reg.antigravity.models[0].id).toBe("gemini-3-flash-preview");
   });
 
-  it("applies conservative capability defaults (no supportsFast without explicit config)", () => {
-    const reg = synthesizeFromEngineConfig(cfg({}));
-    expect(reg.claude.models[0].supportsFast).toBe(false);
-    expect(reg.codex.models[0].supportsFast).toBe(false);
-    expect(reg.antigravity.models[0].supportsFast).toBe(false);
-  });
-
   it("uses per-engine effort semantics: claude flag (low/med/high), codex config (incl xhigh), antigravity none", () => {
     const reg = synthesizeFromEngineConfig(cfg({}));
     expect(reg.claude.effortMechanism).toBe("claude-flag");
@@ -52,37 +45,31 @@ describe("getModelRegistry with a models: block", () => {
       default: "claude-opus-4-8",
       effortMechanism: "claude-flag",
       models: [
-        { id: "claude-opus-4-8", label: "Opus 4.8", supportsEffort: true, effortLevels: ["low", "medium", "high"], supportsFast: true },
-        { id: "claude-sonnet-4-6", label: "Sonnet 4.6", supportsEffort: true, effortLevels: ["low", "medium", "high"], supportsFast: false },
+        { id: "claude-opus-4-8", label: "Opus 4.8", supportsEffort: true, effortLevels: ["low", "medium", "high"] },
+        { id: "claude-sonnet-4-6", label: "Sonnet 4.6", supportsEffort: true, effortLevels: ["low", "medium", "high"] },
       ],
     },
     codex: {
       default: "gpt-5.3-codex",
-      models: [{ id: "gpt-5.3-codex", label: "GPT-5.3 Codex", supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], supportsFast: false }],
+      models: [{ id: "gpt-5.3-codex", label: "GPT-5.3 Codex", supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"] }],
     },
     antigravity: {
-      models: [{ id: "gemini-3-flash-preview", label: "Gemini 3 Flash", supportsEffort: false, effortLevels: [], supportsFast: false }],
+      models: [{ id: "gemini-3-flash-preview", label: "Gemini 3 Flash", supportsEffort: false, effortLevels: [] }],
     },
   };
 
-  it("honors the configured models, labels, and capability flags", () => {
+  it("honors the configured models, labels, and effort levels", () => {
     const reg = getModelRegistry(cfg({}, models));
     expect(reg.claude.models.map((m) => m.id)).toEqual(["claude-opus-4-8", "claude-sonnet-4-6"]);
     expect(reg.claude.models[0].label).toBe("Opus 4.8");
-    expect(reg.claude.models[0].supportsFast).toBe(true);   // Opus 4.8
-    expect(reg.claude.models[1].supportsFast).toBe(false);  // Sonnet
+    expect(reg.codex.models[0].effortLevels).toContain("xhigh");
+    expect(reg.antigravity.models[0].supportsEffort).toBe(false);
   });
 
   it("resolves defaultModel from block.default, else the first model", () => {
     const reg = getModelRegistry(cfg({}, models));
     expect(reg.claude.defaultModel).toBe("claude-opus-4-8");
     expect(reg.antigravity.defaultModel).toBe("gemini-3-flash-preview"); // no default → first
-  });
-
-  it("only Claude Opus carries supportsFast; codex/antigravity never do", () => {
-    const reg = getModelRegistry(cfg({}, models));
-    expect(reg.codex.models.every((m) => !m.supportsFast)).toBe(true);
-    expect(reg.antigravity.models.every((m) => !m.supportsFast)).toBe(true);
   });
 });
 
