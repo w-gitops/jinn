@@ -38,7 +38,10 @@ export class CodexEngine implements InterruptibleEngine {
 
   async run(opts: EngineRunOpts): Promise<EngineResult> {
     let prompt = opts.prompt;
-    if (opts.systemPrompt) {
+    // Only inject the system prompt on the FIRST turn of a conversation. On a
+    // resume (warm follow-up / restored session), codex already has it in the
+    // thread, so re-prepending it every turn just duplicates/bloats context.
+    if (opts.systemPrompt && !opts.resumeSessionId) {
       prompt = opts.systemPrompt + "\n\n---\n\n" + prompt;
     }
     if (opts.attachments?.length) {
@@ -176,10 +179,13 @@ export class CodexEngine implements InterruptibleEngine {
         }
 
         if (code === 0 || (code !== null && threadId)) {
+          // A non-empty agent message means the turn genuinely succeeded — don't
+          // surface a transient/benign error item (e.g. the `web_search_request`
+          // deprecation notice that codex emits before the answer) as a failure.
           resolve({
             sessionId: threadId || opts.resumeSessionId || "",
             result: resultText,
-            error: turnError ?? undefined,
+            error: resultText.trim() ? undefined : (turnError ?? undefined),
             numTurns: numTurns || undefined,
           });
           return;
@@ -339,7 +345,13 @@ export class CodexEngine implements InterruptibleEngine {
 
       if (itemType === "error") {
         const message = String(item.message || "Unknown error");
-        if (message.includes("Under-development features") || message.includes("Model metadata")) {
+        // Benign notices codex emits as `error` items but that don't fail the turn.
+        if (
+          message.includes("Under-development features") ||
+          message.includes("Model metadata") ||
+          message.includes("deprecated") ||
+          message.includes("web_search_request")
+        ) {
           logger.debug(`[codex] suppressed warning: ${message.slice(0, 200)}`);
           return null;
         }

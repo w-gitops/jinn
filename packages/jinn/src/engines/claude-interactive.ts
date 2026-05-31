@@ -64,6 +64,25 @@ function sumTranscriptUsage(content: string): TranscriptUsage {
   return u;
 }
 
+/** Most recent turn's input-context size (input + cache-read + cache-creation
+ *  tokens) from the transcript — how full the window is. Undefined if no usage. */
+function lastTurnContextTokens(transcriptPath: string): number | undefined {
+  let content: string;
+  try { content = fs.readFileSync(transcriptPath, "utf-8"); } catch { return undefined; }
+  let last: number | undefined;
+  for (const line of content.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    let msg: any;
+    try { msg = JSON.parse(t); } catch { continue; }
+    if (msg.type !== "assistant") continue;
+    const u = msg?.message?.usage;
+    if (!u) continue;
+    last = Number(u.input_tokens ?? 0) + Number(u.cache_read_input_tokens ?? 0) + Number(u.cache_creation_input_tokens ?? 0);
+  }
+  return last && last > 0 ? last : undefined;
+}
+
 function computeInteractiveCost(transcriptPath: string, model?: string): { cost: number; turns: number } | null {
   let content: string;
   try { content = fs.readFileSync(transcriptPath, "utf-8"); } catch { return null; }
@@ -418,6 +437,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     if (transcriptPath && !result.error) {
       const cost = computeInteractiveCost(transcriptPath, opts.model);
       if (cost) { result.cost = cost.cost; result.numTurns = cost.turns; }
+      // Context-meter: most recent turn's input context (input + cache), mirroring
+      // headless claude.ts so interactive/CLI-view turns also populate the meter.
+      const ctx = lastTurnContextTokens(transcriptPath);
+      if (ctx) result.contextTokens = ctx;
     }
     // Map a StopFailure rate-limit into result.rateLimit so manager.ts's
     // wait/retry/fallback machinery engages exactly as it does for `claude -p`.
