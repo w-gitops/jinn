@@ -256,11 +256,13 @@ export function FileView({
             style={codeTheme}
             customStyle={{
               margin: 0,
+              maxWidth: "100%",
               borderRadius: "var(--radius-md, 12px)",
               fontSize: "13px",
               fontFamily: "var(--font-mono)",
               border: "1px solid var(--separator)",
             }}
+            codeTagProps={{ style: { whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }}
             showLineNumbers
             wrapLongLines
           >
@@ -277,7 +279,7 @@ export function FileView({
   if (embedded) {
     return (
       <div
-        className="relative h-full overflow-y-auto min-h-0"
+        className="relative h-full min-h-0 overflow-y-auto overflow-x-hidden"
         style={{ background: "var(--bg)", color: "var(--text-primary)" }}
       >
         {/* Sticky control row: stays pinned at the top of the scroll viewport so
@@ -310,8 +312,10 @@ export function FileView({
           </a>
         </div>
         {/* Content starts just below the sticky row (which reserves its own
-            height); on scroll it slides up behind the floating chips. */}
-        <div className="px-[var(--space-6)] pb-[var(--space-6)] pt-[var(--space-2)] max-w-[960px] mx-auto">
+            height); on scroll it slides up behind the floating chips. min-w-0
+            lets children (code blocks) cap their own width instead of pushing
+            the pane wider. */}
+        <div className="px-[var(--space-6)] pb-[var(--space-6)] pt-[var(--space-2)] max-w-[960px] mx-auto min-w-0">
           {body}
         </div>
       </div>
@@ -325,7 +329,7 @@ export function FileView({
   // the sticky header stays pinned at the top of the scroll container.
   return (
     <div
-      className="h-[100dvh] w-full overflow-y-auto"
+      className="h-[100dvh] w-full overflow-y-auto overflow-x-hidden"
       style={{ background: "var(--bg)", color: "var(--text-primary)" }}
     >
       {/* Header — in normal flow (scrolls away with content, not pinned). */}
@@ -354,7 +358,7 @@ export function FileView({
       </header>
 
       {/* Body */}
-      <main className="px-[var(--space-6)] py-[var(--space-6)] max-w-[960px] mx-auto">
+      <main className="px-[var(--space-6)] py-[var(--space-6)] max-w-[960px] mx-auto min-w-0">
         {body}
       </main>
     </div>
@@ -371,7 +375,7 @@ function MarkdownView({
 }) {
   const codeTheme = isDark ? oneDark : oneLight;
   return (
-    <div className="jinn-markdown text-[length:var(--text-body)] leading-[1.7] text-[var(--text-secondary)]">
+    <div className="jinn-markdown min-w-0 max-w-full break-words [overflow-wrap:anywhere] text-[length:var(--text-body)] leading-[1.7] text-[var(--text-secondary)]">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -523,11 +527,13 @@ function MarkdownView({
                 style={codeTheme}
                 customStyle={{
                   margin: "0 0 var(--space-4) 0",
+                  maxWidth: "100%",
                   borderRadius: "var(--radius-md, 12px)",
                   fontSize: "13px",
                   fontFamily: "var(--font-mono)",
                   border: "1px solid var(--separator)",
                 }}
+                codeTagProps={{ style: { whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }}
                 wrapLongLines
               >
                 {text}

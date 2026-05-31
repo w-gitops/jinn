@@ -82,13 +82,28 @@ function ToolGroup({ msgs, isActive }: { msgs: Message[]; isActive: boolean }) {
 
 /* ── Markdown rendering ─────────────────────────────────── */
 
-// A file path = optional ~/ or / prefix, ≥1 slash-separated segment, ending in a
-// short extension. Requiring a slash + extension filters out branch names
-// (feat/clickable-file-paths), mime types (text/markdown), version numbers (0.16.1).
-const FILE_PATH_RE = /^(?:~\/|\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]{1,8}$/
-function isFilePath(s: string): boolean {
+// Single source of truth for the file-path pattern: optional ~/ or / prefix,
+// ≥1 slash-separated segment, ending in a short extension. Requiring a slash +
+// an extension filters out branch names (feat/clickable-file-paths), mime types
+// (text/markdown), version numbers (0.16.1) and bare words (config.yaml — no slash).
+// Both the anchored test (isFilePath) and the inline-formatter alternative below
+// derive from this core string so the two can never drift apart.
+const FILE_PATH_CORE = String.raw`(?:~\/|\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]{1,8}`
+const FILE_PATH_RE = new RegExp(`^${FILE_PATH_CORE}$`)
+export function isFilePath(s: string): boolean {
   return FILE_PATH_RE.test(s.trim())
 }
+
+// Inline-formatter pattern, assembled from the shared FILE_PATH_CORE so the
+// bare-path alternative (capture group 9) stays identical to FILE_PATH_RE.
+// Groups: 1,2 md-link · 3 url · 4,5 bold · 6,7 inline-code · 8 italic · 9 path.
+const INLINE_RE_SOURCE =
+  String.raw`\[([^\]]+)\]\(([^)]+)\)` +                 // [text](url)
+  String.raw`|(https?:\/\/[^\s<]+[^\s<.,;:!?)}\]'"])` + // bare URL
+  String.raw`|(\*\*(.+?)\*\*)` +                        // **bold**
+  '|(`([^`]+)`)' +                                      // `inline code`
+  String.raw`|\*([^*]+)\*` +                            // *italic*
+  `|(${FILE_PATH_CORE})`                                // bare file path
 
 // Render a file path as a clean clickable link. Opens the file in an in-app tab
 // when a FileOpenContext provider is present (chat page); otherwise / on
@@ -122,8 +137,8 @@ function renderPathLink(p: string, key: React.Key): React.ReactNode {
 
 function inlineFormat(text: string): React.ReactNode {
   const parts: React.ReactNode[] = []
-  // Markdown links (any href), bare URLs, bold, inline code, italic, file paths — in priority order
-  const regex = /\[([^\]]+)\]\(([^)]+)\)|(https?:\/\/[^\s<]+[^\s<.,;:!?)}\]'"])|(\*\*(.+?)\*\*)|(`([^`]+)`)|\*([^*]+)\*|((?:~\/|\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]{1,8})/g
+  // Fresh regex per call (own lastIndex — inlineFormat recurses for table cells).
+  const regex = new RegExp(INLINE_RE_SOURCE, 'g')
   let last = 0
   let match
 
