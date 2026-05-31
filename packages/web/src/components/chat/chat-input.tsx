@@ -514,11 +514,6 @@ export function ChatInput({
         </div>
       )}
 
-      {/* Engine / Model / Effort selector row */}
-      {selectorSlot && (
-        <div className="mb-[var(--space-2)]">{selectorSlot}</div>
-      )}
-
       <div className={`flex items-center gap-[var(--space-2)] bg-[var(--fill-secondary)] rounded-[var(--radius-lg)] py-1.5 px-[var(--space-3)] min-h-11 transition-[border-color] duration-200 ease-in-out border ${loading ? 'border-[var(--accent)]' : 'border-[var(--separator)]'}`}>
         {/* Attach button */}
         <button
@@ -634,20 +629,25 @@ export function ChatInput({
         </button>
       </div>
 
-      {/* Hint — hidden on mobile for space */}
-      <div className="hidden sm:flex text-[length:var(--text-caption2)] text-[var(--text-quaternary)] text-center mt-[var(--space-1)] justify-center gap-[var(--space-3)]">
-        <span>Enter to send</span>
-        <span>/ - commands</span>
-        <span>@name - mention</span>
-        {onShortcutsClick && (
-          <button
-            onClick={onShortcutsClick}
-            className="flex items-center gap-1 text-[length:var(--text-caption2)] text-[var(--text-quaternary)] hover:text-[var(--text-tertiary)] transition-colors bg-transparent border-none cursor-pointer p-0 font-[inherit]"
-          >
-            <kbd className="rounded bg-[var(--fill-tertiary)] px-1 py-0.5 font-mono text-[10px] leading-none">?</kbd>
-            <span>shortcuts</span>
-          </button>
-        )}
+      {/* Meta strip: Engine·Model·Effort selector (left) + keyboard hints (right). */}
+      <div className="flex items-center justify-between gap-[var(--space-3)] mt-[var(--space-1)]">
+        {/* Selector — quiet inline metadata, left-aligned, visible on mobile too */}
+        <div className="min-w-0">{selectorSlot}</div>
+        {/* Hints — hidden on mobile for space */}
+        <div className="hidden sm:flex shrink-0 text-[length:var(--text-caption2)] text-[var(--text-quaternary)] items-center gap-[var(--space-3)]">
+          <span>Enter to send</span>
+          <span>/ - commands</span>
+          <span>@name - mention</span>
+          {onShortcutsClick && (
+            <button
+              onClick={onShortcutsClick}
+              className="flex items-center gap-1 text-[length:var(--text-caption2)] text-[var(--text-quaternary)] hover:text-[var(--text-tertiary)] transition-colors bg-transparent border-none cursor-pointer p-0 font-[inherit]"
+            >
+              <kbd className="rounded bg-[var(--fill-tertiary)] px-1 py-0.5 font-mono text-[10px] leading-none">?</kbd>
+              <span>shortcuts</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* STT error banner */}

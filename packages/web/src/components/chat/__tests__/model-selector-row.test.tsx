@@ -57,8 +57,8 @@ describe('ModelSelectorRow', () => {
     expect(screen.queryByRole('button', { name: 'Effort' })).toBeNull()
   })
 
-  it('shows the "applies to next message" note in existing mode when pending', () => {
+  it('shows the "applies next message" note in existing mode when pending', () => {
     render(<ModelSelectorRow mode="existing" value={{ engine: 'claude', model: 'opus' }} onChange={() => {}} pendingNote />)
-    expect(screen.getByText(/applies to next message/i)).toBeTruthy()
+    expect(screen.getByText(/applies next message/i)).toBeTruthy()
   })
 })
