@@ -337,7 +337,11 @@ export class AntigravityEngine implements InterruptibleEngine, PtyViewEngine {
 
   private injectPromptToProc(proc: pty.IPty, opts: EngineRunOpts): void {
     let text = opts.prompt;
-    if (opts.systemPrompt) text = `${opts.systemPrompt}\n\n---\n\n${text}`;
+    // Inject the system prompt only on the FIRST turn of a conversation. agy
+    // persists the conversation (resume via --conversation retains it), so on a
+    // resume / warm follow-up re-sending it just re-logs the whole Jinn system
+    // prompt as a fresh USER_INPUT step every turn (context bloat).
+    if (opts.systemPrompt && !opts.resumeSessionId) text = `${opts.systemPrompt}\n\n---\n\n${text}`;
     if (opts.attachments?.length) {
       text += "\n\nAttached files:\n" + opts.attachments.map((a) => `- ${a}`).join("\n");
     }

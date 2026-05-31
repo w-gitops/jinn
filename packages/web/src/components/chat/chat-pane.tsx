@@ -302,6 +302,15 @@ export function ChatPane({
             },
           ])
         }
+        // Refresh the current session record so post-turn fields (notably
+        // lastContextTokens for the context meter, and status) update without a
+        // manual reload. Light getSession only — does NOT touch messages (we just
+        // set them above; loadSession would re-reconcile and could flicker).
+        if (completedSessionId && completedSessionId === sid) {
+          api.getSession(completedSessionId)
+            .then((s) => setCurrentSession(s as Record<string, unknown>))
+            .catch(() => { /* best-effort; next load will pick it up */ })
+        }
         onRefresh?.()
       }
     })
