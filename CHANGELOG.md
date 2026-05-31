@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### ✨ Features
+- **Antigravity (`agy`) engine.** Added Google Antigravity as an interactive engine, replacing the removed Gemini slot. Like the Claude engine it runs inside a PTY (agy has no headless mode), but since agy has no hook system, turn boundaries are detected by tailing agy's own per-conversation transcript (`~/.gemini/antigravity-cli/brain/<convId>/.system_generated/logs/transcript.jsonl`) for a `MODEL/PLANNER_RESPONSE/status:DONE` line. The conversation id is captured as the engine session id; resume uses `agy --conversation <id>`. The `agy` binary is resolved dynamically (PATH + common install dirs incl. `~/.local/bin`, with an optional `engines.antigravity.bin` override) — no hardcoded paths. Workspace trust is pre-seeded (by realpath) before spawn so the interactive trust gate never blocks. Default model: Gemini 3 Flash (agy ignores model-selection flags today; `/model` injection deferred). The `/ws/pty` xterm handler now routes by `session.engine`, so both Claude and Antigravity sessions get a live terminal view. Verified end-to-end against agy v1.0.x (May 2026 build). Config: add an `engines.antigravity` block and set `engines.default: antigravity` or an employee's `engine: antigravity`.
+
 ### 💥 Breaking / Removed
 - **Removed the Gemini CLI engine.** Google is sunsetting Gemini CLI for individual/free and AI Pro/Ultra users on **2026-06-18**, directing them to Antigravity. The `gemini` engine option (`engines.gemini`, `engine: gemini` on employees/cron/sessions) has been removed; `engines.default` is now `"claude" | "codex"`. Any config still referencing `engines.gemini` is ignored. **Gemini *API* usage is unaffected** — `GEMINI_API_KEY`-based features (deep-research, nano-banana image generation) continue to work. An Antigravity engine replaces this slot in a following change.
 

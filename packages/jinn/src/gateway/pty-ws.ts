@@ -1,5 +1,5 @@
 import type { WebSocket } from "ws";
-import type { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
+import type { PtyViewEngine } from "../engines/pty-view-engine.js";
 import { getSession } from "../sessions/registry.js";
 import { JINN_HOME } from "../shared/paths.js";
 
@@ -19,12 +19,12 @@ import { JINN_HOME } from "../shared/paths.js";
  *   - On `ws.close`, decrements the viewer count if this socket reported viewing.
  *     Does NOT directly kill the PTY — the lifecycle manager owns that.
  */
-export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: InteractiveClaudeEngine): void {
+export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: PtyViewEngine): void {
   const spawnIfNeeded = (cols: number, rows: number) => {
     if (engine.hasWarmPty(sessionId)) return;
     const session = getSession(sessionId);
     engine.ensureIdleSpawn(sessionId, {
-      claudeSessionId: session?.engineSessionId ?? undefined,
+      engineSessionId: session?.engineSessionId ?? undefined,
       model: session?.model ?? undefined,
       cwd: JINN_HOME,
       cols,

@@ -375,7 +375,7 @@ export interface JinnConfig {
   jinn?: { version?: string };
   gateway: { port: number; host: string; streaming?: boolean };
   engines: {
-    default: "claude" | "codex";
+    default: "claude" | "codex" | "antigravity";
     claude: {
       bin: string;
       model: string;
@@ -385,6 +385,10 @@ export interface JinnConfig {
       maxLivePtys?: number;
     };
     codex: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };
+    /** Antigravity (`agy`) engine. `bin` is optional — resolved dynamically
+     *  (PATH + common install dirs) when absent. agy ignores model/effort flags
+     *  today, so those fields are forward-looking. */
+    antigravity?: { bin?: string; model?: string; effortLevel?: string; childEffortOverride?: string };
   };
   connectors: Record<string, any> & {
     web?: WebConnectorConfig;

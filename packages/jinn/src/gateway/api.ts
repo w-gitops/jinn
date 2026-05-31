@@ -448,6 +448,7 @@ export async function handleApiRequest(
           default: config.engines.default,
           claude: { model: config.engines.claude.model, available: true },
           codex: { model: config.engines.codex.model, available: true },
+          ...(config.engines.antigravity ? { antigravity: { model: config.engines.antigravity.model ?? "gemini-3-flash-preview", available: true } } : {}),
         },
         sessions: { total: sessions.length, running, active: running },
         connectors,
@@ -1966,7 +1967,9 @@ async function runWebSession(
 
     const engineConfig = currentSession.engine === "codex"
       ? config.engines.codex
-      : config.engines.claude;
+      : currentSession.engine === "antigravity"
+        ? (config.engines.antigravity ?? {})
+        : config.engines.claude;
     const effortLevel = resolveEffort(engineConfig, currentSession, employee);
 
     let lastHeartbeatAt = 0;

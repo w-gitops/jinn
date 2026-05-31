@@ -6,7 +6,10 @@ import { logger } from "../shared/logger.js";
 import { JINN_HOME, CLAUDE_SETTINGS_DIR, HOOK_RELAY_SCRIPT } from "../shared/paths.js";
 import { writeSessionSettings } from "../shared/claude-settings.js";
 import { PtyLifecycleManager, type PtyHandle } from "./pty-lifecycle.js";
+import type { PtyControlEvent, PtyViewEngine, PtyIdleSpawnOpts } from "./pty-view-engine.js";
 import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
+
+export type { PtyControlEvent } from "./pty-view-engine.js";
 
 interface InteractiveArgsOpts {
   prompt: string;
@@ -323,11 +326,7 @@ function pasteAndSubmit(proc: pty.IPty, text: string): void {
   setTimeout(() => proc.write("\r"), 50);
 }
 
-/** Out-of-band control event for PTY subscribers. Currently only `reset` (emitted
- *  when the PTY respawns mid-session so the client xterm can clear and re-attach). */
-export type PtyControlEvent = { type: "reset" };
-
-export class InteractiveClaudeEngine implements InterruptibleEngine {
+export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngine {
   name = "claude" as const;
   /** Active turn resolvers keyed by Jinn session id. */
   private active = new Map<string, { resolver: TurnResolver; tailer?: TranscriptTailer }>();
@@ -550,11 +549,11 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     });
   }
 
-  /** Spawn an idle PTY for the CLI/xterm view. If a claudeSessionId is provided,
+  /** Spawn an idle PTY for the CLI/xterm view. If an engineSessionId is provided,
    *  resumes that session; otherwise spawns a fresh `claude` so a brand-new CLI-mode
    *  session shows the TUI before the user types anything.
    *  Does NOTHING if a warm PTY already exists or a turn is starting. */
-  ensureIdleSpawn(jinnSessionId: string, opts: { claudeSessionId?: string; cwd?: string; model?: string; bin?: string; cols?: number; rows?: number }): void {
+  ensureIdleSpawn(jinnSessionId: string, opts: PtyIdleSpawnOpts): void {
     if (this.lifecycle.getWarm(jinnSessionId)) return;
     if (this.active.has(jinnSessionId)) return; // a turn is starting/running — let run() spawn
     const settingsPath = writeSessionSettings(CLAUDE_SETTINGS_DIR, jinnSessionId, {
@@ -567,7 +566,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       "--disallowedTools", "AskUserQuestion", "ExitPlanMode",
       "--settings", settingsPath,
     ];
-    if (opts.claudeSessionId) args.unshift("--resume", opts.claudeSessionId);
+    if (opts.engineSessionId) args.unshift("--resume", opts.engineSessionId);
     if (opts.model) args.push("--model", opts.model);
     const env = this.buildPtyEnv();
     const bin = opts.bin || "claude";
@@ -576,7 +575,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     const cols = opts.cols ?? this.lastGeom.get(jinnSessionId)?.cols ?? 120;
     const rows = opts.rows ?? this.lastGeom.get(jinnSessionId)?.rows ?? 40;
     if (opts.cols && opts.rows) this.lastGeom.set(jinnSessionId, { cols: opts.cols, rows: opts.rows });
-    logger.info(`InteractiveClaudeEngine ensureIdleSpawn for session ${jinnSessionId} (resume ${opts.claudeSessionId || "none — fresh"}, geom ${cols}×${rows})`);
+    logger.info(`InteractiveClaudeEngine ensureIdleSpawn for session ${jinnSessionId} (resume ${opts.engineSessionId || "none — fresh"}, geom ${cols}×${rows})`);
     const proc = pty.spawn(bin, args, {
       name: "xterm-256color",
       cols,
