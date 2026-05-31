@@ -7,6 +7,7 @@ import yaml from "js-yaml";
 import type { CronJob, Engine, IncomingMessage, JinnConfig, Session, StreamDelta, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import { getModelRegistry, invalidateModelRegistry, effortLevelsForModel } from "../shared/models.js";
+import { validateSessionPatch } from "../sessions/session-patch.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
 import {
@@ -533,9 +534,9 @@ export async function handleApiRequest(
       return json(res, { ...serializeSession(session, context), messages });
     }
 
-    // PUT /api/sessions/:id
+    // PUT|PATCH /api/sessions/:id — update title and/or mid-chat model/effort
     params = matchRoute("/api/sessions/:id", pathname);
-    if (method === "PUT" && params) {
+    if ((method === "PUT" || method === "PATCH") && params) {
       const session = getSession(params.id);
       if (!session) return notFound(res);
       const _parsed = await readJsonBody(req, res);
@@ -549,9 +550,20 @@ export async function handleApiRequest(
         if (!trimmed) return badRequest(res, "title must not be empty");
         updates.title = trimmed.slice(0, 200);
       }
+      // Mid-chat model / effort switch (applies from the next turn). Engine is
+      // new-chat-only, so it's not mutable here. Validated against the registry.
+      if (body.model !== undefined || body.effortLevel !== undefined) {
+        const patch = validateSessionPatch(context.getConfig(), session.engine, session.model, body);
+        if (!patch.ok) return badRequest(res, patch.error || "invalid model/effort");
+        if (patch.updates?.model !== undefined) updates.model = patch.updates.model;
+        if (patch.updates?.effortLevel !== undefined) updates.effortLevel = patch.updates.effortLevel;
+      }
       if (Object.keys(updates).length === 0) return badRequest(res, "no valid fields to update");
       const updated = updateSession(params.id, updates);
       if (!updated) return notFound(res);
+      if (updates.model !== undefined && session.engine === "antigravity") {
+        logger.info(`Session ${params.id}: model set to "${updates.model}" but antigravity ignores model flags today — runtime no-op.`);
+      }
       context.emit("session:updated", { sessionId: params.id });
       return json(res, serializeSession(updated, context));
     }
