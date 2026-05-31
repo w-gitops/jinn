@@ -267,7 +267,9 @@ export class SessionManager {
 
       const engineConfig = session.engine === "codex"
         ? this.config.engines.codex
-        : this.config.engines.claude;
+        : session.engine === "antigravity"
+          ? (this.config.engines.antigravity ?? {})
+          : this.config.engines.claude;
       if (session.engine === "claude") {
         const mcpConfig = resolveMcpServers(this.config.mcp, employee);
         if (Object.keys(mcpConfig.mcpServers).length > 0) {
@@ -665,7 +667,7 @@ export class SessionManager {
         `Session: ${session.id}`,
         `Engine: ${session.engine}`,
         `Connector: ${session.connector || session.source}`,
-        `Model: ${session.model || this.config.engines[session.engine as "claude" | "codex"]?.model || "default"}`,
+        `Model: ${session.model || this.config.engines[session.engine as "claude" | "codex" | "antigravity"]?.model || "default"}`,
         `State: ${transportState}`,
         `Queue depth: ${queueDepth}`,
         `Created: ${session.createdAt}`,
@@ -710,6 +712,7 @@ export class SessionManager {
         `Default engine: ${this.config.engines.default}`,
         `Claude: ${this.config.engines.claude.model}`,
         `Codex: ${this.config.engines.codex.model}`,
+        ...(this.config.engines.antigravity ? [`Antigravity: ${this.config.engines.antigravity.model ?? "gemini-3-flash-preview (default)"}`] : []),
         "Connectors:",
         ...connectorLines,
       ].join("\n");

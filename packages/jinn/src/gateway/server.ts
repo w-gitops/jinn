@@ -6,15 +6,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
-import type { JinnConfig, Connector, Employee } from "../shared/types.js";
+import type { JinnConfig, Connector, Employee, Engine } from "../shared/types.js";
 import { loadConfig, normalizeClaudeEngineConfig } from "../shared/config.js";
 import { configureLogger, logger } from "../shared/logger.js";
-import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession } from "../sessions/registry.js";
+import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession, getSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
 import { PtyLifecycleManager } from "../engines/pty-lifecycle.js";
 import { CodexEngine } from "../engines/codex.js";
+import { AntigravityEngine } from "../engines/antigravity.js";
+import type { PtyViewEngine } from "../engines/pty-view-engine.js";
 import { HookRegistry } from "./hook-registry.js";
 import { writeGatewayInfo, readGatewayInfo, updateGatewayPtyPids } from "./gateway-info.js";
 import { seedTrust, cleanupSessionSettings } from "../shared/claude-settings.js";
@@ -215,24 +217,51 @@ export async function startGateway(
     logger.warn(`Failed to seed Claude trust: ${err instanceof Error ? err.message : err}`);
   }
 
+  // Orphan-PTY tracking spans both interactive engines (Claude + Antigravity).
+  // Declared as a hoisted function so the lifecycle callbacks below can reference
+  // the not-yet-constructed managers (only invoked later, on adopt/cleanup).
+  let antigravityLifecycle: PtyLifecycleManager | undefined;
+  function refreshPtyPids(): void {
+    try {
+      const pids = [...claudeLifecycle.livePids(), ...(antigravityLifecycle ? antigravityLifecycle.livePids() : [])];
+      updateGatewayPtyPids(GATEWAY_INFO_FILE, pids);
+    } catch { /* best effort */ }
+  }
+
   const claudeLifecycle: PtyLifecycleManager = new PtyLifecycleManager({
     maxLivePtys: claudeCfg.maxLivePtys!,
-    onAdopt: (_id) => {
-      try { updateGatewayPtyPids(GATEWAY_INFO_FILE, claudeLifecycle.livePids()); } catch { /* best effort */ }
-    },
+    onAdopt: () => refreshPtyPids(),
     onCleanup: (id) => {
       cleanupSessionSettings(CLAUDE_SETTINGS_DIR, id);
       hookRegistry.unregister(id);
-      try { updateGatewayPtyPids(GATEWAY_INFO_FILE, claudeLifecycle.livePids()); } catch { /* best effort */ }
+      refreshPtyPids();
     },
   });
   const interactiveClaudeEngine = new InteractiveClaudeEngine(claudeLifecycle, hookRegistry);
-  logger.info("Claude engines initialized: headless (chat/cron/connectors) + interactive PTY (CLI view)");
+
+  // Antigravity (`agy`) — PTY-interactive engine. One instance both runs turns
+  // and backs the xterm view (agy has no headless mode), so it needs its own
+  // PTY lifecycle manager.
+  antigravityLifecycle = new PtyLifecycleManager({
+    maxLivePtys: claudeCfg.maxLivePtys!,
+    onAdopt: () => refreshPtyPids(),
+    onCleanup: () => refreshPtyPids(),
+  });
+  const antigravityEngine = new AntigravityEngine(antigravityLifecycle);
+  logger.info("Engines initialized: claude (headless + interactive PTY), codex, antigravity (interactive PTY)");
 
   const codexEngine = new CodexEngine();
-  const engines = new Map<string, ClaudeEngine | InstanceType<typeof CodexEngine>>();
+  const engines = new Map<string, Engine>();
   engines.set("claude", claudeEngine);
   engines.set("codex", codexEngine);
+  engines.set("antigravity", antigravityEngine);
+
+  // PTY-capable engines, keyed by engine name — the /ws/pty handler routes by
+  // session.engine so the xterm view attaches to the right engine.
+  const ptyViewEngines: Record<string, PtyViewEngine> = {
+    claude: interactiveClaudeEngine,
+    antigravity: antigravityEngine,
+  };
 
   // Derive connector names from config
   const connectorNames: string[] = [];
@@ -768,8 +797,10 @@ export async function startGateway(
     const ptyMatch = reqUrl.split("?")[0].match(/^\/ws\/pty\/([^/]+)$/);
     if (ptyMatch) {
       const sessionId = decodeURIComponent(ptyMatch[1]);
+      const ptySession = getSession(sessionId);
+      const ptyEngine = ptyViewEngines[ptySession?.engine ?? "claude"] ?? interactiveClaudeEngine;
       ptyWss.handleUpgrade(req, socket, head, (ws) => {
-        attachPtyWebSocket(ws, sessionId, interactiveClaudeEngine);
+        attachPtyWebSocket(ws, sessionId, ptyEngine);
       });
       return;
     }
@@ -810,8 +841,9 @@ export async function startGateway(
     onOrgChange: () => {
       employeeRegistry = scanOrg();
       logger.info(`Org directory changed, reloaded ${employeeRegistry.size} employee(s)`);
-      // Org/persona changed — drop warm PTYs so the next turn respawns with fresh --append-system-prompt.
+      // Org/persona changed — drop warm PTYs so the next turn respawns with fresh system prompt.
       interactiveClaudeEngine.killAll();
+      antigravityEngine.killAll();
       emit("org:changed", {});
     },
     onSkillsChange: () => {
@@ -897,6 +929,7 @@ export async function startGateway(
     claudeEngine.killAll();
     interactiveClaudeEngine.killAll();
     codexEngine.killAll();
+    antigravityEngine.killAll();
 
     // Dispose the PTY lifecycle manager.
     try {

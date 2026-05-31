@@ -183,9 +183,13 @@ export async function runMigrate(opts: { check?: boolean; auto?: boolean }): Pro
     ].join("\n");
 
     const args = buildMigrateArgs(defaultEngine, prompt);
-    console.log(`${DIM}Engine: ${defaultEngine} (${engineConfig.bin})${RESET}\n`);
+    // `bin` may be absent for engines with optional config (e.g. antigravity);
+    // fall back to the engine name so spawn resolves via PATH (or fails clearly).
+    // Note: antigravity (`agy`) has no headless mode, so migrate is unsupported there.
+    const migrateBin = engineConfig.bin ?? defaultEngine;
+    console.log(`${DIM}Engine: ${defaultEngine} (${migrateBin})${RESET}\n`);
 
-    execFileSync(engineConfig.bin, args, {
+    execFileSync(migrateBin, args, {
       stdio: "inherit",
       cwd: JINN_HOME,
     });

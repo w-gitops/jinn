@@ -371,6 +371,9 @@ function buildConfigContext(config: JinnConfig, gatewayUrl: string): string {
   if (config.engines.codex?.model) {
     lines.push(`- Codex model: ${config.engines.codex.model}`);
   }
+  if (config.engines.antigravity) {
+    lines.push(`- Antigravity model: ${config.engines.antigravity.model ?? "gemini-3-flash-preview (default)"}`);
+  }
   if (config.logging) {
     lines.push(`- Log level: ${config.logging.level || "info"}`);
   }
@@ -634,7 +637,9 @@ function buildDelegationProtocol(gatewayUrl: string, _portalName: string, config
   const defaultEngine = config?.engines.default || "claude";
   const engineConfig = defaultEngine === "codex"
     ? config?.engines.codex
-    : config?.engines.claude;
+    : defaultEngine === "antigravity"
+      ? (config?.engines.antigravity ?? {})
+      : config?.engines.claude;
   const childOverride = engineConfig?.childEffortOverride;
 
   const effortOverrideNote = childOverride
