@@ -83,8 +83,8 @@ function ToolGroup({ msgs, isActive }: { msgs: Message[]; isActive: boolean }) {
 
 function inlineFormat(text: string): React.ReactNode {
   const parts: React.ReactNode[] = []
-  // Markdown links (any href), bare URLs, bold, inline code, italic — in priority order
-  const regex = /\[([^\]]+)\]\(([^)]+)\)|(https?:\/\/[^\s<]+[^\s<.,;:!?)}\]'"])|(\*\*(.+?)\*\*)|(`([^`]+)`)|\*([^*]+)\*/g
+  // Markdown links (any href), bare URLs, bold, inline code, italic, file paths — in priority order
+  const regex = /\[([^\]]+)\]\(([^)]+)\)|(https?:\/\/[^\s<]+[^\s<.,;:!?)}\]'"])|(\*\*(.+?)\*\*)|(`([^`]+)`)|\*([^*]+)\*|((?:~\/|\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]{1,8})/g
   let last = 0
   let match
 
@@ -124,6 +124,19 @@ function inlineFormat(text: string): React.ReactNode {
       )
     } else if (match[8]) {
       parts.push(<em key={match.index} className="italic opacity-[0.85]">{match[8]}</em>)
+    } else if (match[9]) {
+      // File path → open in file-viewer route in a new tab
+      parts.push(
+        <a
+          key={match.index}
+          href={`/file?path=${encodeURIComponent(match[9])}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[var(--system-blue)] underline underline-offset-2"
+        >
+          {match[9]}
+        </a>
+      )
     }
     last = match.index + match[0].length
   }
