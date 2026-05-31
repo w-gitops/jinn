@@ -280,28 +280,38 @@ export function FileView({
         className="relative h-full overflow-y-auto min-h-0"
         style={{ background: "var(--bg)", color: "var(--text-primary)" }}
       >
-        {/* Mobile-only back button (desktop navigates via the tab bar). Same
-            top row as the pop-out button — back on the left, pop-out on right. */}
-        {onBack && (
-          <button
-            onClick={onBack}
-            title="Back to chat"
-            aria-label="Back to chat"
-            className="lg:hidden absolute left-3 top-3 z-10 inline-flex items-center justify-center rounded-[var(--radius-sm,8px)] p-[var(--space-2)] text-[var(--text-tertiary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-[var(--text-secondary)]"
+        {/* Sticky control row: stays pinned at the top of the scroll viewport so
+            the buttons remain reachable while scrolling. The row itself is
+            transparent and click-through (content scrolls behind it); each
+            control is a subtle frosted pill so it reads clearly over markdown
+            or code. Back on the left (shown whenever onBack is provided — all
+            sizes), pop-out on the right. */}
+        <div className="pointer-events-none sticky top-0 z-10 flex items-center justify-between px-3 py-2">
+          {onBack ? (
+            <button
+              onClick={onBack}
+              title="Back to chat"
+              aria-label="Back to chat"
+              className="pointer-events-auto inline-flex size-8 items-center justify-center rounded-full border border-[var(--separator)] bg-[var(--material-thick)] text-[var(--text-tertiary)] backdrop-blur-md transition-colors hover:bg-[var(--fill-secondary)] hover:text-[var(--text-secondary)]"
+            >
+              <ArrowLeft size={16} />
+            </button>
+          ) : (
+            <span />
+          )}
+          <a
+            href={`/file?path=${encodeURIComponent(path)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open in new browser tab"
+            className="pointer-events-auto inline-flex size-8 items-center justify-center rounded-full border border-[var(--separator)] bg-[var(--material-thick)] text-[var(--text-tertiary)] backdrop-blur-md transition-colors hover:bg-[var(--fill-secondary)] hover:text-[var(--text-secondary)]"
           >
-            <ArrowLeft size={16} />
-          </button>
-        )}
-        <a
-          href={`/file?path=${encodeURIComponent(path)}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          title="Open in new browser tab"
-          className="absolute right-3 top-3 z-10 inline-flex items-center justify-center rounded-[var(--radius-sm,8px)] p-[var(--space-2)] text-[var(--text-tertiary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-[var(--text-secondary)]"
-        >
-          <ExternalLink size={16} />
-        </a>
-        <div className="px-[var(--space-6)] py-[var(--space-6)] max-w-[960px] mx-auto">
+            <ExternalLink size={16} />
+          </a>
+        </div>
+        {/* Content starts just below the sticky row (which reserves its own
+            height); on scroll it slides up behind the floating chips. */}
+        <div className="px-[var(--space-6)] pb-[var(--space-6)] pt-[var(--space-2)] max-w-[960px] mx-auto">
           {body}
         </div>
       </div>
@@ -318,9 +328,9 @@ export function FileView({
       className="h-[100dvh] w-full overflow-y-auto"
       style={{ background: "var(--bg)", color: "var(--text-primary)" }}
     >
-      {/* Header */}
+      {/* Header — in normal flow (scrolls away with content, not pinned). */}
       <header
-        className="sticky top-0 z-10 px-[var(--space-6)] py-[var(--space-4)]"
+        className="px-[var(--space-6)] py-[var(--space-4)]"
         style={{
           background: "var(--material-thick)",
           borderBottom: "1px solid var(--separator)",
