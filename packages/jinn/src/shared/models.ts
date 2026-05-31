@@ -46,6 +46,21 @@ export function getModelRegistry(config: JinnConfig): ModelRegistry {
   return cached;
 }
 
+/**
+ * Valid effort levels for a session's engine+model, from the registry.
+ * Returns [] when the engine/model doesn't support effort (e.g. antigravity) or
+ * the engine is unknown. `modelId` defaults to the engine's default model.
+ */
+export function effortLevelsForModel(config: JinnConfig, engine: string, modelId?: string): string[] {
+  const entry = getModelRegistry(config)[engine];
+  if (!entry) return [];
+  const model =
+    (modelId ? entry.models.find((m) => m.id === modelId) : undefined) ??
+    entry.models.find((m) => m.id === entry.defaultModel) ??
+    entry.models[0];
+  return model?.supportsEffort ? model.effortLevels : [];
+}
+
 /** Build the registry without touching the cache (used by getModelRegistry + tests). */
 export function buildRegistry(config: JinnConfig): ModelRegistry {
   const synthesized = synthesizeFromEngineConfig(config);

@@ -6,7 +6,7 @@ import path from "node:path";
 import yaml from "js-yaml";
 import type { CronJob, Engine, IncomingMessage, JinnConfig, Session, StreamDelta, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
-import { getModelRegistry, invalidateModelRegistry } from "../shared/models.js";
+import { getModelRegistry, invalidateModelRegistry, effortLevelsForModel } from "../shared/models.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
 import {
@@ -1982,7 +1982,12 @@ async function runWebSession(
       : currentSession.engine === "antigravity"
         ? (config.engines.antigravity ?? {})
         : config.engines.claude;
-    const effortLevel = resolveEffort(engineConfig, currentSession, employee);
+    const effortLevel = resolveEffort(
+      engineConfig,
+      currentSession,
+      employee,
+      effortLevelsForModel(config, currentSession.engine, currentSession.model ?? undefined),
+    );
 
     let lastHeartbeatAt = 0;
     const runHeartbeat = setInterval(() => {

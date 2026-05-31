@@ -24,6 +24,7 @@ import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
+import { effortLevelsForModel } from "../shared/models.js";
 import { detectRateLimit, isDeadSessionError } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit } from "../shared/usageAwareness.js";
 import { loadJobs } from "../cron/jobs.js";
@@ -277,7 +278,12 @@ export class SessionManager {
         }
       }
 
-      const effortLevel = resolveEffort(engineConfig, session, employee);
+      const effortLevel = resolveEffort(
+        engineConfig,
+        session,
+        employee,
+        effortLevelsForModel(this.config, session.engine, session.model ?? undefined),
+      );
 
       // If we previously switched to GPT while Claude was rate-limited, inject a sync transcript
       // so Claude can resume with full context when it comes back online.
