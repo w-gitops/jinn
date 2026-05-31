@@ -272,10 +272,31 @@ function ChatPage() {
     chatTabs.clearActiveTab()
   }, [chatTabs])
 
+  // Back target for the mobile file-view "back" button: the session that was
+  // active when a file link was clicked. selectedIdRef (declared below) is read
+  // at call time so the callback stays stable.
+  const fileBackTargetRef = useRef<string | null>(null)
+
   // Open a file in an in-app tab (used by message path-links via FileOpenContext).
   const openFile = useCallback((path: string) => {
+    fileBackTargetRef.current = selectedIdRef.current
     chatTabs.openFileTab(path)
     setMobileView('chat')
+  }, [chatTabs])
+
+  // Mobile-only: return from a file tab to the chat it was opened from. Switch
+  // to that session's tab if it still exists; otherwise fall back to the sidebar.
+  const handleFileBack = useCallback(() => {
+    const backId = fileBackTargetRef.current
+    if (backId) {
+      const idx = chatTabs.tabs.findIndex((t) => t.kind === 'session' && t.sessionId === backId)
+      if (idx >= 0) {
+        chatTabs.switchTab(idx)
+        setMobileView('chat')
+        return
+      }
+    }
+    setMobileView('sidebar')
   }, [chatTabs])
 
   const handleSessionsLoaded = useCallback(
@@ -665,7 +686,7 @@ function ChatPage() {
                 selectedId so switching sessions remounts cleanly — no hidden
                 keep-alive panes (they caused stacked WS subscriptions + races). */}
             {chatTabs.activeTab?.kind === 'file' ? (
-              <FileView path={chatTabs.activeTab.path} embedded />
+              <FileView path={chatTabs.activeTab.path} embedded onBack={handleFileBack} />
             ) : (
               <ChatPane
                 key={selectedId ?? '__new__'}

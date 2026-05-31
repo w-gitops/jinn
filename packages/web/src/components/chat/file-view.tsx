@@ -6,7 +6,7 @@ import {
   oneDark,
   oneLight,
 } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, ArrowLeft } from "lucide-react";
 import { useTheme } from "@/routes/providers";
 
 /** Shape returned by GET /api/files/read?path=<path>. */
@@ -100,9 +100,13 @@ function formatSize(bytes: number): string {
 export function FileView({
   path,
   embedded,
+  onBack,
 }: {
   path: string;
   embedded?: boolean;
+  /** Mobile-only "back to chat" handler. When set, the embedded view shows a
+   *  back button (hidden on desktop, which has the tab bar instead). */
+  onBack?: () => void;
 }) {
   const { theme } = useTheme();
 
@@ -276,6 +280,18 @@ export function FileView({
         className="relative h-full overflow-y-auto min-h-0"
         style={{ background: "var(--bg)", color: "var(--text-primary)" }}
       >
+        {/* Mobile-only back button (desktop navigates via the tab bar). Same
+            top row as the pop-out button — back on the left, pop-out on right. */}
+        {onBack && (
+          <button
+            onClick={onBack}
+            title="Back to chat"
+            aria-label="Back to chat"
+            className="lg:hidden absolute left-3 top-3 z-10 inline-flex items-center justify-center rounded-[var(--radius-sm,8px)] p-[var(--space-2)] text-[var(--text-tertiary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-[var(--text-secondary)]"
+          >
+            <ArrowLeft size={16} />
+          </button>
+        )}
         <a
           href={`/file?path=${encodeURIComponent(path)}`}
           target="_blank"
@@ -292,10 +308,14 @@ export function FileView({
     );
   }
 
-  // Standalone: slim sticky header + natural page scroll.
+  // Standalone: slim sticky header + its OWN scroll container. The app shell is
+  // height-constrained / overflow-hidden, so a plain min-h-screen page can't
+  // grow and long files get clipped. h-[100dvh] overflow-y-auto makes this view
+  // scroll on its own (dvh so mobile browser chrome doesn't cut off the bottom);
+  // the sticky header stays pinned at the top of the scroll container.
   return (
     <div
-      className="min-h-screen w-full"
+      className="h-[100dvh] w-full overflow-y-auto"
       style={{ background: "var(--bg)", color: "var(--text-primary)" }}
     >
       {/* Header */}
