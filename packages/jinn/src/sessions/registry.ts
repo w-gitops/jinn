@@ -299,6 +299,7 @@ export interface UpdateSessionFields {
   engineSessionId?: string | null;
   status?: Session['status'];
   model?: string | null;
+  effortLevel?: string | null;
   replyContext?: ReplyContext | null;
   messageId?: string | null;
   transportMeta?: JsonObject | null;
@@ -327,6 +328,10 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   if (updates.model !== undefined) {
     sets.push('model = ?');
     values.push(updates.model);
+  }
+  if (updates.effortLevel !== undefined) {
+    sets.push('effort_level = ?');
+    values.push(updates.effortLevel);
   }
   if (updates.replyContext !== undefined) {
     sets.push('reply_context = ?');
