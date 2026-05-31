@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import type { Message } from '@/lib/conversations'
 import { parseMedia, stripAttachedFilesBlock } from '@/lib/conversations'
 import { MessageMedia } from './message-media'
+import { useOpenFile } from '@/components/chat/file-open-context'
 
 /* ── Tool grouping ──────────────────────────────────────── */
 
@@ -89,21 +90,34 @@ function isFilePath(s: string): boolean {
   return FILE_PATH_RE.test(s.trim())
 }
 
-// Render a file path as a clean clickable link that opens the in-browser viewer.
+// Render a file path as a clean clickable link. Opens the file in an in-app tab
+// when a FileOpenContext provider is present (chat page); otherwise / on
+// modified clicks it falls back to the real `/file?path=` browser route.
 // Monospace + blue underline (no code-box background — that looked like an empty highlight).
-function renderPathLink(p: string, key: React.Key): React.ReactNode {
+function FileLink({ path }: { path: string }) {
+  const openFile = useOpenFile()
+  const trimmed = path.trim()
+  const href = `/file?path=${encodeURIComponent(trimmed)}`
   return (
     <a
-      key={key}
-      href={`/file?path=${encodeURIComponent(p.trim())}`}
+      href={href}
       target="_blank"
       rel="noopener noreferrer"
-      title={`Open ${p.trim()} in viewer`}
+      title={`Open ${trimmed} in viewer`}
+      onClick={(e) => {
+        // Let modified clicks (cmd/ctrl/shift/middle) fall through to a real browser tab.
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
+        if (openFile) { e.preventDefault(); openFile(trimmed) }
+      }}
       className="text-[var(--system-blue)] underline decoration-[var(--system-blue)]/40 hover:decoration-[var(--system-blue)] underline-offset-2 font-['SF_Mono',Menlo,monospace] text-[0.88em]"
     >
-      {p}
+      {path}
     </a>
   )
+}
+
+function renderPathLink(p: string, key: React.Key): React.ReactNode {
+  return <FileLink key={key} path={p} />
 }
 
 function inlineFormat(text: string): React.ReactNode {

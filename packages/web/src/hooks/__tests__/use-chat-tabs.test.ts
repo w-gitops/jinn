@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { useChatTabs } from '../use-chat-tabs'
+import { useChatTabs, tabKey } from '../use-chat-tabs'
 
 describe('useChatTabs', () => {
   beforeEach(() => {
@@ -36,7 +36,7 @@ describe('useChatTabs', () => {
     act(() => result.current.openTab({ sessionId: 's2', label: 'B', status: 'idle', unread: false }))
     // s2 should have replaced s1 since both are unpinned (preview)
     expect(result.current.tabs).toHaveLength(1)
-    expect(result.current.tabs[0].sessionId).toBe('s2')
+    expect(tabKey(result.current.tabs[0])).toBe('s2')
   })
 
   it('pinned tabs are not replaced by preview tabs', () => {
@@ -44,8 +44,8 @@ describe('useChatTabs', () => {
     act(() => result.current.openTab({ sessionId: 's1', label: 'A', status: 'idle', unread: false, pinned: true }))
     act(() => result.current.openTab({ sessionId: 's2', label: 'B', status: 'idle', unread: false }))
     expect(result.current.tabs).toHaveLength(2)
-    expect(result.current.tabs[0].sessionId).toBe('s1')
-    expect(result.current.tabs[1].sessionId).toBe('s2')
+    expect(tabKey(result.current.tabs[0])).toBe('s1')
+    expect(tabKey(result.current.tabs[1])).toBe('s2')
   })
 
   it('closes a tab and adjusts active index', () => {
@@ -54,7 +54,7 @@ describe('useChatTabs', () => {
     act(() => result.current.openTab({ sessionId: 's2', label: 'B', status: 'idle', unread: false, pinned: true }))
     act(() => result.current.closeTab(0))
     expect(result.current.tabs).toHaveLength(1)
-    expect(result.current.tabs[0].sessionId).toBe('s2')
+    expect(tabKey(result.current.tabs[0])).toBe('s2')
   })
 
   it('clears the active tab without dropping open tabs', () => {
@@ -90,6 +90,6 @@ describe('useChatTabs', () => {
     act(() => result.current.openTab({ sessionId: 's2', label: 'B', status: 'idle', unread: false, pinned: true }))
     act(() => result.current.openTab({ sessionId: 's3', label: 'C', status: 'idle', unread: false, pinned: true }))
     act(() => result.current.moveTab(0, 2))
-    expect(result.current.tabs.map(t => t.sessionId)).toEqual(['s2', 's3', 's1'])
+    expect(result.current.tabs.map(t => tabKey(t))).toEqual(['s2', 's3', 's1'])
   })
 })
