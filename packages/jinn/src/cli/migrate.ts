@@ -81,8 +81,6 @@ function buildMigrateArgs(engine: string, prompt: string): string[] {
   switch (engine) {
     case "codex":
       return ["exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", prompt];
-    case "gemini":
-      return ["--yolo", prompt];
     case "claude":
     default:
       return ["-p", "--dangerously-skip-permissions", prompt];

@@ -15,7 +15,6 @@ import { ClaudeEngine } from "../engines/claude.js";
 import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
 import { PtyLifecycleManager } from "../engines/pty-lifecycle.js";
 import { CodexEngine } from "../engines/codex.js";
-import { GeminiEngine } from "../engines/gemini.js";
 import { HookRegistry } from "./hook-registry.js";
 import { writeGatewayInfo, readGatewayInfo, updateGatewayPtyPids } from "./gateway-info.js";
 import { seedTrust, cleanupSessionSettings } from "../shared/claude-settings.js";
@@ -231,11 +230,9 @@ export async function startGateway(
   logger.info("Claude engines initialized: headless (chat/cron/connectors) + interactive PTY (CLI view)");
 
   const codexEngine = new CodexEngine();
-  const geminiEngine = new GeminiEngine();
-  const engines = new Map<string, ClaudeEngine | InstanceType<typeof CodexEngine> | InstanceType<typeof GeminiEngine>>();
+  const engines = new Map<string, ClaudeEngine | InstanceType<typeof CodexEngine>>();
   engines.set("claude", claudeEngine);
   engines.set("codex", codexEngine);
-  engines.set("gemini", geminiEngine);
 
   // Derive connector names from config
   const connectorNames: string[] = [];

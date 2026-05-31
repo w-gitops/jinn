@@ -371,9 +371,6 @@ function buildConfigContext(config: JinnConfig, gatewayUrl: string): string {
   if (config.engines.codex?.model) {
     lines.push(`- Codex model: ${config.engines.codex.model}`);
   }
-  if (config.engines.gemini?.model) {
-    lines.push(`- Gemini model: ${config.engines.gemini.model}`);
-  }
   if (config.logging) {
     lines.push(`- Log level: ${config.logging.level || "info"}`);
   }
@@ -637,9 +634,7 @@ function buildDelegationProtocol(gatewayUrl: string, _portalName: string, config
   const defaultEngine = config?.engines.default || "claude";
   const engineConfig = defaultEngine === "codex"
     ? config?.engines.codex
-    : defaultEngine === "gemini"
-      ? config?.engines.gemini ?? config?.engines.claude
-      : config?.engines.claude;
+    : config?.engines.claude;
   const childOverride = engineConfig?.childEffortOverride;
 
   const effortOverrideNote = childOverride
