@@ -45,6 +45,15 @@ export function effortLevelsFor(
   return model?.supportsEffort ? model.effortLevels : []
 }
 
+/** Context window (tokens) for an engine+model, or undefined if unknown. */
+export function contextWindowFor(
+  reg: EnginesResponse | undefined,
+  engine: string | undefined,
+  modelId: string | undefined,
+): number | undefined {
+  return findModel(reg, engine, modelId)?.contextWindow
+}
+
 /** Sensible default effort: 'medium' if available, else the first level, else undefined. */
 export function defaultEffort(levels: string[]): string | undefined {
   if (!levels.length) return undefined

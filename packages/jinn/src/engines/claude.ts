@@ -15,6 +15,39 @@ function isTransientError(errorMsg: string): boolean {
   return TRANSIENT_PATTERNS.some((p) => p.test(errorMsg));
 }
 
+/**
+ * Most-recent-turn INPUT context size from a Claude `result` event:
+ * input + cache-read + cache-creation tokens (how full the window is). Reads
+ * `usage` first, falls back to summing `modelUsage`. Defensive — returns
+ * undefined on any shape mismatch so it can never break turn handling.
+ */
+function extractContextTokens(resultEvent: Record<string, unknown>): number | undefined {
+  try {
+    const u = resultEvent.usage as Record<string, unknown> | undefined;
+    if (u && typeof u === "object") {
+      const sum =
+        Number(u.input_tokens ?? 0) +
+        Number(u.cache_read_input_tokens ?? 0) +
+        Number(u.cache_creation_input_tokens ?? 0);
+      if (sum > 0) return sum;
+    }
+    const mu = resultEvent.modelUsage as Record<string, Record<string, unknown>> | undefined;
+    if (mu && typeof mu === "object") {
+      let sum = 0;
+      for (const v of Object.values(mu)) {
+        if (v && typeof v === "object") {
+          sum +=
+            Number(v.inputTokens ?? 0) +
+            Number(v.cacheReadInputTokens ?? 0) +
+            Number(v.cacheCreationInputTokens ?? 0);
+        }
+      }
+      if (sum > 0) return sum;
+    }
+  } catch { /* ignore — context meter is best-effort */ }
+  return undefined;
+}
+
 const MAX_RETRIES = 2;
 const RETRY_BASE_MS = 1000;
 
@@ -443,6 +476,7 @@ export class ClaudeEngine implements InterruptibleEngine {
       cost: typeof resultEvent.total_cost_usd === "number" ? (resultEvent.total_cost_usd as number) : undefined,
       durationMs: typeof resultEvent.duration_ms === "number" ? (resultEvent.duration_ms as number) : undefined,
       numTurns: typeof resultEvent.num_turns === "number" ? (resultEvent.num_turns as number) : undefined,
+      contextTokens: extractContextTokens(resultEvent),
       ...(rateLimit ? { rateLimit } : {}),
     };
   }

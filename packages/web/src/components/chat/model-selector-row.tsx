@@ -5,7 +5,12 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
 } from '@/components/ui/dropdown-menu'
-import { useModelRegistry, engineList, effortLevelsFor, findModel, defaultEffort, clampEffort } from '@/hooks/use-model-registry'
+import { useModelRegistry, engineList, effortLevelsFor, findModel, defaultEffort, clampEffort, contextWindowFor } from '@/hooks/use-model-registry'
+
+/** Round a token count to a compact `k` string (e.g. 23148 → "23k", 980 → "980"). */
+function fmtK(n: number): string {
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n)
+}
 
 export interface SelectorValue {
   engine?: string
@@ -21,6 +26,9 @@ interface ModelSelectorRowProps {
   /** Shown in 'existing' mode to hint the change applies on the next message. */
   pendingNote?: boolean
   disabled?: boolean
+  /** Most recent turn's input-context token count (session.lastContextTokens),
+   *  for the inline context meter. Omitted/0 → meter hidden (e.g. fresh chat). */
+  contextTokens?: number | null
 }
 
 const ENGINE_LABELS: Record<string, string> = {
@@ -63,7 +71,7 @@ const Sep = () => <span aria-hidden className="opacity-40 select-none">·</span>
  * Cascading: changing engine resets model to that engine's default; changing model
  * clamps effort to a level valid for the new model.
  */
-export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled }: ModelSelectorRowProps) {
+export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled, contextTokens }: ModelSelectorRowProps) {
   const { data: registry, isLoading } = useModelRegistry()
   if (isLoading || !registry) return null
 
@@ -144,6 +152,26 @@ export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled 
           </InlineTrigger>
         </>
       )}
+
+      {/* Context meter — how full the window is on the most recent turn.
+          Hidden when there's no usage yet (fresh chat) or no known window. */}
+      {(() => {
+        const cw = contextWindowFor(registry, engine, modelId)
+        if (!cw || !contextTokens || contextTokens <= 0) return null
+        const pct = contextTokens / cw
+        const color = pct >= 0.9 ? 'var(--system-red)' : pct >= 0.75 ? 'var(--system-orange)' : undefined
+        return (
+          <>
+            <Sep />
+            <span
+              title={`Context: ${contextTokens.toLocaleString()} / ${cw.toLocaleString()} tokens (${Math.round(pct * 100)}%)`}
+              style={color ? { color } : undefined}
+            >
+              {fmtK(contextTokens)}/{fmtK(cw)}
+            </span>
+          </>
+        )
+      })()}
 
       {mode === 'existing' && pendingNote && (
         <span className="ml-1 italic opacity-70">· applies next message</span>

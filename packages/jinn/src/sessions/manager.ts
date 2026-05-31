@@ -585,6 +585,7 @@ export class SessionManager {
       }
       const updatedSession = updateSession(session.id, {
         ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
+        ...(typeof result.contextTokens === "number" ? { lastContextTokens: result.contextTokens } : {}),
         status: wasInterrupted ? "idle" : (result.error ? "error" : "idle"),
         replyContext: msg.replyContext,
         messageId: msg.messageId ?? null,

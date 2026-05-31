@@ -51,6 +51,10 @@ export interface EngineResult {
   cost?: number;
   durationMs?: number;
   numTurns?: number;
+  /** Most recent turn's INPUT context size (input + cache-read + cache-creation
+   *  tokens) — i.e. how full the context window currently is. Undefined when the
+   *  engine doesn't surface usage. */
+  contextTokens?: number;
   error?: string;
   /**
    * Optional rate limit metadata returned by an engine.
@@ -157,6 +161,8 @@ export interface Session {
   effortLevel: string | null;
   totalCost: number;
   totalTurns: number;
+  /** Most recent turn's input-context token count (for the UI context meter). */
+  lastContextTokens: number | null;
   queueDepth?: number;
   transportState?: "idle" | "queued" | "running" | "error" | "interrupted";
   createdAt: string;
@@ -391,6 +397,8 @@ export interface ModelInfo {
   supportsEffort: boolean;
   /** Valid effort levels for THIS model (empty when supportsEffort is false). */
   effortLevels: string[];
+  /** Context window size in tokens (for the UI context meter). Omit if unknown. */
+  contextWindow?: number;
 }
 
 /** Resolved per-engine registry entry. */
@@ -414,6 +422,7 @@ export interface ModelConfigEntry {
   label?: string;
   supportsEffort?: boolean;
   effortLevels?: string[];
+  contextWindow?: number;
 }
 
 export interface EngineModelsConfig {

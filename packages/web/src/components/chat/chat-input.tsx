@@ -629,13 +629,14 @@ export function ChatInput({
         </button>
       </div>
 
-      {/* Meta strip: Engine·Model·Effort selector (left) + keyboard hints (right). */}
-      <div className="flex items-center justify-between gap-[var(--space-3)] mt-[var(--space-1)]">
-        {/* Selector — quiet inline metadata, left-aligned, visible on mobile too */}
-        <div className="min-w-0">{selectorSlot}</div>
-        {/* Hints — hidden on mobile for space */}
-        <div className="hidden sm:flex shrink-0 text-[length:var(--text-caption2)] text-[var(--text-quaternary)] items-center gap-[var(--space-3)]">
-          <span>Enter to send</span>
+      {/* Meta strip: Engine·Model·Effort selector pinned LEFT, hints CENTERED.
+          3-col grid [1fr | auto | 1fr] so the hints sit true-center regardless of
+          selector width, with no overlap at narrow widths. */}
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-[var(--space-2)] mt-[var(--space-1)]">
+        {/* Selector — quiet inline metadata, left, with breathing room from the edge */}
+        <div className="min-w-0 ml-[10px] justify-self-start">{selectorSlot}</div>
+        {/* Hints — centered, hidden on mobile for space */}
+        <div className="hidden sm:flex justify-self-center text-[length:var(--text-caption2)] text-[var(--text-quaternary)] items-center gap-[var(--space-3)]">
           <span>/ - commands</span>
           <span>@name - mention</span>
           {onShortcutsClick && (
@@ -648,6 +649,8 @@ export function ChatInput({
             </button>
           )}
         </div>
+        {/* Spacer col keeps the hints optically centered */}
+        <div aria-hidden />
       </div>
 
       {/* STT error banner */}

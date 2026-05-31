@@ -716,6 +716,7 @@ export function ChatPane({
             onChange={handleSelectorChange}
             pendingNote={effortPendingNote}
             disabled={loading}
+            contextTokens={(currentSession?.lastContextTokens as number | null | undefined) ?? undefined}
           />
         }
       />

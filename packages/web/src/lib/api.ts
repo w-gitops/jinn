@@ -124,6 +124,7 @@ export interface ModelInfo {
   label: string;
   supportsEffort: boolean;
   effortLevels: string[];
+  contextWindow?: number;
 }
 export interface EngineRegistryEntry {
   name: string;
