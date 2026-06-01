@@ -51,7 +51,7 @@ export interface ForkClaudeOpts {
  *   (no `-p`) and polls the project's transcript directory for the new jsonl to
  *   discover the new session id. Bills as `cc_entrypoint=cli`.
  */
-export function forkClaudeSession(opts: ForkClaudeOpts): ForkResult {
+export async function forkClaudeSession(opts: ForkClaudeOpts): Promise<ForkResult> {
   const { engineSessionId, cwd, interactive } = opts;
 
   if (interactive) {
@@ -89,11 +89,11 @@ export function forkClaudeSession(opts: ForkClaudeOpts): ForkResult {
  * in a PTY (no `-p`), discover the new session id via transcript-dir polling,
  * then kill the spawn. Bills as `cc_entrypoint=cli`.
  */
-function forkClaudeSessionInteractive(
+async function forkClaudeSessionInteractive(
   engineSessionId: string,
   cwd: string,
   ctx: InteractiveForkCtx,
-): ForkResult {
+): Promise<ForkResult> {
   logger.info(`Forking Claude session ${engineSessionId} in ${cwd} (interactive)`);
 
   // 1. Release the source PTY (best-effort — safe when nothing is warm).
@@ -104,10 +104,8 @@ function forkClaudeSessionInteractive(
   }
 
   // Tiny settle delay so the transcript lock from the previous process is gone
-  // before we spawn the fork. Synchronous busy-wait to keep the fork API sync.
-  const settleUntil = Date.now() + 150;
-  // eslint-disable-next-line no-empty
-  while (Date.now() < settleUntil) {}
+  // before we spawn the fork. Async sleep — never block the gateway event loop.
+  await sleep(150);
 
   const projectDir = claudeProjectDir(cwd);
   const spawnedAfter = Date.now();
@@ -138,7 +136,7 @@ function forkClaudeSessionInteractive(
 
   let newSessionId: string | null = null;
   try {
-    newSessionId = findNewJsonlSinceSync(projectDir, spawnedAfter, 60_000);
+    newSessionId = await findNewJsonlSince(projectDir, spawnedAfter, 60_000);
   } finally {
     // Always kill the interactive TUI — it doesn't exit on its own after the
     // one-turn fork-prompt is submitted.
@@ -159,12 +157,18 @@ function claudeProjectDir(cwd: string): string {
   return path.join(os.homedir(), ".claude", "projects", key);
 }
 
+/** Async sleep — yields the event loop instead of busy-spinning. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Poll a Claude project transcript directory for a new `.jsonl` file whose
  * mtime is after `sinceMs`. Returns the basename without `.jsonl` (the session
- * id) or `null` on timeout. Synchronous polling with 250ms beats.
+ * id) or `null` on timeout. Async polling with 250ms beats — never blocks the
+ * gateway event loop (a chat duplicate would otherwise freeze all WS/HTTP/cron).
  */
-function findNewJsonlSinceSync(projectDir: string, sinceMs: number, timeoutMs: number): string | null {
+async function findNewJsonlSince(projectDir: string, sinceMs: number, timeoutMs: number): Promise<string | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (fs.existsSync(projectDir)) {
@@ -189,12 +193,7 @@ function findNewJsonlSinceSync(projectDir: string, sinceMs: number, timeoutMs: n
         }
       } catch { /* keep polling */ }
     }
-    // Synchronous 250ms sleep via Atomics.wait on a SharedArrayBuffer would be
-    // cleaner, but a tiny busy-loop using a sync child of `false` is overkill.
-    // execFileSync of `sleep` works on darwin/linux and keeps this function sync.
-    const sleepUntil = Date.now() + 250;
-    // eslint-disable-next-line no-empty
-    while (Date.now() < sleepUntil) {}
+    await sleep(250);
   }
   return null;
 }
@@ -245,12 +244,12 @@ export function forkCodexSession(engineSessionId: string): ForkResult {
  * For Claude, the optional `interactive` ctx routes the fork through a PTY
  * (no `-p`) so it bills as `cc_entrypoint=cli`. Codex ignores it.
  */
-export function forkEngineSession(
+export async function forkEngineSession(
   engine: string,
   engineSessionId: string,
   cwd: string,
   interactive?: InteractiveForkCtx,
-): ForkResult {
+): Promise<ForkResult> {
   switch (engine) {
     case "claude":
       return forkClaudeSession({ engineSessionId, cwd, interactive });
