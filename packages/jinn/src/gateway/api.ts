@@ -2097,6 +2097,8 @@ async function runWebSession(
             type: delta.type,
             content: delta.content,
             toolName: delta.toolName,
+            toolId: delta.toolId,
+            subAgent: delta.subAgent,
           });
         } catch (err) {
           logger.warn(`Failed to emit stream delta for session ${currentSession.id}: ${err instanceof Error ? err.message : err}`);

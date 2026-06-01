@@ -7,6 +7,7 @@ import { ChatInput } from '@/components/chat/chat-input'
 import { ChatEmployeePicker } from '@/components/chat/chat-employee-picker'
 import { QueuePanel } from '@/components/chat/queue-panel'
 import { ModelSelectorRow, type SelectorValue } from '@/components/chat/model-selector-row'
+import { routeSubAgentDelta, type SubAgentState } from '@/components/chat/sub-agent-card'
 
 const CliTerminal = lazy(() => import('@/components/cli-terminal').then(m => ({ default: m.CliTerminal })))
 import { buildNewSessionParams } from '@/components/chat/new-chat-helpers'
@@ -73,6 +74,9 @@ export function ChatPane({
   const [loading, setLoading] = useState<boolean>(() => !!pendingUserMessage)
   const streamingTextRef = useRef('')
   const [streamingText, setStreamingText] = useState('')
+  // Live sub-agent cards for the current turn (Task sub-agents stream in tagged via
+  // the SSE proxy). Reset on a new send / session switch; marked done on completion.
+  const [subAgents, setSubAgents] = useState<SubAgentState[]>([])
   // Live context-token count streamed mid-turn (message_start.usage). Overrides the
   // persisted session value while a turn is in flight; cleared on completion/stop.
   const [liveContextTokens, setLiveContextTokens] = useState<number | null>(null)
@@ -154,6 +158,13 @@ export function ChatPane({
 
       if (event === 'session:delta') {
         const deltaType = String(p.type || 'text')
+
+        // Sub-agent deltas route into collapsible cards, NOT the main transcript.
+        const sa = p.subAgent as { id: string; label?: string } | undefined
+        if (sa?.id) {
+          setSubAgents((prev) => routeSubAgentDelta(prev, sa, deltaType, String(p.content || ''), p.toolName ? String(p.toolName) : undefined))
+          return
+        }
 
         if (deltaType === 'text') {
           const chunk = String(p.content || '')
@@ -263,6 +274,7 @@ export function ChatPane({
         setLoading(false)
         setStreamingText('')
         setLiveContextTokens(null)
+        setSubAgents((prev) => prev.map((a) => (a.status === 'running' ? { ...a, status: 'done' } : a)))
       }
 
       if (event === 'session:completed') {
@@ -270,6 +282,7 @@ export function ChatPane({
         setStreamingText('')
         setLoading(false)
         setLiveContextTokens(null)
+        setSubAgents((prev) => prev.map((a) => (a.status === 'running' ? { ...a, status: 'done' } : a)))
         intermediateStartRef.current = -1
         justCompletedAtRef.current = Date.now()
 
@@ -422,6 +435,7 @@ export function ChatPane({
       setCurrentSession(null)
       streamingTextRef.current = ''
       setStreamingText('')
+      setSubAgents([])
       intermediateStartRef.current = -1
       setSelectedEmployee(null)
       return
@@ -429,6 +443,7 @@ export function ChatPane({
     // Clear streaming state immediately to avoid stale content flash
     streamingTextRef.current = ''
     setStreamingText('')
+    setSubAgents([])
     // NOTE: do NOT setLoading(false) here. Loading is owned by handleSend (true) and
     // WS session:completed/stopped (false). Clearing here would clobber the lazy-init
     // loading=true set by useState() when this pane mounted with pendingUserMessage.
@@ -471,6 +486,7 @@ export function ChatPane({
         return [...prev, userMsg]
       })
       setLoading(true)
+      setSubAgents([]) // fresh turn — drop the previous turn's sub-agent cards
 
       try {
         // Upload any attached files to the server in parallel and collect file IDs
@@ -699,7 +715,7 @@ export function ChatPane({
           <CliTerminal sessionId={sessionId} />
         </Suspense>
       ) : (sessionId || messages.length > 0) ? (
-        <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
+        <ChatMessages messages={messages} loading={loading} streamingText={streamingText} subAgents={subAgents} />
       ) : null}
 
       {/* Queue panel — hidden in the live xterm view (noise on top of the PTY). */}

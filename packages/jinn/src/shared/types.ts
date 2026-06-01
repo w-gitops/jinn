@@ -5,6 +5,12 @@ export interface StreamDelta {
   content: string;
   toolName?: string;
   toolId?: string;
+  /** Present when this delta belongs to a Task SUB-AGENT (Claude Code runs them
+   *  in-process, so their nested API streams flow through the same per-PTY proxy).
+   *  The FE routes tagged deltas into a collapsible sub-agent card instead of the
+   *  main transcript. `id` is stable across the sub-agent's turns; `label` is a
+   *  short human hint (its task prompt). Absent => main agent stream. */
+  subAgent?: { id: string; label?: string; type?: string };
 }
 
 export interface Engine {
