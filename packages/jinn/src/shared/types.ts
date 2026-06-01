@@ -447,10 +447,6 @@ export interface JinnConfig {
       childEffortOverride?: string;
       /** Max concurrent live PTYs across all sessions (CLI/xterm view only). Default 8. */
       maxLivePtys?: number;
-      /** Engine for Claude WORK TURNS. "interactive" (default) drives the real
-       *  TUI in a PTY (cc_entrypoint=cli → Max-subsidized; per-content-block
-       *  streaming). "headless" uses `claude -p` (de-subsidized) — rollback only. */
-      mode?: "interactive" | "headless";
     };
     codex: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };
     /** Antigravity (`agy`) engine. `bin` is optional — resolved dynamically

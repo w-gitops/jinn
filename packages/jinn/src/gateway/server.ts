@@ -12,7 +12,6 @@ import { invalidateModelRegistry } from "../shared/models.js";
 import { configureLogger, logger } from "../shared/logger.js";
 import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession, getSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
-import { ClaudeEngine } from "../engines/claude.js";
 import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
 import { PtyLifecycleManager } from "../engines/pty-lifecycle.js";
 import { CodexEngine } from "../engines/codex.js";
@@ -189,10 +188,8 @@ export async function startGateway(
   // Hook registry — shared by the interactive engine and the internal hook route.
   const hookRegistry = new HookRegistry();
 
-  // Claude engines — split by use case:
-  //   • ClaudeEngine (headless `claude -p`): used by chat, connectors, cron — short-lived, one spawn per turn.
-  //   • InteractiveClaudeEngine (PTY): used only by /ws/pty/:sessionId for the live xterm CLI view.
-  const claudeEngine = new ClaudeEngine();
+  // Claude engine — InteractiveClaudeEngine (PTY): runs all work turns
+  // (chat, employees, cron, child sessions) AND backs the live xterm CLI view.
 
   // Copy hook-relay asset next to JINN_HOME so PTY-spawned Claude can find it.
   const relayCandidates = [
@@ -249,21 +246,15 @@ export async function startGateway(
     onCleanup: () => refreshPtyPids(),
   });
   const antigravityEngine = new AntigravityEngine(antigravityLifecycle);
-  logger.info("Engines initialized: claude (headless + interactive PTY), codex, antigravity (interactive PTY)");
+  logger.info("Engines initialized: claude (interactive PTY), codex, antigravity (interactive PTY)");
 
   const codexEngine = new CodexEngine();
   const engines = new Map<string, Engine>();
   // Claude WORK TURNS (chat, employees, cron, child sessions) run on the
-  // interactive PTY engine by default → cc_entrypoint=cli, covered by the Max
-  // subscription (per-content-block streaming via transcript tail). Headless
-  // `claude -p` (de-subsidized) is kept only as an explicit rollback.
-  const claudeWorkEngine: Engine = claudeCfg.mode === "headless" ? claudeEngine : interactiveClaudeEngine;
-  engines.set("claude", claudeWorkEngine);
-  logger.info(
-    claudeCfg.mode === "headless"
-      ? "Claude work turns: HEADLESS (claude -p) — de-subsidized, rollback mode"
-      : "Claude work turns: INTERACTIVE PTY (cc_entrypoint=cli, Max-subsidized)",
-  );
+  // interactive PTY engine → cc_entrypoint=cli, covered by the Max subscription
+  // (per-content-block streaming via transcript tail).
+  engines.set("claude", interactiveClaudeEngine);
+  logger.info("Claude work turns: INTERACTIVE PTY (cc_entrypoint=cli, Max-subsidized)");
   engines.set("codex", codexEngine);
   engines.set("antigravity", antigravityEngine);
 
@@ -938,7 +929,6 @@ export async function startGateway(
     }
 
     // Terminate live engine subprocesses after marking sessions.
-    claudeEngine.killAll();
     interactiveClaudeEngine.killAll();
     codexEngine.killAll();
     antigravityEngine.killAll();

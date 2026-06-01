@@ -33,6 +33,7 @@ models:
     effortMechanism: codex-config
     models:
       - { id: gpt-5.4, label: "GPT-5.4 Codex", supportsEffort: true, effortLevels: [low, medium, high, xhigh] }
+      - { id: gpt-5.5, label: "GPT-5.5", supportsEffort: true, effortLevels: [low, medium, high, xhigh] }
   antigravity:
     default: gemini-3-flash-preview
     effortMechanism: none

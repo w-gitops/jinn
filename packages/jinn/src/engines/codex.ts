@@ -7,6 +7,18 @@ interface LiveProcess {
   terminationReason: string | null;
 }
 
+/**
+ * Most-recent-turn input-context size from a codex `turn.completed` usage object.
+ * codex's `cached_input_tokens` is a SUBSET of `input_tokens` (OpenAI semantics),
+ * so the window fill is `input_tokens` alone — summing would double-count.
+ * Best-effort: returns undefined on any shape mismatch.
+ */
+function extractCodexContextTokens(usage: unknown): number | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const n = Number((usage as Record<string, unknown>).input_tokens ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
 export class CodexEngine implements InterruptibleEngine {
   name = "codex" as const;
   private liveProcesses = new Map<string, LiveProcess>();
@@ -80,6 +92,7 @@ export class CodexEngine implements InterruptibleEngine {
       let resultText = "";
       let numTurns = 0;
       let turnError: string | null = null;
+      let lastContextTokens: number | undefined;
       let lineBuf = "";
       const onStream = opts.onStream || null;
       const STDERR_MAX = 10 * 1024; // 10KB rolling window for error reporting
@@ -113,6 +126,7 @@ export class CodexEngine implements InterruptibleEngine {
               break;
             case "usage":
               numTurns++;
+              if (parsed.contextTokens) lastContextTokens = parsed.contextTokens;
               break;
             case "turn_failed":
               turnError = parsed.message;
@@ -155,6 +169,7 @@ export class CodexEngine implements InterruptibleEngine {
                 break;
               case "usage":
                 numTurns++;
+                if (parsed.contextTokens) lastContextTokens = parsed.contextTokens;
                 break;
               case "error":
                 turnError = parsed.message;
@@ -174,6 +189,7 @@ export class CodexEngine implements InterruptibleEngine {
             result: resultText,
             error: terminationReason,
             numTurns: numTurns || undefined,
+            ...(typeof lastContextTokens === "number" ? { contextTokens: lastContextTokens } : {}),
           });
           return;
         }
@@ -187,6 +203,7 @@ export class CodexEngine implements InterruptibleEngine {
             result: resultText,
             error: resultText.trim() ? undefined : (turnError ?? undefined),
             numTurns: numTurns || undefined,
+            ...(typeof lastContextTokens === "number" ? { contextTokens: lastContextTokens } : {}),
           });
           return;
         }
@@ -197,6 +214,7 @@ export class CodexEngine implements InterruptibleEngine {
           sessionId: threadId || opts.resumeSessionId || "",
           result: resultText,
           error: errMsg,
+          ...(typeof lastContextTokens === "number" ? { contextTokens: lastContextTokens } : {}),
         });
       });
 
@@ -239,7 +257,7 @@ export class CodexEngine implements InterruptibleEngine {
     | { type: "tool_end"; delta: StreamDelta }
     | { type: "text"; delta: StreamDelta }
     | { type: "error"; message: string }
-    | { type: "usage" }
+    | { type: "usage"; contextTokens?: number }
     | { type: "turn_failed"; message: string }
     | null {
     const trimmed = line.trim();
@@ -362,7 +380,7 @@ export class CodexEngine implements InterruptibleEngine {
     }
 
     if (eventType === "turn.completed") {
-      return { type: "usage" };
+      return { type: "usage", contextTokens: extractCodexContextTokens(msg.usage) };
     }
 
     if (eventType === "turn.failed") {
