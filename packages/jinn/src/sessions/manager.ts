@@ -24,6 +24,7 @@ import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
+import { effortLevelsForModel } from "../shared/models.js";
 import { detectRateLimit, isDeadSessionError } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit } from "../shared/usageAwareness.js";
 import { loadJobs } from "../cron/jobs.js";
@@ -267,8 +268,8 @@ export class SessionManager {
 
       const engineConfig = session.engine === "codex"
         ? this.config.engines.codex
-        : session.engine === "gemini"
-          ? this.config.engines.gemini ?? this.config.engines.claude
+        : session.engine === "antigravity"
+          ? (this.config.engines.antigravity ?? {})
           : this.config.engines.claude;
       if (session.engine === "claude") {
         const mcpConfig = resolveMcpServers(this.config.mcp, employee);
@@ -277,7 +278,12 @@ export class SessionManager {
         }
       }
 
-      const effortLevel = resolveEffort(engineConfig, session, employee);
+      const effortLevel = resolveEffort(
+        engineConfig,
+        session,
+        employee,
+        effortLevelsForModel(this.config, session.engine, session.model ?? undefined),
+      );
 
       // If we previously switched to GPT while Claude was rate-limited, inject a sync transcript
       // so Claude can resume with full context when it comes back online.
@@ -435,6 +441,7 @@ export class SessionManager {
 
               const updated = updateSession(session.id, {
                 engineSessionId: fallbackResult.sessionId,
+                ...(typeof fallbackResult.contextTokens === "number" ? { lastContextTokens: fallbackResult.contextTokens } : {}),
                 status: fallbackResult.error ? "error" : "idle",
                 replyContext: msg.replyContext,
                 messageId: msg.messageId ?? null,
@@ -521,6 +528,7 @@ export class SessionManager {
               await connector.replyMessage(target, retryText).catch(() => {});
               const retryUpdated = updateSession(session.id, {
                 ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
+                ...(typeof retryResult.contextTokens === "number" ? { lastContextTokens: retryResult.contextTokens } : {}),
                 status: retryResult.error ? "error" : "idle",
                 replyContext: msg.replyContext,
                 messageId: msg.messageId ?? null,
@@ -579,6 +587,7 @@ export class SessionManager {
       }
       const updatedSession = updateSession(session.id, {
         ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
+        ...(typeof result.contextTokens === "number" ? { lastContextTokens: result.contextTokens } : {}),
         status: wasInterrupted ? "idle" : (result.error ? "error" : "idle"),
         replyContext: msg.replyContext,
         messageId: msg.messageId ?? null,
@@ -667,7 +676,7 @@ export class SessionManager {
         `Session: ${session.id}`,
         `Engine: ${session.engine}`,
         `Connector: ${session.connector || session.source}`,
-        `Model: ${session.model || this.config.engines[session.engine as "claude" | "codex" | "gemini"]?.model || "default"}`,
+        `Model: ${session.model || this.config.engines[session.engine as "claude" | "codex" | "antigravity"]?.model || "default"}`,
         `State: ${transportState}`,
         `Queue depth: ${queueDepth}`,
         `Created: ${session.createdAt}`,
@@ -712,7 +721,7 @@ export class SessionManager {
         `Default engine: ${this.config.engines.default}`,
         `Claude: ${this.config.engines.claude.model}`,
         `Codex: ${this.config.engines.codex.model}`,
-        ...(this.config.engines.gemini ? [`Gemini: ${this.config.engines.gemini.model}`] : []),
+        ...(this.config.engines.antigravity ? [`Antigravity: ${this.config.engines.antigravity.model ?? "gemini-3-flash-preview (default)"}`] : []),
         "Connectors:",
         ...connectorLines,
       ].join("\n");

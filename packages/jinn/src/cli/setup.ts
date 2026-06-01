@@ -250,10 +250,33 @@ engines:
     bin: claude
     model: opus
     effortLevel: medium
-    mode: headless
+    mode: interactive
   codex:
     bin: codex
     model: gpt-5.4
+# Model + capability registry — single source of truth for the UI selectors.
+# Add a model here (id + label + capability flags); no code change needed.
+# effortLevels gate the effort picker (empty = no effort support). Omit the block
+# to synthesize a minimal registry from engines.<name>.model.
+models:
+  claude:
+    default: opus
+    effortMechanism: claude-flag
+    models:
+      - { id: opus, label: "Opus 4.8", supportsEffort: true, effortLevels: [low, medium, high], contextWindow: 1000000 }
+      - { id: claude-sonnet-4-6, label: "Sonnet 4.6", supportsEffort: true, effortLevels: [low, medium, high], contextWindow: 200000 }
+      - { id: claude-haiku-4-5, label: "Haiku 4.5", supportsEffort: true, effortLevels: [low, medium, high], contextWindow: 200000 }
+  codex:
+    default: gpt-5.4
+    effortMechanism: codex-config
+    models:
+      - { id: gpt-5.4, label: "GPT-5.4 Codex", supportsEffort: true, effortLevels: [low, medium, high, xhigh], contextWindow: 272000 }
+  antigravity:
+    default: gemini-3-flash-preview
+    effortMechanism: none
+    models:
+      - { id: gemini-3-flash-preview, label: "Gemini 3 Flash", supportsEffort: false, effortLevels: [] }
+      - { id: gemini-3-pro-preview, label: "Gemini 3 Pro", supportsEffort: false, effortLevels: [] }
 connectors: {}
 portal: {}
 logging:
@@ -406,13 +429,27 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     created.push(claudeMdPath);
   }
 
+  // AGENTS.md is a symlink to CLAUDE.md: one canonical operating manual, zero
+  // drift. claude reads CLAUDE.md, codex/agy read AGENTS.md → same content.
+  // Fall back to a real copy where symlinks aren't available (e.g. Windows
+  // without privilege). lstatSync (not existsSync) so a pre-existing symlink
+  // is treated as present and not clobbered.
   const agentsMdPath = path.join(JINN_HOME, "AGENTS.md");
-  if (!fs.existsSync(agentsMdPath)) {
-    let source = fs.existsSync(templateAgents)
-      ? fs.readFileSync(templateAgents, "utf-8")
-      : defaultAgentsMd(portalName);
-    source = applyTemplateReplacements(source, templateReplacements);
-    ensureFile(agentsMdPath, source);
+  let agentsExists = false;
+  try { fs.lstatSync(agentsMdPath); agentsExists = true; } catch { /* missing */ }
+  if (!agentsExists) {
+    try {
+      fs.symlinkSync("CLAUDE.md", agentsMdPath); // relative target → portable within ~/.jinn
+    } catch {
+      // Symlinks unavailable: copy the CANONICAL manual (CLAUDE.md) so the
+      // fallback still matches, never the stale template AGENTS.md.
+      let source = fs.existsSync(claudeMdPath)
+        ? fs.readFileSync(claudeMdPath, "utf-8")
+        : fs.existsSync(templateAgents)
+          ? applyTemplateReplacements(fs.readFileSync(templateAgents, "utf-8"), templateReplacements)
+          : defaultAgentsMd(portalName);
+      ensureFile(agentsMdPath, source);
+    }
     created.push(agentsMdPath);
   }
 

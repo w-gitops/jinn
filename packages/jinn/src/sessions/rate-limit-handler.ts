@@ -23,6 +23,7 @@ import type { Employee, Engine, EngineResult, JinnConfig, Session, StreamDelta }
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
+import { effortLevelsForModel } from "../shared/models.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
 import { recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { getSession, getMessages, updateSession } from "./registry.js";
@@ -197,7 +198,12 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
       });
 
       const fallbackConfig = config.engines.codex;
-      const fallbackEffort = resolveEffort(fallbackConfig, session, employee);
+      const fallbackEffort = resolveEffort(
+        fallbackConfig,
+        session,
+        employee,
+        effortLevelsForModel(config, fallbackName, fallbackConfig.model),
+      );
       const codexResume = typeof engineSessions.codex === "string" ? (engineSessions.codex as string) : undefined;
       const history = getMessages(session.id)
         .filter((m) => m.role === "user" || m.role === "assistant")

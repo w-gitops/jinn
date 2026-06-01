@@ -47,6 +47,8 @@ interface ChatInputProps {
   focusTrigger?: number
   /** Callback to open keyboard shortcuts overlay */
   onShortcutsClick?: () => void
+  /** Optional Engine/Model/Effort selector row, rendered just above the input. */
+  selectorSlot?: React.ReactNode
 }
 
 /* ── File to MediaAttachment ─────────────────────────────── */
@@ -119,6 +121,7 @@ export function ChatInput({
   onDroppedFilesConsumed,
   focusTrigger,
   onShortcutsClick,
+  selectorSlot,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -626,20 +629,28 @@ export function ChatInput({
         </button>
       </div>
 
-      {/* Hint — hidden on mobile for space */}
-      <div className="hidden sm:flex text-[length:var(--text-caption2)] text-[var(--text-quaternary)] text-center mt-[var(--space-1)] justify-center gap-[var(--space-3)]">
-        <span>Enter to send</span>
-        <span>/ - commands</span>
-        <span>@name - mention</span>
-        {onShortcutsClick && (
-          <button
-            onClick={onShortcutsClick}
-            className="flex items-center gap-1 text-[length:var(--text-caption2)] text-[var(--text-quaternary)] hover:text-[var(--text-tertiary)] transition-colors bg-transparent border-none cursor-pointer p-0 font-[inherit]"
-          >
-            <kbd className="rounded bg-[var(--fill-tertiary)] px-1 py-0.5 font-mono text-[10px] leading-none">?</kbd>
-            <span>shortcuts</span>
-          </button>
-        )}
+      {/* Meta strip: Engine·Model·Effort selector pinned LEFT, hints CENTERED.
+          3-col grid [1fr | auto | 1fr] so the hints sit true-center regardless of
+          selector width, with no overlap at narrow widths. */}
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-[var(--space-2)] mt-[var(--space-1)]">
+        {/* Selector — quiet inline metadata, left, with breathing room from the edge */}
+        <div className="min-w-0 ml-[10px] justify-self-start">{selectorSlot}</div>
+        {/* Hints — centered, hidden on mobile for space */}
+        <div className="hidden sm:flex justify-self-center text-[length:var(--text-caption2)] text-[var(--text-quaternary)] items-center gap-[var(--space-3)]">
+          <span>/ - commands</span>
+          <span>@name - mention</span>
+          {onShortcutsClick && (
+            <button
+              onClick={onShortcutsClick}
+              className="flex items-center gap-1 text-[length:var(--text-caption2)] text-[var(--text-quaternary)] hover:text-[var(--text-tertiary)] transition-colors bg-transparent border-none cursor-pointer p-0 font-[inherit]"
+            >
+              <kbd className="rounded bg-[var(--fill-tertiary)] px-1 py-0.5 font-mono text-[10px] leading-none">?</kbd>
+              <span>shortcuts</span>
+            </button>
+          )}
+        </div>
+        {/* Spacer col keeps the hints optically centered */}
+        <div aria-hidden />
       </div>
 
       {/* STT error banner */}

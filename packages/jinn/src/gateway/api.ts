@@ -6,6 +6,8 @@ import path from "node:path";
 import yaml from "js-yaml";
 import type { CronJob, Engine, IncomingMessage, JinnConfig, Session, StreamDelta, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
+import { getModelRegistry, invalidateModelRegistry, effortLevelsForModel } from "../shared/models.js";
+import { validateSessionPatch } from "../sessions/session-patch.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
 import {
@@ -448,7 +450,7 @@ export async function handleApiRequest(
           default: config.engines.default,
           claude: { model: config.engines.claude.model, available: true },
           codex: { model: config.engines.codex.model, available: true },
-          ...(config.engines.gemini ? { gemini: { model: config.engines.gemini.model, available: true } } : {}),
+          ...(config.engines.antigravity ? { antigravity: { model: config.engines.antigravity.model ?? "gemini-3-flash-preview", available: true } } : {}),
         },
         sessions: { total: sessions.length, running, active: running },
         connectors,
@@ -532,9 +534,9 @@ export async function handleApiRequest(
       return json(res, { ...serializeSession(session, context), messages });
     }
 
-    // PUT /api/sessions/:id
+    // PUT|PATCH /api/sessions/:id — update title and/or mid-chat model/effort
     params = matchRoute("/api/sessions/:id", pathname);
-    if (method === "PUT" && params) {
+    if ((method === "PUT" || method === "PATCH") && params) {
       const session = getSession(params.id);
       if (!session) return notFound(res);
       const _parsed = await readJsonBody(req, res);
@@ -548,9 +550,20 @@ export async function handleApiRequest(
         if (!trimmed) return badRequest(res, "title must not be empty");
         updates.title = trimmed.slice(0, 200);
       }
+      // Mid-chat model / effort switch (applies from the next turn). Engine is
+      // new-chat-only, so it's not mutable here. Validated against the registry.
+      if (body.model !== undefined || body.effortLevel !== undefined) {
+        const patch = validateSessionPatch(context.getConfig(), session.engine, session.model, body);
+        if (!patch.ok) return badRequest(res, patch.error || "invalid model/effort");
+        if (patch.updates?.model !== undefined) updates.model = patch.updates.model;
+        if (patch.updates?.effortLevel !== undefined) updates.effortLevel = patch.updates.effortLevel;
+      }
       if (Object.keys(updates).length === 0) return badRequest(res, "no valid fields to update");
       const updated = updateSession(params.id, updates);
       if (!updated) return notFound(res);
+      if (updates.model !== undefined && session.engine === "antigravity") {
+        logger.info(`Session ${params.id}: model set to "${updates.model}" but antigravity ignores model flags today — runtime no-op.`);
+      }
       context.emit("session:updated", { sessionId: params.id });
       return json(res, serializeSession(updated, context));
     }
@@ -633,8 +646,18 @@ export async function handleApiRequest(
         const { session: newSession, messageCount } = duplicateSession(params.id);
         newSessionId = newSession.id;
 
-        // 2. Fork the engine session (Claude/Codex/Gemini) via headless fork.
-        const forkResult = forkEngineSession(source.engine, source.engineSessionId, JINN_HOME);
+        // 2. Fork the engine session (Claude/Codex). For Claude, route through
+        //    the interactive PTY fork (no `-p`) so the duplicate bills as
+        //    cc_entrypoint=cli rather than the de-subsidized Agent-SDK headless
+        //    pool. Codex ignores the interactive ctx (it just copies the JSONL).
+        const interactive = source.engine === "claude" && context.interactiveClaudeEngine
+          ? {
+              sourceJinnSessionId: params.id,
+              engine: context.interactiveClaudeEngine,
+              bin: context.getConfig().engines.claude.bin,
+            }
+          : undefined;
+        const forkResult = await forkEngineSession(source.engine, source.engineSessionId, JINN_HOME, interactive);
 
         // 3. Store the new engine session ID
         updateSession(newSession.id, { engineSessionId: forkResult.engineSessionId });
@@ -1227,6 +1250,15 @@ export async function handleApiRequest(
       return json(res, { status: "removed", name: params.name });
     }
 
+    // GET /api/engines — resolved model + capability registry (single source of truth
+    // for the UI model/effort selectors). Synthesized from engines.<name>.model
+    // when no `models:` block is configured.
+    if (method === "GET" && pathname === "/api/engines") {
+      const config = context.getConfig();
+      const registry = getModelRegistry(config);
+      return json(res, { default: config.engines.default, engines: registry });
+    }
+
     // GET /api/config
     if (method === "GET" && pathname === "/api/config") {
       const config = context.getConfig();
@@ -1267,6 +1299,7 @@ export async function handleApiRequest(
         "jinn",
         "gateway",
         "engines",
+        "models",
         "connectors",
         "logging",
         "mcp",
@@ -1304,6 +1337,7 @@ export async function handleApiRequest(
       const merged = deepMerge(existing, body);
       const yamlStr = yaml.dump(merged);
       fs.writeFileSync(CONFIG_PATH, yamlStr);
+      invalidateModelRegistry(); // models/engines may have changed — rebuild on next read
       logger.info("Config updated via API");
       return json(res, { status: "ok" });
     }
@@ -1724,6 +1758,23 @@ export async function handleApiRequest(
         req.headers["x-jinn-hook-secret"] as string | undefined,
         hookBody,
       );
+      // Central engineSessionId capture: persist claude's OWN session id the moment
+      // it reports one (SessionStart, or Stop as backup), independent of turn state.
+      // Without this, an interrupted turn or an idle CLI-view spawn never persisted
+      // the id, so the next cold respawn ran `claude` with resume:none → a fresh
+      // conversation (the convo-wipe bug). Write-once guarded so it's not chatty.
+      if (
+        result.status === 200 &&
+        hookBody.jinnSessionId &&
+        (hookBody.hook?.hook_event_name === "SessionStart" || hookBody.hook?.hook_event_name === "Stop") &&
+        typeof hookBody.hook?.session_id === "string" &&
+        hookBody.hook.session_id
+      ) {
+        const existing = getSession(hookBody.jinnSessionId);
+        if (existing && existing.engineSessionId !== hookBody.hook.session_id) {
+          updateSession(hookBody.jinnSessionId, { engineSessionId: hookBody.hook.session_id });
+        }
+      }
       return json(res, { message: result.body }, result.status);
     }
 
@@ -1967,10 +2018,15 @@ async function runWebSession(
 
     const engineConfig = currentSession.engine === "codex"
       ? config.engines.codex
-      : currentSession.engine === "gemini"
-        ? config.engines.gemini ?? config.engines.claude
+      : currentSession.engine === "antigravity"
+        ? (config.engines.antigravity ?? {})
         : config.engines.claude;
-    const effortLevel = resolveEffort(engineConfig, currentSession, employee);
+    const effortLevel = resolveEffort(
+      engineConfig,
+      currentSession,
+      employee,
+      effortLevelsForModel(config, currentSession.engine, currentSession.model ?? undefined),
+    );
 
     let lastHeartbeatAt = 0;
     const runHeartbeat = setInterval(() => {
@@ -2017,6 +2073,18 @@ async function runWebSession(
         // Same guard as runHeartbeat: a delta may arrive after the user
         // deleted the session; don't resurrect registry state for it.
         if (!getSession(currentSession.id)) return;
+        // Live context-meter: message_start.usage arrives as a `context` delta
+        // (once per assistant message — infrequent). Persist it immediately so the
+        // meter ticks during the turn, not just at completion. The delta also flows
+        // to the FE below for an instant in-pane update.
+        if (delta.type === "context" && !delta.subAgent) {
+          // Only the MAIN agent's usage drives the session meter; a sub-agent's
+          // message_start.usage must not overwrite the main session's context count.
+          const ctx = Number(delta.content);
+          if (Number.isFinite(ctx) && ctx > 0) {
+            updateSession(currentSession.id, { lastContextTokens: ctx });
+          }
+        }
         const now = Date.now();
         if (now - lastHeartbeatAt >= 2000) {
           lastHeartbeatAt = now;
@@ -2031,6 +2099,8 @@ async function runWebSession(
             type: delta.type,
             content: delta.content,
             toolName: delta.toolName,
+            toolId: delta.toolId,
+            subAgent: delta.subAgent,
           });
         } catch (err) {
           logger.warn(`Failed to emit stream delta for session ${currentSession.id}: ${err instanceof Error ? err.message : err}`);
@@ -2205,9 +2275,14 @@ async function runWebSession(
 
     const completedSession = updateSession(currentSession.id, {
       ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
-      status: result.error ? "error" : "idle",
+      ...(typeof result.contextTokens === "number" ? { lastContextTokens: result.contextTokens } : {}),
+      // An interrupt (new message arrived / user stopped) is NOT an error — land idle
+      // with no lastError, mirroring the connector path (manager.ts). Otherwise the
+      // session would stick in "error" with a misleading "Interrupted" message and
+      // fire a false parent-callback failure when the interrupt is the last action.
+      status: wasInterrupted ? "idle" : (result.error ? "error" : "idle"),
       lastActivity: new Date().toISOString(),
-      lastError: result.error ?? null,
+      lastError: wasInterrupted ? null : (result.error ?? null),
     });
     if (syncRequested && !rateLimit.limited && !wasInterrupted) {
       const meta = (getSession(currentSession.id)?.transportMeta || currentSession.transportMeta || {}) as Record<string, unknown>;
@@ -2217,8 +2292,9 @@ async function runWebSession(
         updateSession(currentSession.id, { transportMeta: nextMeta as any });
       }
     }
+    const reportedError = wasInterrupted ? null : (result.error ?? null);
     if (completedSession) {
-      notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+      notifyParentSession(completedSession, { result: result.result, error: reportedError, cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
     }
 
     context.emit("session:completed", {
@@ -2226,7 +2302,7 @@ async function runWebSession(
       employee: currentSession.employee || config.portal?.portalName || "Jinn",
       title: currentSession.title,
       result: result.result,
-      error: result.error || null,
+      error: reportedError,
       cost: result.cost,
       durationMs: result.durationMs,
     });

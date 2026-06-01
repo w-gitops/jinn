@@ -1,10 +1,16 @@
-export type StreamDeltaType = "text" | "text_snapshot" | "tool_use" | "tool_result" | "status" | "error";
+export type StreamDeltaType = "text" | "text_snapshot" | "tool_use" | "tool_result" | "status" | "error" | "context";
 
 export interface StreamDelta {
   type: StreamDeltaType;
   content: string;
   toolName?: string;
   toolId?: string;
+  /** Present when this delta belongs to a Task SUB-AGENT (Claude Code runs them
+   *  in-process, so their nested API streams flow through the same per-PTY proxy).
+   *  The FE routes tagged deltas into a collapsible sub-agent card instead of the
+   *  main transcript. `id` is stable across the sub-agent's turns; `label` is a
+   *  short human hint (its task prompt). Absent => main agent stream. */
+  subAgent?: { id: string; label?: string; type?: string };
 }
 
 export interface Engine {
@@ -51,6 +57,10 @@ export interface EngineResult {
   cost?: number;
   durationMs?: number;
   numTurns?: number;
+  /** Most recent turn's INPUT context size (input + cache-read + cache-creation
+   *  tokens) — i.e. how full the context window currently is. Undefined when the
+   *  engine doesn't surface usage. */
+  contextTokens?: number;
   error?: string;
   /**
    * Optional rate limit metadata returned by an engine.
@@ -157,6 +167,8 @@ export interface Session {
   effortLevel: string | null;
   totalCost: number;
   totalTurns: number;
+  /** Most recent turn's input-context token count (for the UI context meter). */
+  lastContextTokens: number | null;
   queueDepth?: number;
   transportState?: "idle" | "queued" | "running" | "error" | "interrupted";
   createdAt: string;
@@ -371,11 +383,69 @@ export interface PortalConfig {
   onboarded?: boolean;
 }
 
+/**
+ * Model + capability registry.
+ *
+ * The resolved registry (see shared/models.ts) is the single source of truth for
+ * which engines/models exist and what they support. A NEW model shipping is a
+ * config edit (`models:` block in config.yaml), zero code change. When the block
+ * is absent, the registry is synthesized from `engines.<name>.model` so existing
+ * configs keep working.
+ */
+
+/** How an engine conveys reasoning-effort to its CLI. */
+export type EffortMechanism = "claude-flag" | "codex-config" | "none";
+
+/** A single model and its capabilities, as exposed to the UI / validation. */
+export interface ModelInfo {
+  id: string;
+  label: string;
+  supportsEffort: boolean;
+  /** Valid effort levels for THIS model (empty when supportsEffort is false). */
+  effortLevels: string[];
+  /** Context window size in tokens (for the UI context meter). Omit if unknown. */
+  contextWindow?: number;
+}
+
+/** Resolved per-engine registry entry. */
+export interface EngineRegistryEntry {
+  name: string;
+  /** Engine is registered/usable in this build. */
+  available: boolean;
+  /** Default model id for new sessions on this engine. */
+  defaultModel: string;
+  effortMechanism: EffortMechanism;
+  models: ModelInfo[];
+}
+
+/** Resolved registry, keyed by engine name. */
+export type ModelRegistry = Record<string, EngineRegistryEntry>;
+
+// --- config.yaml `models:` block shapes (all fields optional/forgiving) ---
+
+export interface ModelConfigEntry {
+  id: string;
+  label?: string;
+  supportsEffort?: boolean;
+  effortLevels?: string[];
+  contextWindow?: number;
+}
+
+export interface EngineModelsConfig {
+  /** Default model id; falls back to the first listed model. */
+  default?: string;
+  effortMechanism?: EffortMechanism;
+  models: ModelConfigEntry[];
+}
+
+/** `models:` block keyed by engine name (claude | codex | antigravity). */
+export type ModelsConfig = Record<string, EngineModelsConfig>;
+
 export interface JinnConfig {
   jinn?: { version?: string };
   gateway: { port: number; host: string; streaming?: boolean };
   engines: {
-    default: "claude" | "codex" | "gemini";
+    default: "claude" | "codex" | "antigravity";
     claude: {
       bin: string;
       model: string;
@@ -385,8 +455,13 @@ export interface JinnConfig {
       maxLivePtys?: number;
     };
     codex: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };
-    gemini?: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };
+    /** Antigravity (`agy`) engine. `bin` is optional — resolved dynamically
+     *  (PATH + common install dirs) when absent. agy ignores model/effort flags
+     *  today, so those fields are forward-looking. */
+    antigravity?: { bin?: string; model?: string; effortLevel?: string; childEffortOverride?: string };
   };
+  /** Optional model + capability registry. When absent, synthesized from engines.<name>.model. */
+  models?: ModelsConfig;
   connectors: Record<string, any> & {
     web?: WebConnectorConfig;
     slack?: SlackConnectorConfig;
