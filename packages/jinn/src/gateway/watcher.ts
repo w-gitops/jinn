@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { watch, type FSWatcher } from "chokidar";
-import { CONFIG_PATH, CRON_JOBS, ORG_DIR, SKILLS_DIR, CLAUDE_SKILLS_DIR, AGENTS_SKILLS_DIR } from "../shared/paths.js";
+import { CONFIG_PATH, CRON_JOBS, ORG_DIR, SKILLS_DIR, CLAUDE_SKILLS_DIR, AGENTS_SKILLS_DIR, POLICY_PATH } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 
 export interface WatcherCallbacks {
@@ -9,6 +9,7 @@ export interface WatcherCallbacks {
   onCronReload: () => void;
   onOrgChange: () => void;
   onSkillsChange: () => void;
+  onPolicyReload: () => void;
 }
 
 let watchers: FSWatcher[] = [];
@@ -128,7 +129,20 @@ export function startWatchers(callbacks: WatcherCallbacks): void {
     }, DEBOUNCE_MS),
   );
 
-  watchers = [configWatcher, cronWatcher, orgWatcher, skillsWatcher];
+  // Watch the command-safety policy so the gate hot-reloads on edit (like config.yaml).
+  const policyWatcher = watch(POLICY_PATH, {
+    ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 300 },
+  });
+  policyWatcher.on(
+    "change",
+    debounce(() => {
+      logger.info("policy/command-safety.json changed, reloading gate...");
+      callbacks.onPolicyReload();
+    }, DEBOUNCE_MS),
+  );
+
+  watchers = [configWatcher, cronWatcher, orgWatcher, skillsWatcher, policyWatcher];
   logger.info("File watchers started");
 }
 

@@ -44,6 +44,16 @@ export class HookRegistry {
     }
   }
 
+  /**
+   * True if a live listener is registered for this session. The interactive PTY
+   * engine registers a listener for the duration of a turn; headless `claude -p`
+   * sessions do not. The command gate uses this as the "interactive" signal:
+   * an interactive session can render an "ask", a headless one collapses it to deny.
+   */
+  hasListener(jinnSessionId: string): boolean {
+    return this.listeners.has(jinnSessionId);
+  }
+
   unregister(jinnSessionId: string): void {
     this.listeners.delete(jinnSessionId);
     this.buffer.delete(jinnSessionId);
