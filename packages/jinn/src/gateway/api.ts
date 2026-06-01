@@ -2046,6 +2046,16 @@ async function runWebSession(
         // Same guard as runHeartbeat: a delta may arrive after the user
         // deleted the session; don't resurrect registry state for it.
         if (!getSession(currentSession.id)) return;
+        // Live context-meter: message_start.usage arrives as a `context` delta
+        // (once per assistant message — infrequent). Persist it immediately so the
+        // meter ticks during the turn, not just at completion. The delta also flows
+        // to the FE below for an instant in-pane update.
+        if (delta.type === "context") {
+          const ctx = Number(delta.content);
+          if (Number.isFinite(ctx) && ctx > 0) {
+            updateSession(currentSession.id, { lastContextTokens: ctx });
+          }
+        }
         const now = Date.now();
         if (now - lastHeartbeatAt >= 2000) {
           lastHeartbeatAt = now;

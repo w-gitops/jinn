@@ -73,6 +73,9 @@ export function ChatPane({
   const [loading, setLoading] = useState<boolean>(() => !!pendingUserMessage)
   const streamingTextRef = useRef('')
   const [streamingText, setStreamingText] = useState('')
+  // Live context-token count streamed mid-turn (message_start.usage). Overrides the
+  // persisted session value while a turn is in flight; cleared on completion/stop.
+  const [liveContextTokens, setLiveContextTokens] = useState<number | null>(null)
   const intermediateStartRef = useRef<number>(-1)
   const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(null)
   const sessionIdRef = useRef(sessionId)
@@ -208,6 +211,9 @@ export function ChatPane({
             persistIntermediate(updated, sid)
             return updated
           })
+        } else if (deltaType === 'context') {
+          const n = Number(p.content)
+          if (Number.isFinite(n) && n > 0) setLiveContextTokens(n)
         }
       }
 
@@ -256,12 +262,14 @@ export function ChatPane({
       if (event === 'session:stopped') {
         setLoading(false)
         setStreamingText('')
+        setLiveContextTokens(null)
       }
 
       if (event === 'session:completed') {
         streamingTextRef.current = ''
         setStreamingText('')
         setLoading(false)
+        setLiveContextTokens(null)
         intermediateStartRef.current = -1
         justCompletedAtRef.current = Date.now()
 
@@ -725,7 +733,7 @@ export function ChatPane({
             onChange={handleSelectorChange}
             pendingNote={effortPendingNote}
             disabled={loading}
-            contextTokens={(currentSession?.lastContextTokens as number | null | undefined) ?? undefined}
+            contextTokens={liveContextTokens ?? (currentSession?.lastContextTokens as number | null | undefined) ?? undefined}
             onNewChat={handleNewSession}
           />
         }

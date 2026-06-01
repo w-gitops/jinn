@@ -1,4 +1,4 @@
-export type StreamDeltaType = "text" | "text_snapshot" | "tool_use" | "tool_result" | "status" | "error";
+export type StreamDeltaType = "text" | "text_snapshot" | "tool_use" | "tool_result" | "status" | "error" | "context";
 
 export interface StreamDelta {
   type: StreamDeltaType;

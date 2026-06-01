@@ -441,6 +441,7 @@ export class SessionManager {
 
               const updated = updateSession(session.id, {
                 engineSessionId: fallbackResult.sessionId,
+                ...(typeof fallbackResult.contextTokens === "number" ? { lastContextTokens: fallbackResult.contextTokens } : {}),
                 status: fallbackResult.error ? "error" : "idle",
                 replyContext: msg.replyContext,
                 messageId: msg.messageId ?? null,
@@ -527,6 +528,7 @@ export class SessionManager {
               await connector.replyMessage(target, retryText).catch(() => {});
               const retryUpdated = updateSession(session.id, {
                 ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
+                ...(typeof retryResult.contextTokens === "number" ? { lastContextTokens: retryResult.contextTokens } : {}),
                 status: retryResult.error ? "error" : "idle",
                 replyContext: msg.replyContext,
                 messageId: msg.messageId ?? null,
