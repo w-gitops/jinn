@@ -117,7 +117,11 @@ export class CodexEngine implements InterruptibleEngine {
               if (onStream) onStream(parsed.delta);
               break;
             case "text":
-              resultText += parsed.delta.content;
+              // Each agent_message item is a COMPLETE assistant message; codex emits
+              // several per turn (preamble + final). The result must be the FINAL
+              // message, not all of them concatenated — so replace, don't append.
+              // Live streaming of each block is unaffected (onStream below).
+              resultText = parsed.delta.content;
               if (onStream) onStream(parsed.delta);
               break;
             case "error":
@@ -165,7 +169,7 @@ export class CodexEngine implements InterruptibleEngine {
                 threadId = parsed.threadId;
                 break;
               case "text":
-                resultText += parsed.delta.content;
+                resultText = parsed.delta.content; // final message wins (see above)
                 break;
               case "usage":
                 numTurns++;

@@ -27,6 +27,25 @@ export interface StreamCtx {
   subAgent?: { id: string; label?: string };
 }
 
+/** A per-agent-identity signature for the request's `system`, using ONLY the first
+ *  system content block (the static role/instruction prompt). Claude Code appends a
+ *  DYNAMIC env/date block to `system` that changes per request — hashing the whole
+ *  thing would mint a new id every turn (→ a flood of duplicate sub-agent cards) and
+ *  could even drift the main agent's fingerprint. The first block is byte-stable
+ *  across an agent's turns and distinct per agent type. Fail-open: unknown shape →
+ *  stringify the whole value. */
+function stableSystemSignature(system: unknown): string {
+  if (typeof system === "string") return system;
+  if (Array.isArray(system)) {
+    const first = system.find(
+      (b): b is { type?: string; text?: string } =>
+        !!b && typeof b === "object" && (b as { type?: string }).type === "text" && typeof (b as { text?: string }).text === "string",
+    );
+    if (first?.text) return first.text;
+  }
+  return JSON.stringify(system);
+}
+
 /** Extract the first user message's text from a request body's `messages`. For a
  *  sub-agent this is its task prompt — constant across the sub-agent's turns, so it
  *  yields a STABLE per-sub-agent id and a human-readable card label. */
@@ -253,8 +272,7 @@ export class SsePtyProxy {
     try { json = JSON.parse(body.toString("utf-8")) as { system?: unknown; messages?: unknown }; }
     catch { return {}; }
     if (!json || json.system == null) return {};                 // can't classify → main
-    const sys = typeof json.system === "string" ? json.system : JSON.stringify(json.system);
-    const fp = createHash("sha1").update(sys).digest("hex");
+    const fp = createHash("sha1").update(stableSystemSignature(json.system)).digest("hex");
     if (this.mainSystemFp == null) { this.mainSystemFp = fp; return {}; } // first = main
     if (fp === this.mainSystemFp) return {};                     // main agent
     // Sub-agent. Stable id from system fp + its task prompt: distinct tasks → distinct

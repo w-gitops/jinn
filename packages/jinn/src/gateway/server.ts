@@ -800,7 +800,12 @@ export async function startGateway(
     if (ptyMatch) {
       const sessionId = decodeURIComponent(ptyMatch[1]);
       const ptySession = getSession(sessionId);
-      const ptyEngine = ptyViewEngines[ptySession?.engine ?? "claude"] ?? interactiveClaudeEngine;
+      // Route to the session's OWN engine. Do NOT fall back to claude: codex has no
+      // PTY view, and attaching the claude TUI to a codex session showed the wrong
+      // engine. No view engine for this engine → refuse the upgrade (FE hides the
+      // CLI toggle for codex so this only catches stragglers).
+      const ptyEngine = ptySession ? ptyViewEngines[ptySession.engine] : undefined;
+      if (!ptyEngine) { socket.destroy(); return; }
       ptyWss.handleUpgrade(req, socket, head, (ws) => {
         attachPtyWebSocket(ws, sessionId, ptyEngine);
       });

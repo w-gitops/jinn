@@ -657,7 +657,7 @@ export async function handleApiRequest(
               bin: context.getConfig().engines.claude.bin,
             }
           : undefined;
-        const forkResult = forkEngineSession(source.engine, source.engineSessionId, JINN_HOME, interactive);
+        const forkResult = await forkEngineSession(source.engine, source.engineSessionId, JINN_HOME, interactive);
 
         // 3. Store the new engine session ID
         updateSession(newSession.id, { engineSessionId: forkResult.engineSessionId });
@@ -2077,7 +2077,9 @@ async function runWebSession(
         // (once per assistant message — infrequent). Persist it immediately so the
         // meter ticks during the turn, not just at completion. The delta also flows
         // to the FE below for an instant in-pane update.
-        if (delta.type === "context") {
+        if (delta.type === "context" && !delta.subAgent) {
+          // Only the MAIN agent's usage drives the session meter; a sub-agent's
+          // message_start.usage must not overwrite the main session's context count.
           const ctx = Number(delta.content);
           if (Number.isFinite(ctx) && ctx > 0) {
             updateSession(currentSession.id, { lastContextTokens: ctx });
@@ -2274,9 +2276,13 @@ async function runWebSession(
     const completedSession = updateSession(currentSession.id, {
       ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
       ...(typeof result.contextTokens === "number" ? { lastContextTokens: result.contextTokens } : {}),
-      status: result.error ? "error" : "idle",
+      // An interrupt (new message arrived / user stopped) is NOT an error — land idle
+      // with no lastError, mirroring the connector path (manager.ts). Otherwise the
+      // session would stick in "error" with a misleading "Interrupted" message and
+      // fire a false parent-callback failure when the interrupt is the last action.
+      status: wasInterrupted ? "idle" : (result.error ? "error" : "idle"),
       lastActivity: new Date().toISOString(),
-      lastError: result.error ?? null,
+      lastError: wasInterrupted ? null : (result.error ?? null),
     });
     if (syncRequested && !rateLimit.limited && !wasInterrupted) {
       const meta = (getSession(currentSession.id)?.transportMeta || currentSession.transportMeta || {}) as Record<string, unknown>;
@@ -2286,8 +2292,9 @@ async function runWebSession(
         updateSession(currentSession.id, { transportMeta: nextMeta as any });
       }
     }
+    const reportedError = wasInterrupted ? null : (result.error ?? null);
     if (completedSession) {
-      notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+      notifyParentSession(completedSession, { result: result.result, error: reportedError, cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
     }
 
     context.emit("session:completed", {
@@ -2295,7 +2302,7 @@ async function runWebSession(
       employee: currentSession.employee || config.portal?.portalName || "Jinn",
       title: currentSession.title,
       result: result.result,
-      error: result.error || null,
+      error: reportedError,
       cost: result.cost,
       durationMs: result.durationMs,
     });

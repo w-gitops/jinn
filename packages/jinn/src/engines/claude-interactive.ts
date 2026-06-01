@@ -292,6 +292,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
    *  warm PTY was reaped — otherwise spawn() falls back to 120×40 and the TUI
    *  text body is locked in at the wrong width. */
   private lastGeom = new Map<string, { cols: number; rows: number }>();
+  /** Model/effort the live PTY was spawned with, per session. `--model`/`--effort`
+   *  apply only at spawn, so a mid-chat switch must cold-respawn rather than reuse
+   *  the warm PTY (which would keep running the old model). */
+  private spawnParams = new Map<string, { model?: string; effortLevel?: string }>();
 
   constructor(
     private lifecycle: PtyLifecycleManager,
@@ -313,7 +317,20 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       appendSystemPrompt: opts.systemPrompt,
     });
 
-    const warm = this.lifecycle.getWarm(jinnSessionId);
+    let warm = this.lifecycle.getWarm(jinnSessionId);
+    // Mid-chat model/effort switch: `--model`/`--effort` bind at spawn, so a warm
+    // PTY would silently keep the OLD model. If the request differs from what this
+    // PTY was spawned with, drop the warm PTY and cold-respawn (--resume keeps the
+    // conversation) so the new model/effort actually takes effect.
+    if (warm) {
+      const prev = this.spawnParams.get(jinnSessionId);
+      const norm = (v?: string) => (!v || v === "default" ? "" : v);
+      if (prev && (norm(opts.model) !== norm(prev.model) || norm(opts.effortLevel) !== norm(prev.effortLevel))) {
+        logger.info(`InteractiveClaudeEngine: model/effort changed for ${jinnSessionId} (model ${prev.model ?? "default"}→${opts.model ?? "default"}, effort ${prev.effortLevel ?? "default"}→${opts.effortLevel ?? "default"}) — cold respawn`);
+        this.lifecycle.releaseSession(jinnSessionId);
+        warm = undefined;
+      }
+    }
     const resolver = new TurnResolver({
       fallbackSessionId: opts.resumeSessionId,
       assumeStarted: !!warm, // warm PTY = SessionStart already fired (turn 1 or idle spawn)
@@ -567,6 +584,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       cwd: opts.cwd || JINN_HOME,
       env,
     });
+    this.spawnParams.set(jinnSessionId, { model: opts.model, effortLevel: opts.effortLevel });
     return this.wireProcToStream(jinnSessionId, proc, port ? proxy : undefined);
   }
 
@@ -621,6 +639,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
           env,
         });
         const handle = this.wireProcToStream(jinnSessionId, proc, port ? proxy : undefined);
+        this.spawnParams.set(jinnSessionId, { model: opts.model, effortLevel: undefined });
         this.lifecycle.adopt(jinnSessionId, handle);
       } catch (err) {
         logger.warn(`ensureIdleSpawn failed for session ${jinnSessionId}: ${err instanceof Error ? err.message : String(err)}`);
