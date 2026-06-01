@@ -1758,6 +1758,23 @@ export async function handleApiRequest(
         req.headers["x-jinn-hook-secret"] as string | undefined,
         hookBody,
       );
+      // Central engineSessionId capture: persist claude's OWN session id the moment
+      // it reports one (SessionStart, or Stop as backup), independent of turn state.
+      // Without this, an interrupted turn or an idle CLI-view spawn never persisted
+      // the id, so the next cold respawn ran `claude` with resume:none → a fresh
+      // conversation (the convo-wipe bug). Write-once guarded so it's not chatty.
+      if (
+        result.status === 200 &&
+        hookBody.jinnSessionId &&
+        (hookBody.hook?.hook_event_name === "SessionStart" || hookBody.hook?.hook_event_name === "Stop") &&
+        typeof hookBody.hook?.session_id === "string" &&
+        hookBody.hook.session_id
+      ) {
+        const existing = getSession(hookBody.jinnSessionId);
+        if (existing && existing.engineSessionId !== hookBody.hook.session_id) {
+          updateSession(hookBody.jinnSessionId, { engineSessionId: hookBody.hook.session_id });
+        }
+      }
       return json(res, { message: result.body }, result.status);
     }
 

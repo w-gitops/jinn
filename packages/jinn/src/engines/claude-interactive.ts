@@ -349,10 +349,26 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       entry.boundProc = (handle as any)._proc as pty.IPty | undefined;
     }
 
+    // Watchdog: if the bound PTY dies without the resolver settling (e.g. the
+    // onExit identity-guard didn't match in a kill→respawn race), the turn would
+    // hang forever — runWebSession's 5s heartbeat would zombie status:"running"
+    // and the completion (session:completed + notifyParentSession parent callback)
+    // would never fire. Both the stuck "in progress" badge and lost child-session
+    // callbacks trace to this. Force-settle once the proc is provably dead so
+    // run() always resolves and the normal completion path runs.
+    const watchdog = setInterval(() => {
+      const p = entry.boundProc as { _exitCode?: number | null } | undefined;
+      if (p && p._exitCode != null) {
+        resolver.interrupt("Interrupted: claude process exited");
+      }
+    }, 5000);
+    watchdog.unref?.();
+
     let result: EngineResult;
     try {
       result = await resolver.promise;
     } finally {
+      clearInterval(watchdog);
       this.hookRegistry.unregister(jinnSessionId);
       this.active.delete(jinnSessionId);
       this.lifecycle.turnEnded(jinnSessionId); // manager decides kill vs keep-warm
