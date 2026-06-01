@@ -1,13 +1,27 @@
 name: CI
+
 on:
   push:
-    branches: [main, feature/project-phoenix]
+    branches: [dev, main, "feat/**"]
   pull_request:
-    branches: [main]
+    branches: [dev, main, "feat/**"]
+  workflow_dispatch:
+
+# No repo/org secrets are needed by build/typecheck/test — none are referenced below.
+permissions:
+  contents: read
 
 jobs:
   typecheck:
-    runs-on: ubuntu-latest
+    # Guardrails (Knox-mandated):
+    #  - environment `ci-self-hosted` gates every self-hosted job behind required reviewer (w-gitops)
+    #  - same-repo guard: never run on forks or fork-PR heads (untrusted code must not touch our runner)
+    if: >-
+      github.repository == 'w-gitops/jinn' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, linux, pve21]
+    environment: ci-self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -16,10 +30,16 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
       - run: pnpm typecheck
 
-  unit-tests:
-    runs-on: ubuntu-latest
+  test:
+    if: >-
+      github.repository == 'w-gitops/jinn' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, linux, pve21]
+    environment: ci-self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -28,12 +48,17 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build
-      - run: pnpm test
+      - run: pnpm -r build
+      - run: pnpm -r test
 
   build:
-    runs-on: ubuntu-latest
     needs: [typecheck]
+    if: >-
+      github.repository == 'w-gitops/jinn' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, linux, pve21]
+    environment: ci-self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -42,4 +67,15 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build
+      - run: pnpm -r build
+
+  # Live attack demo (gate enforcement E2E) — DEFERRED: needs the claude binary + API creds in CI,
+  # which is a separate secrets-exposure decision (Knox review pending). Manual-only for now; no creds wired.
+  live-attack-demo:
+    if: github.repository == 'w-gitops/jinn' && github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, pve21]
+    environment: ci-self-hosted
+    steps:
+      - run: |
+          echo "Deferred: PreToolUse live-attack demo requires the claude binary + API credentials."
+          echo "Tracked separately pending a Knox secrets-exposure review. No credentials are configured."
