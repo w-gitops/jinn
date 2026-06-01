@@ -38,8 +38,8 @@ models:
     default: gemini-3-flash-preview
     effortMechanism: none
     models:
-      - { id: gemini-3-flash-preview, label: "Gemini 3 Flash", supportsEffort: false, effortLevels: [] }
-      - { id: gemini-3-pro-preview, label: "Gemini 3 Pro", supportsEffort: false, effortLevels: [] }
+      - { id: gemini-3-flash-preview, label: "Gemini 3 Flash", supportsEffort: false, effortLevels: [], contextWindow: 1000000 }
+      - { id: gemini-3-pro-preview, label: "Gemini 3 Pro", supportsEffort: false, effortLevels: [], contextWindow: 1000000 }
 
 connectors:
   slack:

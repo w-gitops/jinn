@@ -10,7 +10,7 @@ import type { PtyControlEvent, PtyViewEngine, PtyIdleSpawnOpts } from "./pty-vie
 import {
   transcriptPathFor,
   transcriptLineToDeltas,
-  extractDoneResponses,
+  estimateContextTokens,
   ensureWorkspaceTrusted,
   listConvDirs,
 } from "./antigravity-protocol.js";
@@ -145,6 +145,9 @@ interface ActiveTurn {
   convWatch?: { stop: () => void };
   doneTimer?: NodeJS.Timeout;
   hardTimeout?: NodeJS.Timeout;
+  /** The PTY serving this turn. A stale PTY's onExit (after a kill->respawn race)
+   *  must NOT interrupt the active turn unless it owns this exact proc. */
+  boundProc?: pty.IPty;
 }
 
 interface StreamEntry {
@@ -178,6 +181,7 @@ export class AntigravityEngine implements InterruptibleEngine, PtyViewEngine {
 
     let convId = opts.resumeSessionId; // known iff resuming an existing conversation
     let latestAnswer: string | undefined;
+    let lastContextEstimate = 0; // est. context tokens (chars/4 of the running transcript)
     let settled = false;
 
     let resolveFn!: (r: EngineResult) => void;
@@ -204,10 +208,21 @@ export class AntigravityEngine implements InterruptibleEngine, PtyViewEngine {
 
     const onDone = (content: string) => {
       latestAnswer = content;
+      // agy exposes NO token usage anywhere in its transcript, so an exact context
+      // meter isn't possible. Emit an ESTIMATE from the running conversation size
+      // (chars/4) so the chat pane gets an approximate "how full" gauge; the model's
+      // 1M window makes small inaccuracy immaterial as a percentage.
+      if (convId) {
+        const est = estimateContextTokens(convId);
+        if (est > 0) {
+          lastContextEstimate = est;
+          opts.onStream?.({ type: "context", content: String(est) });
+        }
+      }
       // Debounce so multi-step planning (several DONE lines) collapses to the last one.
       if (turn.doneTimer) clearTimeout(turn.doneTimer);
       turn.doneTimer = setTimeout(
-        () => finish({ sessionId: convId ?? "", result: latestAnswer ?? "", numTurns: 1 }),
+        () => finish({ sessionId: convId ?? "", result: latestAnswer ?? "", numTurns: 1, contextTokens: lastContextEstimate || undefined }),
         DONE_DEBOUNCE_MS,
       );
       turn.doneTimer.unref?.();
@@ -260,10 +275,12 @@ export class AntigravityEngine implements InterruptibleEngine, PtyViewEngine {
     // Spawn (cold) or inject (warm). Independent of conv-id discovery above.
     const warm = this.lifecycle.getWarm(jinnSessionId);
     if (warm) {
+      turn.boundProc = (warm as any)._proc as pty.IPty | undefined;
       this.lifecycle.turnStarted(jinnSessionId);
       this.injectPrompt(warm, opts);
     } else {
       const handle = this.spawn(jinnSessionId, opts, cwd, convId);
+      turn.boundProc = (handle as any)._proc as pty.IPty | undefined;
       this.lifecycle.adopt(jinnSessionId, handle);
       this.lifecycle.turnStarted(jinnSessionId);
     }
@@ -402,14 +419,25 @@ export class AntigravityEngine implements InterruptibleEngine, PtyViewEngine {
       }
     });
     proc.onExit(() => {
-      const s = this.streams.get(jinnSessionId);
-      if (s) {
-        s.chunks = [];
-        s.totalBytes = 0;
-        if (s.subscribers.size === 0) this.streams.delete(jinnSessionId);
+      // Identity-gate session cleanup. In a kill->respawn race the lifecycle/stream
+      // entries already point at the NEW PTY by the time THIS (old, killed) PTY's exit
+      // fires; releaseSession is keyed by sessionId, so an unguarded call would kill the
+      // freshly-adopted PTY. Only clean up if this PTY is still the session's warm handle.
+      const isCurrent = this.lifecycle.getWarm(jinnSessionId) === handle;
+      if (isCurrent) {
+        const s = this.streams.get(jinnSessionId);
+        if (s) {
+          s.chunks = [];
+          s.totalBytes = 0;
+          if (s.subscribers.size === 0) this.streams.delete(jinnSessionId);
+        }
+        this.lifecycle.releaseSession(jinnSessionId);
       }
-      this.lifecycle.releaseSession(jinnSessionId);
-      onExitExtra?.();
+      // Settle the active turn as interrupted ONLY if this dying proc is the one bound
+      // to it — after a kill->respawn race the active entry holds the NEW turn's proc and
+      // this old proc must not poison it.
+      const e = this.active.get(jinnSessionId);
+      if (e && e.boundProc === proc) onExitExtra?.();
     });
     (handle as any)._proc = proc;
     return handle;

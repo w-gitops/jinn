@@ -29,6 +29,25 @@ export function transcriptPathFor(convId: string, brainDir: string = ANTIGRAVITY
   return path.join(brainDir, convId, ".system_generated", "logs", "transcript.jsonl");
 }
 
+/** Absolute path to a conversation's FULL transcript (history + tool calls) —
+ *  the closest on-disk proxy for what the model carries as context. */
+export function fullTranscriptPathFor(convId: string, brainDir: string = ANTIGRAVITY_BRAIN_DIR): string {
+  return path.join(brainDir, convId, ".system_generated", "logs", "transcript_full.jsonl");
+}
+
+/** Estimate context tokens for an agy conversation. agy exposes NO usage data, so
+ *  this is an APPROXIMATION: bytes of the full transcript / 4 (the standard rough
+ *  chars-per-token ratio). Good enough for a "how full is the window" gauge against
+ *  a 1M-token model; not an exact count. Returns 0 if the transcript is unreadable. */
+export function estimateContextTokens(convId: string, brainDir: string = ANTIGRAVITY_BRAIN_DIR): number {
+  try {
+    const size = fs.statSync(fullTranscriptPathFor(convId, brainDir)).size;
+    return Math.round(size / 4);
+  } catch {
+    return 0;
+  }
+}
+
 interface TranscriptRow {
   source?: string;
   type?: string;
