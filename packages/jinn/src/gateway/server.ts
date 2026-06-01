@@ -253,7 +253,17 @@ export async function startGateway(
 
   const codexEngine = new CodexEngine();
   const engines = new Map<string, Engine>();
-  engines.set("claude", claudeEngine);
+  // Claude WORK TURNS (chat, employees, cron, child sessions) run on the
+  // interactive PTY engine by default → cc_entrypoint=cli, covered by the Max
+  // subscription (per-content-block streaming via transcript tail). Headless
+  // `claude -p` (de-subsidized) is kept only as an explicit rollback.
+  const claudeWorkEngine: Engine = claudeCfg.mode === "headless" ? claudeEngine : interactiveClaudeEngine;
+  engines.set("claude", claudeWorkEngine);
+  logger.info(
+    claudeCfg.mode === "headless"
+      ? "Claude work turns: HEADLESS (claude -p) — de-subsidized, rollback mode"
+      : "Claude work turns: INTERACTIVE PTY (cc_entrypoint=cli, Max-subsidized)",
+  );
   engines.set("codex", codexEngine);
   engines.set("antigravity", antigravityEngine);
 
