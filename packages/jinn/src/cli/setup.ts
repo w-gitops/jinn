@@ -429,13 +429,27 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     created.push(claudeMdPath);
   }
 
+  // AGENTS.md is a symlink to CLAUDE.md: one canonical operating manual, zero
+  // drift. claude reads CLAUDE.md, codex/agy read AGENTS.md → same content.
+  // Fall back to a real copy where symlinks aren't available (e.g. Windows
+  // without privilege). lstatSync (not existsSync) so a pre-existing symlink
+  // is treated as present and not clobbered.
   const agentsMdPath = path.join(JINN_HOME, "AGENTS.md");
-  if (!fs.existsSync(agentsMdPath)) {
-    let source = fs.existsSync(templateAgents)
-      ? fs.readFileSync(templateAgents, "utf-8")
-      : defaultAgentsMd(portalName);
-    source = applyTemplateReplacements(source, templateReplacements);
-    ensureFile(agentsMdPath, source);
+  let agentsExists = false;
+  try { fs.lstatSync(agentsMdPath); agentsExists = true; } catch { /* missing */ }
+  if (!agentsExists) {
+    try {
+      fs.symlinkSync("CLAUDE.md", agentsMdPath); // relative target → portable within ~/.jinn
+    } catch {
+      // Symlinks unavailable: copy the CANONICAL manual (CLAUDE.md) so the
+      // fallback still matches, never the stale template AGENTS.md.
+      let source = fs.existsSync(claudeMdPath)
+        ? fs.readFileSync(claudeMdPath, "utf-8")
+        : fs.existsSync(templateAgents)
+          ? applyTemplateReplacements(fs.readFileSync(templateAgents, "utf-8"), templateReplacements)
+          : defaultAgentsMd(portalName);
+      ensureFile(agentsMdPath, source);
+    }
     created.push(agentsMdPath);
   }
 
