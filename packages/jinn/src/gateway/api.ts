@@ -2234,6 +2234,7 @@ async function runWebSession(
 
     const completedSession = updateSession(currentSession.id, {
       ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
+      ...(typeof result.contextTokens === "number" ? { lastContextTokens: result.contextTokens } : {}),
       status: result.error ? "error" : "idle",
       lastActivity: new Date().toISOString(),
       lastError: result.error ?? null,

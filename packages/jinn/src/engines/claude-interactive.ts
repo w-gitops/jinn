@@ -456,6 +456,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
       if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) continue;
+      // Belt-and-suspenders: a stray API key/token would flip the child to metered
+      // API billing instead of the Max subscription. Strip both so the PTY session
+      // always resolves to subscription auth (cc_entrypoint=cli).
+      if (k === "ANTHROPIC_API_KEY" || k === "ANTHROPIC_AUTH_TOKEN") continue;
       if (v !== undefined) env[k] = v;
     }
     // Use claude's main-screen renderer (NOT the alt-screen fullscreen one).
