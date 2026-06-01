@@ -250,7 +250,7 @@ engines:
     bin: claude
     model: opus
     effortLevel: medium
-    mode: headless
+    mode: interactive
   codex:
     bin: codex
     model: gpt-5.4
