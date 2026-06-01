@@ -8,6 +8,7 @@ import { PtyLifecycleManager, type PtyHandle } from "./pty-lifecycle.js";
 import type { PtyControlEvent, PtyViewEngine, PtyIdleSpawnOpts } from "./pty-view-engine.js";
 import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
 import { SsePtyProxy, type SseDataEvent } from "./sse-pty-proxy.js";
+import { neutralizeForPaste } from "../shared/skill-commands.js";
 
 export type { PtyControlEvent } from "./pty-view-engine.js";
 
@@ -252,11 +253,12 @@ const SCROLLBACK_CAP_BYTES = 262144;
 /** Bracketed-paste `text` into a PTY then submit with CR after a 50ms beat.
  *  Phase 0 finding: bracketed-paste does NOT neutralize a leading /, @, or ! —
  *  they still trigger the slash-command / mention / bash-mode handlers and the
- *  turn is never submitted. Prepend a space so it's treated as a literal message.
+ *  turn is never submitted. neutralizeForPaste() prepends a space for mentions,
+ *  bash-mode, and jinn-skill slash commands, while letting engine-native commands
+ *  (/compact, /clear, /model, …) pass through raw so the TUI actually runs them.
  *  Shared by injectPrompt() (warm-PTY first turn) and writeStdin() (raw WS input). */
 function pasteAndSubmit(proc: pty.IPty, text: string): void {
-  let payload = text;
-  if (/^[/@!]/.test(payload)) payload = " " + payload;
+  const payload = neutralizeForPaste(text);
   proc.write(`\x1b[200~${payload}\x1b[201~`);
   setTimeout(() => proc.write("\r"), 50);
 }

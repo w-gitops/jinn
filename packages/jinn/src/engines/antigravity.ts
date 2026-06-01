@@ -14,6 +14,7 @@ import {
   ensureWorkspaceTrusted,
   listConvDirs,
 } from "./antigravity-protocol.js";
+import { neutralizeForPaste } from "../shared/skill-commands.js";
 
 /**
  * Antigravity (`agy`) engine — PTY-interactive, modeled on InteractiveClaudeEngine.
@@ -47,11 +48,11 @@ interface TranscriptTailer { stop(): void; }
 /** Bracketed-paste `text` into the agy PTY and submit. The paste markers and the
  *  submit CR MUST go in a single write — empirically, sending the CR as a separate
  *  delayed write through node-pty is dropped and agy never submits the turn.
- *  Prepend a space if it starts with /@! so it's treated as a literal message,
- *  not a slash-command/mention. Shared by injectPromptToProc() and writeStdin(). */
+ *  neutralizeForPaste() prepends a space for mentions, bash-mode, and jinn-skill
+ *  slash commands, while letting engine-native /commands pass through raw.
+ *  Shared by injectPromptToProc() and writeStdin(). */
 function pasteAndSubmit(proc: pty.IPty, text: string): void {
-  let payload = text;
-  if (/^[/@!]/.test(payload)) payload = " " + payload;
+  const payload = neutralizeForPaste(text);
   proc.write(`\x1b[200~${payload}\x1b[201~\r`);
 }
 
