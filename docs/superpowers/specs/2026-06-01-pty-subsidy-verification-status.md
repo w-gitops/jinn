@@ -50,3 +50,18 @@ isn't taking effect and we must fix before trusting subsidy.
 Deductively subsidized (cli). Empirically UNPROVEN this pass. Migration is live and at
 worst neutral (off -p), at best (per source + the env-strip) the subsidized path. One
 attributable log line is the remaining proof.
+
+## ✅ EMPIRICAL PROOF OBTAINED (update)
+Method: spawned `claude` under the EXACT engine conditions — node-pty real PTY +
+buildPtyEnv env-strip (CLAUDECODE + CLAUDE_CODE_* removed) + the engine's cold-spawn
+args (prompt positional, --chrome --model opus --dangerously-skip-permissions
+--disallowedTools … --settings <hook>) + cwd ~/.jinn. The --settings carried a
+SessionStart hook: `printf "%s" "$CLAUDE_CODE_ENTRYPOINT" > /tmp/...`, capturing the
+value the child ITSELF computed — fully attributable, no transcript-pollution issue.
+
+RESULT:  CLAUDE_CODE_ENTRYPOINT = "cli"   ← MAX-SUBSIDIZED. Verified.
+
+This confirms the deductive chain end-to-end: PTY ⇒ stdout.isTTY=true ⇒
+isNonInteractive=false ⇒ entrypoint 'cli'. The env-strip in buildPtyEnv correctly
+neutralizes the gateway's own leaked CLAUDE_CODE_ENTRYPOINT=sdk-cli so the child
+recomputes 'cli'. The interactive-PTY work-turn path is genuinely subsidized.
