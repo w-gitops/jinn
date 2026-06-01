@@ -646,8 +646,18 @@ export async function handleApiRequest(
         const { session: newSession, messageCount } = duplicateSession(params.id);
         newSessionId = newSession.id;
 
-        // 2. Fork the engine session (Claude/Codex) via headless fork.
-        const forkResult = forkEngineSession(source.engine, source.engineSessionId, JINN_HOME);
+        // 2. Fork the engine session (Claude/Codex). For Claude, route through
+        //    the interactive PTY fork (no `-p`) so the duplicate bills as
+        //    cc_entrypoint=cli rather than the de-subsidized Agent-SDK headless
+        //    pool. Codex ignores the interactive ctx (it just copies the JSONL).
+        const interactive = source.engine === "claude" && context.interactiveClaudeEngine
+          ? {
+              sourceJinnSessionId: params.id,
+              engine: context.interactiveClaudeEngine,
+              bin: context.getConfig().engines.claude.bin,
+            }
+          : undefined;
+        const forkResult = forkEngineSession(source.engine, source.engineSessionId, JINN_HOME, interactive);
 
         // 3. Store the new engine session ID
         updateSession(newSession.id, { engineSessionId: forkResult.engineSessionId });

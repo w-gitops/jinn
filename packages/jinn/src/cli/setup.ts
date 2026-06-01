@@ -270,7 +270,7 @@ models:
     default: gpt-5.4
     effortMechanism: codex-config
     models:
-      - { id: gpt-5.4, label: "GPT-5.4 Codex", supportsEffort: true, effortLevels: [low, medium, high, xhigh] }
+      - { id: gpt-5.4, label: "GPT-5.4 Codex", supportsEffort: true, effortLevels: [low, medium, high, xhigh], contextWindow: 272000 }
   antigravity:
     default: gemini-3-flash-preview
     effortMechanism: none

@@ -80,10 +80,19 @@ function stampVersion(version: string): void {
 function buildMigrateArgs(engine: string, prompt: string): string[] {
   switch (engine) {
     case "codex":
+      // `codex exec` is Codex's own non-interactive mode (not a claude `-p`).
       return ["exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", prompt];
     case "claude":
     default:
-      return ["-p", "--dangerously-skip-permissions", prompt];
+      // No `-p`: launch the interactive claude TUI (cc_entrypoint=cli, subsidy-safe)
+      // instead of the headless Agent-SDK `--print` pool. `jinn migrate` is an
+      // operator-run, supervised one-shot launched from a real terminal, so the
+      // inherited TTY (stdio: "inherit") renders the TUI and the operator watches
+      // the migration apply. Trade-off vs `-p`: the TUI does not self-exit after
+      // the turn — the operator closes it (e.g. /exit) once the migration looks
+      // complete. Acceptable for a rare maintenance command, and it keeps the
+      // call fully subsidy-safe with no trace of `-p`.
+      return ["--dangerously-skip-permissions", prompt];
   }
 }
 
