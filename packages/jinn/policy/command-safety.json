@@ -1,14 +1,22 @@
 {
   "$schema": "https://w-gitops.dev/schemas/command-safety-1.json",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "name": "command-safety",
   "description": "Machine form of the command-safety skill. Authoritative source for the PreToolUse gate: Tier-1 local deterministic denylist (runs in hook-relay.mjs, works gateway-down), Tier-2 scope check (gateway), Tier-3 LLM classifier (gateway), fail-closed behavior, and the one-time scope-token override. Owner: Knox (security-engineer). Pike implements TO this file.",
   "owner": "security-engineer",
-  "lastUpdated": "2026-05-31",
-
+  "lastUpdated": "2026-06-02",
   "matching": {
     "note": "The relay normalizes the candidate command, then tests EACH statement segment independently. A command is split on the shell operators ; | & && || and on newlines, and every resulting segment is matched against the denylist. A deny on ANY segment denies the whole command (no smuggling via chaining).",
-    "segmentSeparators": [";", "|", "&", "&&", "||", "\n", "`", "$("],
+    "segmentSeparators": [
+      ";",
+      "|",
+      "&",
+      "&&",
+      "||",
+      "\n",
+      "`",
+      "$("
+    ],
     "decisionPrecedence": [
       "1. Tier-1 denylist match with decision=deny  -> deny (or deny-pending-token if requiresToken)",
       "2. Tier-1 denylist match with decision=ask   -> headless: deny-pending-token; interactive: ask",
@@ -23,7 +31,6 @@
       "deny": "Claude Code permissionDecision=deny (honored even under --dangerously-skip-permissions)"
     }
   },
-
   "tier1": {
     "description": "Deterministic regex denylist. Evaluated locally inside hook-relay.mjs so catastrophic patterns are blocked even when the gateway is unreachable. No LLM. DEC-018-aligned. False-NEGATIVES are the danger here, so patterns are deliberately broad; legitimate-but-blocked cases are unblocked via a human-issued one-time scope token, not by loosening a pattern.",
     "pathClasses": {
@@ -44,9 +51,23 @@
       "system": {
         "description": "Recursive chmod/chown/chgrp or critical writes targeting these (or '/') -> deny.",
         "protectedPrefixes": [
-          "/", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",
-          "/boot", "/var", "/root", "/sys", "/proc", "/dev", "/opt",
-          "/home", "/srv", "/run"
+          "/",
+          "/etc",
+          "/usr",
+          "/bin",
+          "/sbin",
+          "/lib",
+          "/lib64",
+          "/boot",
+          "/var",
+          "/root",
+          "/sys",
+          "/proc",
+          "/dev",
+          "/opt",
+          "/home",
+          "/srv",
+          "/run"
         ]
       }
     },
@@ -162,7 +183,7 @@
         "flags": "i",
         "decision": "deny",
         "requiresToken": true,
-        "reason": "Stopping/disabling/masking a service. Tier-1 cannot tell prod from dev, so it blocks by default; Tier-2 scope refines (dev svc in session scope can be granted a token; prod svc never). Note: 'systemctl restart' is NOT denied here — it's mutating-reversible, handled by scope/classifier."
+        "reason": "Stopping/disabling/masking a service. Tier-1 cannot tell prod from dev, so it blocks by default; Tier-2 scope refines (dev svc in session scope can be granted a token; prod svc never). Note: 'systemctl restart' is NOT denied here \u2014 it's mutating-reversible, handled by scope/classifier."
       },
       {
         "id": "service-stop-disable",
@@ -203,7 +224,7 @@
         "flags": "",
         "decision": "deny",
         "requiresToken": false,
-        "reason": "Printing a secret-bearing env var to stdout/logs. HARD deny — not token-overridable; there is no safe reason to echo a secret. Read into a variable with op read instead."
+        "reason": "Printing a secret-bearing env var to stdout/logs. HARD deny \u2014 not token-overridable; there is no safe reason to echo a secret. Read into a variable with op read instead."
       },
       {
         "id": "secret-bare-env-dump",
@@ -211,7 +232,7 @@
         "flags": "",
         "decision": "deny",
         "requiresToken": false,
-        "reason": "Bare env/printenv/export -p/set dumps the full environment, including injected secrets, to stdout/logs. HARD deny — not token-overridable."
+        "reason": "Bare env/printenv/export -p/set dumps the full environment, including injected secrets, to stdout/logs. HARD deny \u2014 not token-overridable."
       },
       {
         "id": "secret-read-dotenv",
@@ -219,7 +240,7 @@
         "flags": "",
         "decision": "deny",
         "requiresToken": false,
-        "reason": "Dumping a .env file exposes secrets. HARD deny — not token-overridable."
+        "reason": "Dumping a .env file exposes secrets. HARD deny \u2014 not token-overridable."
       },
       {
         "id": "secret-op-read-piped-to-stdout",
@@ -235,7 +256,7 @@
         "flags": "",
         "decision": "deny",
         "requiresToken": false,
-        "reason": "Modifying the relay, policy file, gate code, or session settings would disable/bypass the gate. HARD deny — gate self-protection. Policy edits go through Knox via a reviewed PR, not in-session writes."
+        "reason": "Modifying the relay, policy file, gate code, or session settings would disable/bypass the gate. HARD deny \u2014 gate self-protection. Policy edits go through Knox via a reviewed PR, not in-session writes."
       },
       {
         "id": "gate-disable-env",
@@ -263,7 +284,6 @@
       }
     ]
   },
-
   "tier2": {
     "description": "Gateway scope check. The relay POSTs the command + sessionId; the gateway compares declared scope against the resources the command touches. Out-of-scope -> deny + notify Jinn. Scope is set per-session at creation time.",
     "extraction": {
@@ -280,15 +300,24 @@
     },
     "prodProtected": {
       "description": "Always-out-of-scope production markers. A command touching any of these is denied + escalated regardless of session scope unless a prod-authorized scope token is present.",
-      "ctids": [],
-      "ctidNote": "Prod CTID(s) TBD — fill with the prod gateway CT id. Until set, the rule 'any CTID != session-scoped CTID -> out-of-scope deny' protects prod.",
-      "ports": [7777],
-      "dbNames": ["pg54"],
-      "hosts": [],
-      "paths": ["/opt/jinn"]
+      "ctids": [
+        1120086
+      ],
+      "ctidNote": "Prod gateway CT 1120086 (jinn86, jinn.service :7777). Hard-pinned: any command referencing it is denied+escalated regardless of session scope unless a prod-authorized token is present. Dev box is 1120065.",
+      "ports": [
+        7777
+      ],
+      "dbNames": [
+        "pg54"
+      ],
+      "hosts": [
+        "jinn86"
+      ],
+      "paths": [
+        "/opt/jinn"
+      ]
     }
   },
-
   "scope": {
     "description": "Per-session declared scope. byEmployee overrides byDepartment overrides default. The gateway snapshots the resolved scope onto the session at creation; later policy edits do not retroactively widen a live session.",
     "default": {
@@ -300,52 +329,95 @@
     },
     "byDepartment": {
       "systems-infra": {
-        "ctids": [1120065],
-        "repos": ["jinn"],
-        "ports": [7778],
-        "paths": ["/opt/jinn-dev"],
-        "hosts": ["pve21"]
+        "ctids": [
+          1120065
+        ],
+        "repos": [
+          "jinn"
+        ],
+        "ports": [
+          7778
+        ],
+        "paths": [
+          "/opt/jinn-dev"
+        ],
+        "hosts": [
+          "pve21"
+        ]
       },
       "security": {
-        "ctids": [1120065],
-        "repos": ["jinn"],
-        "ports": [7778],
-        "paths": ["/opt/jinn-dev", "/home/jinn/.jinn/policy"],
-        "hosts": ["pve21"]
+        "ctids": [
+          1120065
+        ],
+        "repos": [
+          "jinn"
+        ],
+        "ports": [
+          7778
+        ],
+        "paths": [
+          "/opt/jinn-dev",
+          "/home/jinn/.jinn/policy"
+        ],
+        "hosts": [
+          "pve21"
+        ]
       }
     },
     "byEmployee": {
       "infra-engineer": {
-        "ctids": [1120065],
-        "repos": ["jinn"],
-        "ports": [7778],
-        "paths": ["/opt/jinn-dev"],
-        "hosts": ["pve21"],
-        "note": "Pike — pretoooluse-gate work on jinn-dev only."
+        "ctids": [
+          1120065
+        ],
+        "repos": [
+          "jinn"
+        ],
+        "ports": [
+          7778
+        ],
+        "paths": [
+          "/opt/jinn-dev"
+        ],
+        "hosts": [
+          "pve21"
+        ],
+        "note": "Pike \u2014 pretoooluse-gate work on jinn-dev only."
       },
       "infra-lead": {
-        "ctids": [1120065],
-        "repos": ["jinn"],
-        "ports": [7778],
-        "paths": ["/opt/jinn-dev"],
-        "hosts": ["pve21"],
-        "note": "Sol — coordinates dev work; prod changes require Jinn double-confirm + token."
+        "ctids": [
+          1120065
+        ],
+        "repos": [
+          "jinn"
+        ],
+        "ports": [
+          7778
+        ],
+        "paths": [
+          "/opt/jinn-dev"
+        ],
+        "hosts": [
+          "pve21"
+        ],
+        "note": "Sol \u2014 coordinates dev work; prod changes require Jinn double-confirm + token."
       }
     }
   },
-
   "tier3": {
     "classifier": {
       "enabled": true,
       "model": "claude-haiku-4-5-20251001",
-      "modelNote": "Fast/cheap model — this is a latency-critical inline gate (every tool call waits on it). Escalate to claude-sonnet-4-6 only for commands the cache misses AND that Tier-1/2 flagged as high-ambiguity.",
+      "modelNote": "Fast/cheap model \u2014 this is a latency-critical inline gate (every tool call waits on it). Escalate to claude-sonnet-4-6 only for commands the cache misses AND that Tier-1/2 flagged as high-ambiguity.",
       "policySkill": "command-safety",
       "policySkillPath": "/home/jinn/.jinn/.claude/skills/command-safety/SKILL.md",
       "appliesTo": "Only ambiguous cases: no Tier-1 hit, in-scope per Tier-2, and not matched by readOnlyAllowlist. Returns allow|ask|deny per the command-safety verdict rules.",
       "timeoutMs": 5000,
       "cache": {
         "enabled": true,
-        "keyFields": ["command", "scope"],
+        "keyFields": [
+          "command",
+          "scope"
+        ],
         "keyNote": "Cache key = sha256(normalizedCommand + JSON(resolvedScope)). Scope is part of the key so the same command under a different scope is re-judged.",
         "ttlSeconds": 3600,
         "maxEntries": 5000,
@@ -354,23 +426,27 @@
       }
     }
   },
-
   "failClosed": {
     "description": "Behavior when the gateway is slow/unreachable. Tier-1 has already run locally in the relay before the POST, so catastrophic patterns are blocked regardless.",
     "gatewayTimeoutMs": 5000,
     "onGatewayUnavailable": "allow-only-if-tier1-clean-AND-locally-readonly-else-deny",
     "localReadOnlyClassification": "On timeout the relay re-checks the command against readOnlyAllowlist locally; only an allowlist match (and no Tier-1 hit) is allowed.",
-    "denyReason": "Command gate unavailable (gateway timeout). Read-only commands proceed; everything else is blocked — retry shortly.",
+    "denyReason": "Command gate unavailable (gateway timeout). Read-only commands proceed; everything else is blocked \u2014 retry shortly.",
     "neverSilentlyAllow": "A Tier-1 or Tier-2 hit is NEVER allowed on timeout."
   },
-
   "token": {
-    "description": "One-time scope token — the enforceable form of the destructive double-confirm. A human (Jinn or operator) issues it to re-enable a single denied destructive op. Headless sessions cannot 'ask', so this is how a blocked, legitimate destructive command proceeds.",
+    "description": "One-time scope token \u2014 the enforceable form of the destructive double-confirm. A human (Jinn or operator) issues it to re-enable a single denied destructive op. Headless sessions cannot 'ask', so this is how a blocked, legitimate destructive command proceeds.",
     "ttlSeconds": 300,
     "singleUse": true,
-    "scopedTo": ["sessionId", "commandHash"],
+    "scopedTo": [
+      "sessionId",
+      "commandHash"
+    ],
     "commandHash": "sha256 of the normalized command string; the token only consumes a PreToolUse whose command hashes identically.",
-    "issuableBy": ["jinn", "operator"],
+    "issuableBy": [
+      "jinn",
+      "operator"
+    ],
     "appliesTo": "Denials where requiresToken=true. Hard-deny entries (requiresToken=false: secret-exposure, gate-tamper, pipe-to-shell, fork-bomb) are NOT token-overridable.",
     "doubleConfirm": {
       "required": true,
@@ -379,29 +455,80 @@
     },
     "audit": "Every issuance and consumption is logged with sessionId, commandHash, issuer(s), and outcome."
   },
-
   "trustBoundary": {
-    "note": "HONEST scope of this gate. Sessions run as a single uid (jinn) with filesystem access, so a *malicious* agent could in principle edit its own settings or the relay — the gate-tamper denylist + 0600 gateway-asserted file perms raise the bar but do not make this un-bypassable for a determined hostile agent. This gate's real and effective threat model is MISTAKES and OUT-OF-SCOPE actions by well-intentioned agents, where the decision is made by the separate long-lived gateway process the agent does not drive. True isolation (relay/classifier under a separate uid) is a documented v2. Do not market this as un-bypassable."
+    "note": "HONEST scope of this gate. Sessions run as a single uid (jinn) with filesystem access, so a *malicious* agent could in principle edit its own settings or the relay \u2014 the gate-tamper denylist + 0600 gateway-asserted file perms raise the bar but do not make this un-bypassable for a determined hostile agent. This gate's real and effective threat model is MISTAKES and OUT-OF-SCOPE actions by well-intentioned agents, where the decision is made by the separate long-lived gateway process the agent does not drive. True isolation (relay/classifier under a separate uid) is a documented v2. Do not market this as un-bypassable."
   },
-
   "readOnlyAllowlist": {
     "description": "Fast-path allow. A command matching one of these AND matching NO Tier-1 denylist entry is allowed without a classifier call. Evaluated AFTER the full denylist (a deny always wins). Also used by the relay for the fail-closed local read-only check.",
     "patterns": [
-      { "id": "ls",            "pattern": "^\\s*ls\\b" },
-      { "id": "cat-nonsecret", "pattern": "^\\s*(cat|bat|less|more|head|tail|nl)\\b", "note": "secret-read-dotenv in Tier-1 still denies these on .env targets" },
-      { "id": "stat-file",     "pattern": "^\\s*(stat|file|wc|du|df|tree|realpath|readlink|basename|dirname)\\b" },
-      { "id": "grep-search",   "pattern": "^\\s*(grep|rg|ag|locate|which|type)\\b", "note": "secret patterns in Tier-1 still deny grep/sed on .env" },
-      { "id": "find-read",     "pattern": "^\\s*(find|fd)\\b(?![\\s\\S]*\\s(--exec|--exec-batch|-delete|-exec|-ok|-fprint|-fls|-x\\b|-X\\b))", "note": "find/fd are read-only ONLY without a mutating/exec predicate; the negative lookahead excludes -delete/-exec*/-ok*/fd -x/-X/--exec/-fprint*/-fls. Those forms are denied by Tier-1 find-fd-mutating-traversal (which runs first anyway). -xdev is NOT excluded (mount-crossing flag, benign)." },
-      { "id": "pct-read",      "pattern": "\\bpct\\s+(status|list|config|listsnapshot|df)\\b" },
-      { "id": "curl-health",   "pattern": "\\b(curl|wget)\\b[^|;&\\n]*(\\/health|\\/api\\/status|\\/healthz|\\/readyz)\\b", "note": "GET health endpoints; piping to a shell is still denied by pipe-remote-to-shell" },
-      { "id": "git-read",      "pattern": "\\bgit\\s+(status|log|diff|show|branch|remote(\\s+-v)?|fetch|describe|rev-parse|blame|ls-files|config\\s+--get)\\b" },
-      { "id": "op-read-to-var","pattern": "^[A-Za-z_][A-Za-z0-9_]*=\\$\\(\\s*op\\s+read\\b", "note": "op read INTO a variable only; op read piped to a printer is denied by secret-op-read-piped-to-stdout" },
-      { "id": "systemctl-status","pattern": "\\bsystemctl\\s+(status|is-active|is-enabled|list-units|show)\\b" },
-      { "id": "journalctl",    "pattern": "\\bjournalctl\\b" },
-      { "id": "process-info",  "pattern": "^\\s*(ps|top|htop|uptime|free|vmstat|iostat|whoami|id|hostname|date|uname|env\\s+\\S)\\b", "note": "bare 'env' is excluded — denied by secret-bare-env-dump" },
-      { "id": "net-read",      "pattern": "^\\s*(ss|netstat|ip\\s+(a|addr|link|route)|ping|dig|nslookup|host)\\b" },
-      { "id": "node-npm-read", "pattern": "\\b(node\\s+--version|npm\\s+(ls|list|view|outdated|run\\s+(test|lint|build))|pnpm\\s+(ls|list))\\b", "note": "test/lint/build are read-ish for CI; deny anything writing outside scratch via Tier-1" },
-      { "id": "echo-plain",    "pattern": "^\\s*echo\\b", "note": "echo of a secret var is still denied by secret-print-var" }
+      {
+        "id": "ls",
+        "pattern": "^\\s*ls\\b"
+      },
+      {
+        "id": "cat-nonsecret",
+        "pattern": "^\\s*(cat|bat|less|more|head|tail|nl)\\b",
+        "note": "secret-read-dotenv in Tier-1 still denies these on .env targets"
+      },
+      {
+        "id": "stat-file",
+        "pattern": "^\\s*(stat|file|wc|du|df|tree|realpath|readlink|basename|dirname)\\b"
+      },
+      {
+        "id": "grep-search",
+        "pattern": "^\\s*(grep|rg|ag|locate|which|type)\\b",
+        "note": "secret patterns in Tier-1 still deny grep/sed on .env"
+      },
+      {
+        "id": "find-read",
+        "pattern": "^\\s*(find|fd)\\b(?![\\s\\S]*\\s(--exec|--exec-batch|-delete|-exec|-ok|-fprint|-fls|-x\\b|-X\\b))",
+        "note": "find/fd are read-only ONLY without a mutating/exec predicate; the negative lookahead excludes -delete/-exec*/-ok*/fd -x/-X/--exec/-fprint*/-fls. Those forms are denied by Tier-1 find-fd-mutating-traversal (which runs first anyway). -xdev is NOT excluded (mount-crossing flag, benign)."
+      },
+      {
+        "id": "pct-read",
+        "pattern": "\\bpct\\s+(status|list|config|listsnapshot|df)\\b"
+      },
+      {
+        "id": "curl-health",
+        "pattern": "\\b(curl|wget)\\b[^|;&\\n]*(\\/health|\\/api\\/status|\\/healthz|\\/readyz)\\b",
+        "note": "GET health endpoints; piping to a shell is still denied by pipe-remote-to-shell"
+      },
+      {
+        "id": "git-read",
+        "pattern": "\\bgit\\s+(status|log|diff|show|branch|remote(\\s+-v)?|fetch|describe|rev-parse|blame|ls-files|config\\s+--get)\\b"
+      },
+      {
+        "id": "op-read-to-var",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*=\\$\\(\\s*op\\s+read\\b",
+        "note": "op read INTO a variable only; op read piped to a printer is denied by secret-op-read-piped-to-stdout"
+      },
+      {
+        "id": "systemctl-status",
+        "pattern": "\\bsystemctl\\s+(status|is-active|is-enabled|list-units|show)\\b"
+      },
+      {
+        "id": "journalctl",
+        "pattern": "\\bjournalctl\\b"
+      },
+      {
+        "id": "process-info",
+        "pattern": "^\\s*(ps|top|htop|uptime|free|vmstat|iostat|whoami|id|hostname|date|uname|env\\s+\\S)\\b",
+        "note": "bare 'env' is excluded \u2014 denied by secret-bare-env-dump"
+      },
+      {
+        "id": "net-read",
+        "pattern": "^\\s*(ss|netstat|ip\\s+(a|addr|link|route)|ping|dig|nslookup|host)\\b"
+      },
+      {
+        "id": "node-npm-read",
+        "pattern": "\\b(node\\s+--version|npm\\s+(ls|list|view|outdated|run\\s+(test|lint|build))|pnpm\\s+(ls|list))\\b",
+        "note": "test/lint/build are read-ish for CI; deny anything writing outside scratch via Tier-1"
+      },
+      {
+        "id": "echo-plain",
+        "pattern": "^\\s*echo\\b",
+        "note": "echo of a secret var is still denied by secret-print-var"
+      }
     ]
   }
 }
