@@ -118,8 +118,30 @@ export interface SessionsResponse {
   perGroup: number
 }
 
+// --- Model + capability registry (GET /api/engines) ---
+export interface ModelInfo {
+  id: string;
+  label: string;
+  supportsEffort: boolean;
+  effortLevels: string[];
+  contextWindow?: number;
+}
+export interface EngineRegistryEntry {
+  name: string;
+  available: boolean;
+  defaultModel: string;
+  effortMechanism: "claude-flag" | "codex-config" | "none";
+  models: ModelInfo[];
+}
+export interface EnginesResponse {
+  default: string;
+  engines: Record<string, EngineRegistryEntry>;
+}
+
 export const api = {
   getStatus: () => get<Record<string, unknown>>("/api/status"),
+  /** Resolved model + capability registry (engines, their models, effort levels). */
+  getEngines: () => get<EnginesResponse>("/api/engines"),
   getSessions: () => get<SessionsResponse>("/api/sessions"),
   /** One group's sessions, newest first — used by the sidebar "load more" button. */
   getSessionsForGroup: (group: string, offset: number, limit = 50) =>
@@ -131,7 +153,7 @@ export const api = {
     get<Record<string, unknown>[]>(`/api/sessions?q=${encodeURIComponent(query)}`),
   getSession: (id: string) => get<Record<string, unknown>>(`/api/sessions/${id}`),
   getSessionChildren: (id: string) => get<Record<string, unknown>[]>(`/api/sessions/${id}/children`),
-  updateSession: (id: string, data: { title?: string }) =>
+  updateSession: (id: string, data: { title?: string; model?: string; effortLevel?: string }) =>
     put<Record<string, unknown>>(`/api/sessions/${id}`, data),
   deleteSession: (id: string) => del<Record<string, unknown>>(`/api/sessions/${id}`),
   duplicateSession: (id: string) =>
