@@ -4,6 +4,8 @@ import { parseMedia, stripAttachedFilesBlock } from '@/lib/conversations'
 import { MessageMedia } from './message-media'
 import { useOpenFile } from '@/components/chat/file-open-context'
 import { SubAgentStack, type SubAgentState } from '@/components/chat/sub-agent-card'
+import type { UseTtsReturn } from '@/hooks/use-tts'
+import { TtsButton, AutoReadToggle } from './tts-button'
 
 /* ── Tool grouping ──────────────────────────────────────── */
 
@@ -409,9 +411,10 @@ interface MessageRowProps {
   msg: Message
   index: number
   messages: Message[]
+  tts?: UseTtsReturn
 }
 
-const MessageRow = React.memo(function MessageRow({ msg, index: i, messages }: MessageRowProps) {
+const MessageRow = React.memo(function MessageRow({ msg, index: i, messages, tts }: MessageRowProps) {
   const isUser = msg.role === 'user'
   const isNotification = msg.role === 'notification'
   const showTimestamp = shouldShowTimestamp(messages, i)
@@ -488,10 +491,17 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, messages }: M
       {!isUser && !isNotification && (
         <div className="assistant-msg-row flex justify-start px-[var(--space-4)] mb-[var(--space-1)]">
           <div className="assistant-msg-bubble flex flex-col">
-            {/* Text bubble */}
+            {/* Text bubble + read-aloud button */}
             {textContent && (
-              <div className="py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-sm)_var(--radius-lg)_var(--radius-lg)_var(--radius-lg)] bg-[var(--material-thin)] border border-[var(--separator)] text-[var(--text-primary)] text-[length:var(--text-subheadline)] leading-[var(--leading-relaxed)]">
-                {formattedContent}
+              <div className="tts-msg-row group/msg flex items-start gap-1">
+                <div className="py-[var(--space-3)] px-[var(--space-4)] rounded-[var(--radius-sm)_var(--radius-lg)_var(--radius-lg)_var(--radius-lg)] bg-[var(--material-thin)] border border-[var(--separator)] text-[var(--text-primary)] text-[length:var(--text-subheadline)] leading-[var(--leading-relaxed)] min-w-0">
+                  {formattedContent}
+                </div>
+                {tts && (
+                  <div className="flex items-center pt-[var(--space-3)] opacity-0 group-hover/msg:opacity-100 transition-opacity duration-100">
+                    <TtsButton messageId={msg.id} text={textContent} tts={tts} />
+                  </div>
+                )}
               </div>
             )}
 
@@ -529,9 +539,10 @@ interface ChatMessagesProps {
   loading: boolean
   streamingText?: string
   subAgents?: SubAgentState[]
+  tts?: UseTtsReturn
 }
 
-export function ChatMessages({ messages, loading, streamingText, subAgents }: ChatMessagesProps) {
+export function ChatMessages({ messages, loading, streamingText, subAgents, tts }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -672,7 +683,7 @@ export function ChatMessages({ messages, loading, streamingText, subAgents }: Ch
 
         const { msg, index: i } = item
         return (
-          <MessageRow key={msg.id || i} msg={msg} index={i} messages={messages} />
+          <MessageRow key={msg.id || i} msg={msg} index={i} messages={messages} tts={tts} />
         )
       })}
 
@@ -696,19 +707,39 @@ export function ChatMessages({ messages, loading, streamingText, subAgents }: Ch
       <div ref={bottomRef} />
       </div>
 
-      {/* Scroll-to-bottom button */}
-      {showScrollButton && (
-        <button
-          onClick={scrollToBottom}
-          aria-label="Scroll to bottom"
-          className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 py-1.5 px-3 rounded-full bg-[var(--material-thick)] border border-[var(--separator)] text-[var(--text-secondary)] text-[length:var(--text-caption1)] shadow-[var(--shadow-elevated)] cursor-pointer transition-opacity duration-150 hover:bg-[var(--fill-secondary)]"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="6 9 12 15 18 9" />
-          </svg>
-          New messages
-        </button>
-      )}
+      {/* Bottom-right floating controls: auto-read toggle + scroll-to-bottom */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 16,
+          right: 16,
+          zIndex: 10,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-end',
+          gap: 8,
+          pointerEvents: 'none',
+        }}
+      >
+        {tts && (
+          <div style={{ pointerEvents: 'auto' }}>
+            <AutoReadToggle tts={tts} />
+          </div>
+        )}
+        {showScrollButton && (
+          <button
+            onClick={scrollToBottom}
+            aria-label="Scroll to bottom"
+            style={{ pointerEvents: 'auto' }}
+            className="flex items-center gap-1.5 py-1.5 px-3 rounded-full bg-[var(--material-thick)] border border-[var(--separator)] text-[var(--text-secondary)] text-[length:var(--text-caption1)] shadow-[var(--shadow-elevated)] cursor-pointer transition-opacity duration-150 hover:bg-[var(--fill-secondary)]"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+            New messages
+          </button>
+        )}
+      </div>
 
       {/* Keyframe animations + responsive bubble widths */}
       <style>{`
@@ -716,6 +747,12 @@ export function ChatMessages({ messages, loading, streamingText, subAgents }: Ch
           0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
           40% { opacity: 1; transform: scale(1); }
         }
+        @keyframes tts-pulse {
+          0%, 80%, 100% { opacity: 0.4; transform: scale(0.75); }
+          40% { opacity: 1; transform: scale(1); }
+        }
+        .tts-btn { pointer-events: auto; }
+        .tts-msg-row:hover .tts-btn { opacity: 1 !important; }
         .assistant-msg-bubble { max-width: 100%; overflow-wrap: break-word; word-break: break-word; }
         .user-msg-bubble { max-width: 90%; overflow-wrap: break-word; word-break: break-word; }
         .notification-msg-bubble { overflow-wrap: break-word; word-break: break-word; white-space: pre-wrap; }
