@@ -6,7 +6,7 @@ import os from "node:os";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import Busboy from "busboy";
-import { FILES_DIR, UPLOADS_DIR } from "../shared/paths.js";
+import { FILES_DIR, UPLOADS_DIR, JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { insertFile, getFile, listFiles, deleteFile, setFilePath, insertMessage, type FileMeta, type MessageMedia } from "../sessions/registry.js";
 import type { ApiContext } from "./api.js";
@@ -127,6 +127,114 @@ function expandPath(p: string): string {
     return path.join(os.homedir(), p.slice(2));
   }
   return p;
+}
+
+// ── Arbitrary file read (web UI) ─────────────────────────────────
+// CEO has waived path allowlisting: single-user machine behind Tailscale, risk
+// accepted. This endpoint reads ANY file on disk. Guards: 5 MB size cap +
+// binary detection (no allowlist, no secrets denylist).
+
+/** Max bytes we'll read into memory for inline display. Larger files → tooLarge flag. */
+export const MAX_READ_SIZE = 5 * 1024 * 1024; // 5 MB
+
+/** MIME types treated as binary regardless of NUL-byte scan. */
+function isBinaryMime(mime: string): boolean {
+  return (
+    mime.startsWith("image/") ||
+    mime.startsWith("audio/") ||
+    mime.startsWith("video/") ||
+    mime.startsWith("font/") ||
+    mime === "application/pdf" ||
+    mime === "application/zip" ||
+    mime === "application/gzip" ||
+    mime === "application/x-tar" ||
+    mime === "application/octet-stream" ||
+    mime === "application/msword" ||
+    mime.startsWith("application/vnd.")
+  );
+}
+
+/**
+ * Build the ordered list of candidate absolute paths for a requested path.
+ *  - Absolute (`/…`) or home (`~…`) → single verbatim candidate (with ~ expanded).
+ *  - Relative → JINN_HOME first (most artifacts live there), then ~/Projects,
+ *    then the gateway cwd, then the literal path resolved against cwd.
+ * Exposed for unit-testing the resolution ORDER without touching disk.
+ */
+export function readPathCandidates(requestedPath: string): string[] {
+  const p = String(requestedPath ?? "").trim();
+  if (!p) return [];
+  // Absolute or home-relative → use verbatim (expand ~).
+  if (p.startsWith("/") || p.startsWith("~")) {
+    return [path.resolve(expandPath(p))];
+  }
+  // Relative → ordered roots. JINN_HOME wins.
+  return [
+    path.resolve(JINN_HOME, p),
+    path.resolve(os.homedir(), "Projects", p),
+    path.resolve(process.cwd(), p),
+    path.resolve(p),
+  ];
+}
+
+/**
+ * Resolve a requested path to the first candidate that exists as a regular file.
+ * Returns { resolvedPath: null, candidates } when none exist.
+ */
+export function resolveReadPath(requestedPath: string): { resolvedPath: string | null; candidates: string[] } {
+  const candidates = readPathCandidates(requestedPath);
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+        return { resolvedPath: candidate, candidates };
+      }
+    } catch {
+      // unreadable candidate — skip
+    }
+  }
+  return { resolvedPath: null, candidates };
+}
+
+export interface FileClassification {
+  mime: string;
+  size: number;
+  /** true when the file is over MAX_READ_SIZE — content is NOT read. */
+  tooLarge: boolean;
+  /** true when detected as binary (by MIME or NUL byte) — content is NOT returned. */
+  binary: boolean;
+  /** utf-8 text content; only present for non-binary, non-too-large files. */
+  content?: string;
+}
+
+/**
+ * Classify an existing file: size cap → binary detection → text read.
+ * Caller must guarantee absPath is a regular file. Pure-ish (touches disk
+ * read-only); unit-tested against temp files.
+ */
+export function classifyFile(absPath: string): FileClassification {
+  const stat = fs.statSync(absPath);
+  const size = stat.size;
+  const mime = mimeFromFilename(absPath);
+
+  if (size > MAX_READ_SIZE) {
+    return { mime, size, tooLarge: true, binary: false };
+  }
+
+  // MIME says binary → don't even read it as text.
+  if (isBinaryMime(mime)) {
+    return { mime, size, tooLarge: false, binary: true };
+  }
+
+  const buffer = fs.readFileSync(absPath);
+  // Scan first 8 KB for a NUL byte → binary.
+  const scanLen = Math.min(buffer.length, 8192);
+  for (let i = 0; i < scanLen; i++) {
+    if (buffer[i] === 0) {
+      return { mime, size, tooLarge: false, binary: true };
+    }
+  }
+
+  return { mime, size, tooLarge: false, binary: false, content: buffer.toString("utf-8") };
 }
 
 function readBody(req: HttpRequest): Promise<string> {
@@ -739,6 +847,41 @@ export async function handleFilesRequest(
   method: string,
   context: ApiContext,
 ): Promise<boolean> {
+  // GET /api/files/read?path=<path> — read ANY file on disk for inline display.
+  // No allowlist (CEO-waived). Guards: 5 MB size cap + binary detection.
+  if (method === "GET" && pathname === "/api/files/read") {
+    const reqUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    const requested = reqUrl.searchParams.get("path");
+    if (!requested) {
+      badRequest(res, "path query parameter is required");
+      return true;
+    }
+    const { resolvedPath } = resolveReadPath(requested);
+    if (!resolvedPath) {
+      notFound(res);
+      return true;
+    }
+    if (!fs.statSync(resolvedPath).isFile()) {
+      badRequest(res, "Not a file");
+      return true;
+    }
+    try {
+      const c = classifyFile(resolvedPath);
+      json(res, {
+        path: requested,
+        resolvedPath,
+        mime: c.mime,
+        size: c.size,
+        ...(c.tooLarge ? { tooLarge: true } : {}),
+        ...(c.binary ? { binary: true } : {}),
+        ...(c.content !== undefined ? { content: c.content } : {}),
+      });
+    } catch (err) {
+      serverError(res, err instanceof Error ? err.message : "Read failed");
+    }
+    return true;
+  }
+
   // POST /api/files/transfer — send files to remote gateway
   if (method === "POST" && pathname === "/api/files/transfer") {
     await handleTransfer(req, res, context);

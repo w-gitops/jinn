@@ -11,6 +11,7 @@ const LogsPage = lazy(() => import('./routes/logs/page'))
 const OrgPage = lazy(() => import('./routes/org/page'))
 const SettingsPage = lazy(() => import('./routes/settings/page'))
 const SkillsPage = lazy(() => import('./routes/skills/page'))
+const FilePage = lazy(() => import('./routes/file/page'))
 
 function App() {
   return (
@@ -26,6 +27,7 @@ function App() {
             <Route path="/org" element={<OrgPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/skills" element={<SkillsPage />} />
+            <Route path="/file" element={<FilePage />} />
           </Routes>
         </Suspense>
       </ClientProviders>

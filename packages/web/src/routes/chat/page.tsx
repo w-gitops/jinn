@@ -5,6 +5,8 @@ import { PageLayout } from '@/components/page-layout'
 import { ChatSidebar, type SidebarOrder } from '@/components/chat/chat-sidebar'
 import { ChatTabBar } from '@/components/chat/chat-tabs'
 import { ChatPane } from '@/components/chat/chat-pane'
+import { FileView } from '@/components/chat/file-view'
+import { FileOpenContext } from '@/components/chat/file-open-context'
 import { ShortcutOverlay } from '@/components/chat/shortcut-overlay'
 import { useChatTabs } from '@/hooks/use-chat-tabs'
 import { useKeyboardShortcuts, type ShortcutDef } from '@/hooks/use-keyboard-shortcuts'
@@ -270,6 +272,33 @@ function ChatPage() {
     chatTabs.clearActiveTab()
   }, [chatTabs])
 
+  // Back target for the mobile file-view "back" button: the session that was
+  // active when a file link was clicked. selectedIdRef (declared below) is read
+  // at call time so the callback stays stable.
+  const fileBackTargetRef = useRef<string | null>(null)
+
+  // Open a file in an in-app tab (used by message path-links via FileOpenContext).
+  const openFile = useCallback((path: string) => {
+    fileBackTargetRef.current = selectedIdRef.current
+    chatTabs.openFileTab(path)
+    setMobileView('chat')
+  }, [chatTabs])
+
+  // Mobile-only: return from a file tab to the chat it was opened from. Switch
+  // to that session's tab if it still exists; otherwise fall back to the sidebar.
+  const handleFileBack = useCallback(() => {
+    const backId = fileBackTargetRef.current
+    if (backId) {
+      const idx = chatTabs.tabs.findIndex((t) => t.kind === 'session' && t.sessionId === backId)
+      if (idx >= 0) {
+        chatTabs.switchTab(idx)
+        setMobileView('chat')
+        return
+      }
+    }
+    setMobileView('sidebar')
+  }, [chatTabs])
+
   const handleSessionsLoaded = useCallback(
     (sessions: { id: string }[]) => {
       if (!selectedId && !newChatIntentRef.current && sessions.length > 0) {
@@ -288,7 +317,7 @@ function ChatPage() {
       setSessionMeta(null)
     }
     clearIntermediateMessages(id)
-    chatTabs.closeTab(chatTabs.tabs.findIndex(t => t.sessionId === id))
+    chatTabs.closeTab(chatTabs.tabs.findIndex(t => t.kind === 'session' && t.sessionId === id))
     setShowMoreMenu(false)
     qc.invalidateQueries({ queryKey: queryKeys.sessions.all })
   }, [selectedId, chatTabs, deleteSessionMutation, qc])
@@ -428,17 +457,25 @@ function ChatPage() {
 
   // When active tab changes, sync selectedId
   useEffect(() => {
-    if (chatTabs.activeTab && chatTabs.activeTab.sessionId !== selectedId) {
-      setSelectedId(chatTabs.activeTab.sessionId)
+    const at = chatTabs.activeTab
+    if (at && at.kind === 'session' && at.sessionId !== selectedId) {
+      setSelectedId(at.sessionId)
       return
     }
 
-    if (!chatTabs.activeTab && selectedId && !newChatIntentRef.current) {
+    if (!at && selectedId && !newChatIntentRef.current) {
       setSelectedId(null)
       setSessionMeta(null)
       setEmployeeSessions([])
     }
+    // When at.kind === 'file', leave selectedId untouched — we render FileView
+    // instead of ChatPane, but the underlying session selection is preserved.
   }, [chatTabs.activeTab, selectedId])
+
+  // Codex has no live PTY/xterm view, so the CLI toggle is hidden for it (and the
+  // view coerced to chat) — attaching a CLI socket for codex is refused server-side.
+  const cliSupported = sessionMeta?.engine !== 'codex'
+  const effectiveViewMode: ViewMode = cliSupported ? viewMode : 'chat'
 
   // More menu (shared between desktop tab bar and mobile header)
   const moreMenu = selectedId ? (
@@ -454,27 +491,31 @@ function ChatPage() {
       {showMoreMenu && (
         <div className="absolute right-0 top-full z-[200] mt-1 min-w-[220px] overflow-hidden rounded-[var(--radius-md)] border border-border bg-[var(--material-thick)] shadow-[var(--shadow-overlay)] backdrop-blur-xl">
           {/* Mobile-only Chat/CLI toggle — the desktop one lives in the tab bar's toolbarActions */}
-          <div className="flex items-center gap-1 px-3 py-2 md:hidden">
-            <button
-              onClick={() => { setAndPersistViewMode('chat'); setShowMoreMenu(false) }}
-              className={cn(
-                "flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors",
-                viewMode === 'chat' ? "bg-[var(--accent-fill)] text-[var(--accent)]" : "text-muted-foreground hover:bg-accent"
-              )}
-            >
-              Chat
-            </button>
-            <button
-              onClick={() => { setAndPersistViewMode('cli'); setShowMoreMenu(false) }}
-              className={cn(
-                "flex-1 rounded-md px-2 py-1 font-mono text-xs font-medium transition-colors",
-                viewMode === 'cli' ? "bg-[var(--accent-fill)] text-[var(--accent)]" : "text-muted-foreground hover:bg-accent"
-              )}
-            >
-              CLI
-            </button>
-          </div>
-          <div className="my-0.5 border-t border-border md:hidden" />
+          {cliSupported && (
+            <>
+              <div className="flex items-center gap-1 px-3 py-2 md:hidden">
+                <button
+                  onClick={() => { setAndPersistViewMode('chat'); setShowMoreMenu(false) }}
+                  className={cn(
+                    "flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                    viewMode === 'chat' ? "bg-[var(--accent-fill)] text-[var(--accent)]" : "text-muted-foreground hover:bg-accent"
+                  )}
+                >
+                  Chat
+                </button>
+                <button
+                  onClick={() => { setAndPersistViewMode('cli'); setShowMoreMenu(false) }}
+                  className={cn(
+                    "flex-1 rounded-md px-2 py-1 font-mono text-xs font-medium transition-colors",
+                    viewMode === 'cli' ? "bg-[var(--accent-fill)] text-[var(--accent)]" : "text-muted-foreground hover:bg-accent"
+                  )}
+                >
+                  CLI
+                </button>
+              </div>
+              <div className="my-0.5 border-t border-border md:hidden" />
+            </>
+          )}
           <button
             onClick={() => copyToClipboard(selectedId, 'id')}
             className="block w-full px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent"
@@ -530,30 +571,32 @@ function ChatPage() {
   // Build toolbar actions to pass into tab bar (desktop only content)
   const toolbarActions = (
     <>
-      <div className="flex items-center gap-0.5 rounded-full bg-[var(--fill-tertiary)] p-0.5">
-        <button
-          onClick={() => setAndPersistViewMode('chat')}
-          className={cn(
-            "rounded-full px-2.5 py-1 text-[11px] font-medium transition-all",
-            viewMode === 'chat'
-              ? "bg-background text-foreground shadow-sm"
-              : "text-muted-foreground hover:text-foreground"
-          )}
-        >
-          Chat
-        </button>
-        <button
-          onClick={() => setAndPersistViewMode('cli')}
-          className={cn(
-            "rounded-full px-2.5 py-1 font-mono text-[11px] font-medium transition-all",
-            viewMode === 'cli'
-              ? "bg-background text-foreground shadow-sm"
-              : "text-muted-foreground hover:text-foreground"
-          )}
-        >
-          CLI
-        </button>
-      </div>
+      {cliSupported && (
+        <div className="flex items-center gap-0.5 rounded-full bg-[var(--fill-tertiary)] p-0.5">
+          <button
+            onClick={() => setAndPersistViewMode('chat')}
+            className={cn(
+              "rounded-full px-2.5 py-1 text-[11px] font-medium transition-all",
+              viewMode === 'chat'
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            Chat
+          </button>
+          <button
+            onClick={() => setAndPersistViewMode('cli')}
+            className={cn(
+              "rounded-full px-2.5 py-1 font-mono text-[11px] font-medium transition-all",
+              viewMode === 'cli'
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            CLI
+          </button>
+        </div>
+      )}
 
       <div className="hidden lg:block">{moreMenu}</div>
 
@@ -591,6 +634,7 @@ function ChatPage() {
   )
 
   return (
+    <FileOpenContext.Provider value={openFile}>
     <PageLayout mobileHeaderActions={mobileRightActions} mobileHeaderLeftActions={mobileSidebarToggle}>
       <div className="flex overflow-hidden h-full">
         <div
@@ -647,31 +691,37 @@ function ChatPage() {
             "flex-1 overflow-hidden flex flex-col",
             mobileView === 'sidebar' ? 'hidden lg:flex' : 'flex'
           )}>
-            {/* Single ChatPane: handles new-chat (sessionId=null) and the selected session.
-                Keyed by selectedId so switching sessions remounts cleanly — no hidden
+            {/* File tab → render the in-app file viewer inside the same bounded
+                wrapper (so scrolling is contained). Otherwise the single ChatPane:
+                handles new-chat (sessionId=null) and the selected session. Keyed by
+                selectedId so switching sessions remounts cleanly — no hidden
                 keep-alive panes (they caused stacked WS subscriptions + races). */}
-            <ChatPane
-              key={selectedId ?? '__new__'}
-              sessionId={selectedId}
-              isActive={true}
-              onFocus={() => {}}
-              onSessionCreated={handleSessionCreated}
-              onSessionMetaChange={handleSessionMetaChange}
-              onRefresh={handleRefresh}
-              portalName={portalName}
-              subscribe={subscribe}
-              connectionSeq={connectionSeq}
-              skillsVersion={skillsVersion}
-              events={events}
-              viewMode={viewMode}
-              focusTrigger={focusTrigger}
-              onShortcutsClick={() => setShowShortcutOverlay(true)}
-              pendingUserMessage={
-                pendingUserMessage && pendingUserMessage.sessionId === selectedId
-                  ? pendingUserMessage.message
-                  : undefined
-              }
-            />
+            {chatTabs.activeTab?.kind === 'file' ? (
+              <FileView path={chatTabs.activeTab.path} embedded onBack={handleFileBack} />
+            ) : (
+              <ChatPane
+                key={selectedId ?? '__new__'}
+                sessionId={selectedId}
+                isActive={true}
+                onFocus={() => {}}
+                onSessionCreated={handleSessionCreated}
+                onSessionMetaChange={handleSessionMetaChange}
+                onRefresh={handleRefresh}
+                portalName={portalName}
+                subscribe={subscribe}
+                connectionSeq={connectionSeq}
+                skillsVersion={skillsVersion}
+                events={events}
+                viewMode={effectiveViewMode}
+                focusTrigger={focusTrigger}
+                onShortcutsClick={() => setShowShortcutOverlay(true)}
+                pendingUserMessage={
+                  pendingUserMessage && pendingUserMessage.sessionId === selectedId
+                    ? pendingUserMessage.message
+                    : undefined
+                }
+              />
+            )}
           </div>
         </div>
       </div>
@@ -684,5 +734,6 @@ function ChatPage() {
       )}
 
     </PageLayout>
+    </FileOpenContext.Provider>
   )
 }

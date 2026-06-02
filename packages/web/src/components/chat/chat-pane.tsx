@@ -6,6 +6,8 @@ import { ChatMessages } from '@/components/chat/chat-messages'
 import { ChatInput } from '@/components/chat/chat-input'
 import { ChatEmployeePicker } from '@/components/chat/chat-employee-picker'
 import { QueuePanel } from '@/components/chat/queue-panel'
+import { ModelSelectorRow, type SelectorValue } from '@/components/chat/model-selector-row'
+import { routeSubAgentDelta, type SubAgentState } from '@/components/chat/sub-agent-card'
 
 const CliTerminal = lazy(() => import('@/components/cli-terminal').then(m => ({ default: m.CliTerminal })))
 import { buildNewSessionParams } from '@/components/chat/new-chat-helpers'
@@ -72,6 +74,12 @@ export function ChatPane({
   const [loading, setLoading] = useState<boolean>(() => !!pendingUserMessage)
   const streamingTextRef = useRef('')
   const [streamingText, setStreamingText] = useState('')
+  // Live sub-agent cards for the current turn (Task sub-agents stream in tagged via
+  // the SSE proxy). Reset on a new send / session switch; marked done on completion.
+  const [subAgents, setSubAgents] = useState<SubAgentState[]>([])
+  // Live context-token count streamed mid-turn (message_start.usage). Overrides the
+  // persisted session value while a turn is in flight; cleared on completion/stop.
+  const [liveContextTokens, setLiveContextTokens] = useState<number | null>(null)
   const intermediateStartRef = useRef<number>(-1)
   const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(null)
   const sessionIdRef = useRef(sessionId)
@@ -93,6 +101,43 @@ export function ChatPane({
     : []
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
 
+  // Engine/Model/Effort selector state (composer). Engine is editable on a new
+  // chat only; model + effort are editable in existing chats too.
+  const [selector, setSelector] = useState<SelectorValue>({})
+  const [effortPendingNote, setEffortPendingNote] = useState(false)
+
+  // Pre-fill for a NEW chat from the chosen employee's config (engine/model);
+  // COO / no employee → empty so the row shows the global default.
+  useEffect(() => {
+    if (sessionId) return
+    const emp = selectedEmployee && Array.isArray(orgData?.employees)
+      ? orgData.employees.find((e) => e.name === selectedEmployee)
+      : undefined
+    setSelector(emp ? { engine: emp.engine, model: emp.model } : {})
+    setEffortPendingNote(false)
+  }, [selectedEmployee, sessionId, orgData])
+
+  // Pre-fill for an EXISTING chat from the loaded session.
+  useEffect(() => {
+    if (!sessionId || !currentSession) return
+    setSelector({
+      engine: currentSession.engine as string | undefined,
+      model: currentSession.model as string | undefined,
+      effortLevel: (currentSession.effortLevel ?? currentSession.effort_level) as string | undefined,
+    })
+    setEffortPendingNote(false)
+  }, [sessionId, currentSession])
+
+  // Apply a selector change. New chat: just track it (sent on first message).
+  // Existing chat: persist model/effort via PATCH (engine is fixed mid-chat).
+  const handleSelectorChange = useCallback((next: SelectorValue) => {
+    setSelector(next)
+    if (sessionIdRef.current) {
+      api.updateSession(sessionIdRef.current, { model: next.model, effortLevel: next.effortLevel }).catch(() => {})
+      setEffortPendingNote(true)
+    }
+  }, [])
+
   // Helper: persist intermediate messages to localStorage
   const persistIntermediate = useCallback((msgs: Message[], sid: string | null) => {
     if (!sid) return
@@ -113,6 +158,13 @@ export function ChatPane({
 
       if (event === 'session:delta') {
         const deltaType = String(p.type || 'text')
+
+        // Sub-agent deltas route into collapsible cards, NOT the main transcript.
+        const sa = p.subAgent as { id: string; label?: string } | undefined
+        if (sa?.id) {
+          setSubAgents((prev) => routeSubAgentDelta(prev, sa, deltaType, String(p.content || ''), p.toolName ? String(p.toolName) : undefined))
+          return
+        }
 
         if (deltaType === 'text') {
           const chunk = String(p.content || '')
@@ -170,6 +222,9 @@ export function ChatPane({
             persistIntermediate(updated, sid)
             return updated
           })
+        } else if (deltaType === 'context') {
+          const n = Number(p.content)
+          if (Number.isFinite(n) && n > 0) setLiveContextTokens(n)
         }
       }
 
@@ -218,12 +273,16 @@ export function ChatPane({
       if (event === 'session:stopped') {
         setLoading(false)
         setStreamingText('')
+        setLiveContextTokens(null)
+        setSubAgents((prev) => prev.map((a) => (a.status === 'running' ? { ...a, status: 'done' } : a)))
       }
 
       if (event === 'session:completed') {
         streamingTextRef.current = ''
         setStreamingText('')
         setLoading(false)
+        setLiveContextTokens(null)
+        setSubAgents((prev) => prev.map((a) => (a.status === 'running' ? { ...a, status: 'done' } : a)))
         intermediateStartRef.current = -1
         justCompletedAtRef.current = Date.now()
 
@@ -263,6 +322,15 @@ export function ChatPane({
               timestamp: Date.now(),
             },
           ])
+        }
+        // Refresh the current session record so post-turn fields (notably
+        // lastContextTokens for the context meter, and status) update without a
+        // manual reload. Light getSession only — does NOT touch messages (we just
+        // set them above; loadSession would re-reconcile and could flicker).
+        if (completedSessionId && completedSessionId === sid) {
+          api.getSession(completedSessionId)
+            .then((s) => setCurrentSession(s as Record<string, unknown>))
+            .catch(() => { /* best-effort; next load will pick it up */ })
         }
         onRefresh?.()
       }
@@ -367,6 +435,7 @@ export function ChatPane({
       setCurrentSession(null)
       streamingTextRef.current = ''
       setStreamingText('')
+      setSubAgents([])
       intermediateStartRef.current = -1
       setSelectedEmployee(null)
       return
@@ -374,6 +443,7 @@ export function ChatPane({
     // Clear streaming state immediately to avoid stale content flash
     streamingTextRef.current = ''
     setStreamingText('')
+    setSubAgents([])
     // NOTE: do NOT setLoading(false) here. Loading is owned by handleSend (true) and
     // WS session:completed/stopped (false). Clearing here would clobber the lazy-init
     // loading=true set by useState() when this pane mounted with pendingUserMessage.
@@ -416,6 +486,7 @@ export function ChatPane({
         return [...prev, userMsg]
       })
       setLoading(true)
+      setSubAgents([]) // fresh turn — drop the previous turn's sub-agent cards
 
       try {
         // Upload any attached files to the server in parallel and collect file IDs
@@ -437,6 +508,9 @@ export function ChatPane({
             message,
             selectedEmployee,
             attachmentIds,
+            engine: selector.engine,
+            model: selector.model,
+            effortLevel: selector.effortLevel,
           })
           if (viewMode === 'cli') (params as Record<string, unknown>).mode = 'interactive'
           const session = (await api.createSession(params)) as Record<string, unknown>
@@ -466,7 +540,7 @@ export function ChatPane({
     // viewMode MUST be in deps — without it, toggling chat↔CLI keeps the stale
     // closure value and routes CLI sends to the headless engine, which is
     // exactly what made "the xterm shows stale content" reproducible.
-    [sessionId, selectedEmployee, onSessionCreated, onRefresh, viewMode, loading]
+    [sessionId, selectedEmployee, onSessionCreated, onRefresh, viewMode, loading, selector]
   )
 
   const handleStatusRequest = useCallback(async () => {
@@ -641,7 +715,7 @@ export function ChatPane({
           <CliTerminal sessionId={sessionId} />
         </Suspense>
       ) : (sessionId || messages.length > 0) ? (
-        <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
+        <ChatMessages messages={messages} loading={loading} streamingText={streamingText} subAgents={subAgents} />
       ) : null}
 
       {/* Queue panel — hidden in the live xterm view (noise on top of the PTY). */}
@@ -668,6 +742,17 @@ export function ChatPane({
         onDroppedFilesConsumed={() => setDroppedFiles(undefined)}
         focusTrigger={focusTrigger}
         onShortcutsClick={onShortcutsClick}
+        selectorSlot={
+          <ModelSelectorRow
+            mode={sessionId ? 'existing' : 'new'}
+            value={selector}
+            onChange={handleSelectorChange}
+            pendingNote={effortPendingNote}
+            disabled={loading}
+            contextTokens={liveContextTokens ?? (currentSession?.lastContextTokens as number | null | undefined) ?? undefined}
+            onNewChat={handleNewSession}
+          />
+        }
       />
     </div>
   )

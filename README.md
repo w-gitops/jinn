@@ -1,6 +1,6 @@
 # 🧞 Jinn
 
-Lightweight AI gateway daemon orchestrating Claude Code, Codex, and Gemini CLI.
+Lightweight AI gateway daemon orchestrating Claude Code and Codex.
 
 <p align="center">
   <img src="assets/jinn-showcase.gif" alt="Jinn Web Dashboard" width="800" />
@@ -8,8 +8,8 @@ Lightweight AI gateway daemon orchestrating Claude Code, Codex, and Gemini CLI.
 
 ## What is Jinn?
 
-Jinn is an open-source AI gateway that wraps the Claude Code CLI, Codex SDK,
-and Gemini CLI behind a unified daemon process. It routes tasks to AI engines,
+Jinn is an open-source AI gateway that wraps the Claude Code CLI and Codex SDK
+behind a unified daemon process. It routes tasks to AI engines,
 manages connectors like Slack, and schedules background work via cron. Jinn is
 a bus, not a brain.
 
@@ -17,7 +17,7 @@ a bus, not a brain.
 
 Most AI agent frameworks reinvent the wheel — custom tool-calling loops, brittle context management, hand-rolled retry logic. Then they charge you per API call on top.
 
-**Jinn takes a different approach.** It wraps battle-tested professional CLI tools (Claude Code, Codex, Gemini CLI) and adds only what they're missing: routing, scheduling, connectors, and an org system.
+**Jinn takes a different approach.** It wraps battle-tested professional CLI tools (Claude Code, Codex) and adds only what they're missing: routing, scheduling, connectors, and an org system.
 
 ### 🔑 Works with your Anthropic Max subscription
 
@@ -31,7 +31,7 @@ And starting **June 15, 2026**, Anthropic stops subsidizing `claude -p` (headles
 
 | | Jinn | OpenClaw |
 |---|---|---|
-| **Architecture** | Wraps professional CLIs (Claude Code, Codex, Gemini) | Custom agentic loop |
+| **Architecture** | Wraps professional CLIs (Claude Code, Codex) | Custom agentic loop |
 | **Max subscription** | ✅ Works (uses official Claude Code CLI) | ❌ Banned since Jan 2026 |
 | **Typical cost** | $200/mo flat (Max) or pay-per-use | $300–750/mo API bills ([reported by users](https://www.reddit.com/r/OpenClaw/)) |
 | **Security** | Inherits Claude Code's security model | 512 vulnerabilities found by CrowdStrike |
@@ -49,7 +49,7 @@ When Claude Code gets better, Jinn gets better — automatically.
 
 ## ✨ Features
 
-- 🔌 **Triple engine support** — Claude Code CLI + Codex SDK + Gemini CLI
+- 🔌 **Multi-engine support** — Claude Code CLI + Codex SDK
 - 💬 **Connectors** — Slack (threads + reactions), WhatsApp (QR auth), Discord (bot)
 - 📎 **File attachments** — drag & drop files into web chat, passed through to engines
 - 📱 **Mobile-responsive** — collapsible sidebar and mobile-friendly dashboard
@@ -107,7 +107,7 @@ Then open [http://localhost:7777](http://localhost:7777).
 ```
 
 The CLI sends commands to the gateway daemon. The daemon dispatches work to AI
-engines (Claude Code, Codex, Gemini CLI), manages connector integrations, runs
+engines (Claude Code, Codex), manages connector integrations, runs
 scheduled cron jobs, and serves the web dashboard.
 
 ## 🪄 How the Claude engine works under the hood
@@ -124,7 +124,7 @@ Every Claude turn — cron jobs, Slack messages, the web Chat view, the web CLI 
 - **Cost reconstruction.** At turn end the daemon sums token usage straight from the transcript JSONL — no need to parse cost from TUI output.
 - **Rate-limit handling.** A `StopFailure` hook carrying a rate-limit reason flips the session into the shared wait/retry loop used by every engine.
 
-**Codex and Gemini** keep the simple spawn-per-turn model (`spawn(bin, args)` per request). Neither has Claude's subscription-billing wrinkle, so neither needs a PTY.
+**Codex** keeps the simple spawn-per-turn model (`spawn(bin, args)` per request). It doesn't have Claude's subscription-billing wrinkle, so it doesn't need a PTY.
 
 If you want to opt out and use the old headless mode, set `engines.claude.mode: headless` in `~/.jinn/config.yaml` — Jinn will fall back to `claude -p` for that engine.
 
@@ -222,7 +222,6 @@ Jinn is under active development. Here's what's coming:
 - [ ] **Webhooks** — generic inbound/outbound HTTP webhooks
 
 ### 🧠 Engines
-- [x] **Gemini CLI** — Google's Gemini as a third engine option
 - [ ] **Local models** — Ollama / llama.cpp integration for offline use
 - [ ] **Engine fallback chains** — auto-failover when primary engine is unavailable
 

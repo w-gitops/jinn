@@ -1,5 +1,40 @@
 # Changelog
 
+## [Unreleased]
+
+> Engine & model-selection sprint. All of the below ships under a **single version
+> bump** at release (no version change in these commits).
+
+### ✨ Features
+- **Antigravity (`agy`) engine** — Google Antigravity replaces the removed Gemini slot as a PTY-interactive engine. agy has no headless/`--print` mode and no hook system, so turns are driven through a PTY (one instance both runs turns and backs the xterm view) and completion is detected by tailing agy's per-conversation transcript (`~/.gemini/antigravity-cli/brain/<convId>/.system_generated/logs/transcript.jsonl`) for a `MODEL/PLANNER_RESPONSE/status:DONE` line. The conversation id becomes the engine session id; resume uses `agy --conversation <id>`. The binary is resolved **dynamically** (PATH + common dirs incl. `~/.local/bin`, optional `engines.antigravity.bin` override) — no hardcoded paths. Workspace trust is pre-seeded by realpath before spawn so the interactive trust gate never blocks; the cached Google credential is reused (no re-auth). Default model Gemini 3 Flash (agy ignores model flags today; `/model` injection deferred). Verified end-to-end against agy v1.0.x (May 2026).
+- **Dynamic model + capability registry** — `models:` block in `config.yaml` (per-model `{id,label,supportsEffort,effortLevels}`, per-engine `effortMechanism`) is the single source of truth for which engines/models exist and what they support. New `GET /api/engines` exposes the resolved registry. When the block is absent it's **synthesized** from `engines.<name>.model`, so existing configs keep working. **Adding a new model is a config edit — zero code change.** Cache invalidates on config reload and `PUT /api/config`.
+- **Mid-chat model & effort switching** — `PUT|PATCH /api/sessions/:id` accepts `{ model?, effortLevel? }`, validated against the registry for the session's engine, and applies **from the next turn** (in place — a resume spike confirmed `claude -p --resume --model <new>` honors the new model while preserving history, so no fork is needed). Engine is **new-chat-only** (not mutable mid-chat). Antigravity model changes persist but are a logged runtime no-op (agy ignores model flags).
+- **Web composer selector row** — a compact **Engine · Model · Effort** pill row above the chat input, fully registry-driven (no hardcoded lists). Engine is editable on a new chat / read-only chip in an existing chat; Model + Effort editable in both; Effort is filtered to the model's levels and hidden for effort-less engines (antigravity). Pre-fills from the chosen employee's config (new chat) or the loaded session; in-chat changes PATCH the session with an "applies to next message" note. Settings-page model/effort dropdowns are now registry-driven too (kills stale `opus-4-6` labels).
+
+### 🐛 Fixes / Changed
+- **Effort validation is registry-driven** — replaced the hardcoded `VALID_EFFORTS` set with per-engine+model `effortLevels` from the registry. This fixes the silent **`xhigh` rejection** for codex (now valid and passed through). Unknown/unsupported levels are dropped with a logged warning (graceful degradation), never a silent pass or a throw; effort-less engines default cleanly with no noise.
+
+### 💥 Removed / Not supported
+- **Removed the Gemini CLI engine.** Google is sunsetting Gemini CLI for individual/free and AI Pro/Ultra users on **2026-06-18**, directing them to Antigravity. The `gemini` engine option (`engines.gemini`, `engine: gemini`) is gone. **Gemini *API* usage is unaffected** — `GEMINI_API_KEY` features (deep-research, nano-banana) still work. Historical migration notes left intact.
+- **Fast mode is explicitly NOT supported** (any engine). The real `claude` CLI has no `--fast` flag — `/fast` is an interactive, stateful TUI toggle (resets on model switch, org-disablable) with no headless/flag equivalent, and Jinn runs turns headless. Rather than carry dead infra, the concept was dropped end-to-end (no `supportsFast` in the registry, no UI control).
+
+## [0.17.1] - 2026-05-31
+
+### 🐛 Fixes
+- **Slack reaction approvals work again on older messages.** The `reaction_added` handler gated on the *reacted-to message's* age via `ignoreOldMessagesOnBoot`, so any reaction on a message posted before the gateway's last boot was silently dropped. This broke human-in-the-loop approval flows where a card waits hours for a ✅ (and every gateway restart made all pending cards un-reactable). The boot-replay guard now checks the **reaction event's own `event_ts`**, so a fresh reaction on an old message is always honored while genuinely replayed-on-boot reactions are still skipped.
+- **Instant `:eyes:` ack on reactions.** The connector now adds an `:eyes:` reaction the moment it accepts a user reaction, giving immediate visual confirmation the gateway heard it.
+
+## [0.17.0] - 2026-05-31
+
+### ✨ Features
+- **Clickable file paths → in-app file viewer.** File paths mentioned in chat messages (e.g. `docs/superpowers/specs/2026-05-31-movekit-support-design.md`) are now auto-detected and rendered as links — including the common case where agents wrap them in backticks. Clicking opens the file as a new **in-app tab** (the same VS Code-style tab bar as chats, labelled with the basename), rendering markdown via `react-markdown` + `remark-gfm` and code with Prism syntax highlighting. Lets you read any referenced artifact without leaving the dashboard — ideal over Tailscale where the file isn't directly reachable.
+- **Standalone `/file?path=` route** — the same viewer as a full page, for opening files in a real browser tab (a subtle ⧉ button inside the in-app viewer pops it out) and for direct/remote access.
+- **File-read endpoint** `GET /api/files/read?path=` — reads any file on disk (single-user/Tailscale threat model, no allowlist) with a 5 MB size cap and binary detection. Relative paths resolve `~/.jinn` first, then `~/Projects`, then gateway cwd, then literal; absolute/`~` paths used verbatim.
+- **Mobile back button** in the embedded viewer that returns to the chat the link was opened from; sticky frosted control chips (back + pop-out) that stay reachable while scrolling.
+
+### 🐛 Fixes
+- File-viewer content wraps to the available width — no more horizontal scrollbar on long code lines or unbroken tokens (prose wraps, code blocks contain their own overflow).
+
 ## [0.16.1] - 2026-05-30
 
 ### 🐛 Fixes
