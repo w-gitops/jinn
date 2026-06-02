@@ -94,14 +94,16 @@ export function resolveLanguages(sttConfig?: { language?: string; languages?: st
  * Called at gateway startup and on config reload.
  */
 export async function checkHttpSttHealth(url: string): Promise<void> {
-  const base = url.replace(/\/+$/, "");
+  // Health endpoint is at the server root, not the versioned API path.
+  // Use URL.origin so "http://host:9001/v1" probes "http://host:9001/health".
+  const origin = new URL(url).origin;
   try {
-    const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(3000) });
     httpSttAvailable = res.ok;
-    logger.info(`STT HTTP health check ${res.ok ? "OK" : "FAILED"} (${base}/health → ${res.status})`);
+    logger.info(`STT HTTP health check ${res.ok ? "OK" : "FAILED"} (${origin}/health → ${res.status})`);
   } catch (err) {
     httpSttAvailable = false;
-    logger.warn(`STT HTTP health check failed (${base}/health): ${err instanceof Error ? err.message : err}`);
+    logger.warn(`STT HTTP health check failed (${origin}/health): ${err instanceof Error ? err.message : err}`);
   }
 }
 
