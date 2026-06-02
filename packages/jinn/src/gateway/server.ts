@@ -27,7 +27,9 @@ import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from ".
 import { pickEncoding, isCompressibleExt, compressStream } from "./compress.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
 import { ensureFilesDir, cleanupOldUploads } from "./files.js";
-import { initStt } from "../stt/stt.js";
+import { initStt, checkHttpSttHealth } from "../stt/stt.js";
+import { TtsManager } from "../tts/tts.js";
+import { attachTtsWebSocket } from "../tts/tts-ws.js";
 import { startWatchers, stopWatchers, syncSkillSymlinks } from "./watcher.js";
 import { SlackConnector } from "../connectors/slack/index.js";
 import { DiscordConnector, type DiscordConnectorConfig } from "../connectors/discord/index.js";
@@ -744,6 +746,10 @@ export async function startGateway(
 
   const startTime = Date.now();
 
+  // TTS manager — synthesizes audio only for sessions with an open /ws/tts WS client.
+  // Must be created before emit() so the closure can reference it.
+  const ttsManager = new TtsManager(config);
+
   // Broadcast function (defined early so apiContext can reference it)
   const wsClients = new Set<import("ws").WebSocket>();
   const emit = (event: string, payload: unknown): void => {
@@ -758,6 +764,8 @@ export async function startGateway(
         }
       }
     }
+    // Feed session events into the TTS pipeline (auto-synthesis for opted-in sessions).
+    ttsManager.handleGatewayEvent(event, payload);
   };
 
   // API context
@@ -821,6 +829,8 @@ export async function startGateway(
   // separate from the global broadcast `wss` so its connections aren't added to
   // the broadcast client set.
   const ptyWss = new WebSocketServer({ noServer: true });
+  // Dedicated WS server for per-session TTS audio (/ws/tts/:sessionId).
+  const ttsWss = new WebSocketServer({ noServer: true });
 
   wss.on("connection", (ws) => {
     wsClients.add(ws);
@@ -861,6 +871,16 @@ export async function startGateway(
       });
       return;
     }
+    // Per-session TTS audio channel — binary MP3 frames server→client.
+    const ttsMatch = reqUrl.split("?")[0].match(/^\/ws\/tts\/([^/]+)$/);
+    if (ttsMatch) {
+      if (!config.tts?.enabled) { socket.destroy(); return; }
+      const ttsSessionId = decodeURIComponent(ttsMatch[1]);
+      ttsWss.handleUpgrade(req, socket, head, (ws) => {
+        attachTtsWebSocket(ws, ttsSessionId, ttsManager);
+      });
+      return;
+    }
     socket.destroy();
   });
 
@@ -868,11 +888,16 @@ export async function startGateway(
   // Sync skill symlinks to .claude/skills/ and .agents/skills/
   syncSkillSymlinks();
 
-  // Initialize STT model symlinks
+  // Initialize STT model directory
   try {
     initStt();
   } catch (err) {
     logger.warn(`STT init skipped: ${err instanceof Error ? err.message : err}`);
+  }
+
+  // Probe HTTP STT server health at startup (non-blocking).
+  if (config.stt?.backend === "http" && config.stt.url) {
+    void checkHttpSttHealth(config.stt.url);
   }
 
   // Start file watchers
@@ -882,6 +907,10 @@ export async function startGateway(
         currentConfig = loadConfig();
         apiContext.config = currentConfig;
         invalidateModelRegistry(); // rebuild the model/capability registry from the new config
+        ttsManager.updateConfig(currentConfig);
+        if (currentConfig.stt?.backend === "http" && currentConfig.stt.url) {
+          void checkHttpSttHealth(currentConfig.stt.url);
+        }
         logger.info("Config reloaded successfully");
         emit("config:reloaded", {});
       } catch (err) {
@@ -1040,6 +1069,7 @@ export async function startGateway(
     // Close WebSocket servers
     await new Promise<void>((resolve) => wss.close(() => resolve()));
     await new Promise<void>((resolve) => ptyWss.close(() => resolve()));
+    await new Promise<void>((resolve) => ttsWss.close(() => resolve()));
 
     // Close HTTP server
     await new Promise<void>((resolve, reject) => {

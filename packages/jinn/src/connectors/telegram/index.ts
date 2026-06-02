@@ -20,7 +20,7 @@ import { TMP_DIR } from "../../shared/paths.js";
 import {
   transcribe as sttTranscribe,
   resolveLanguages,
-  getModelPath,
+  isSttAvailable,
 } from "../../stt/stt.js";
 
 export class TelegramConnector implements Connector {
@@ -193,13 +193,15 @@ export class TelegramConnector implements Connector {
         (telegramMsg as any).video_note;
 
       if (voiceLike) {
-        const model = this.sttConfig?.model || "small";
         let unavailable: string | null = null;
-        if (!this.sttConfig?.enabled) {
-          unavailable = "voice transcription is not enabled on this gateway";
-        } else if (!getModelPath(model)) {
-          unavailable = `STT model '${model}' is not downloaded`;
+        if (!isSttAvailable(this.sttConfig)) {
+          unavailable = this.sttConfig?.enabled
+            ? (this.sttConfig?.backend === "http"
+                ? "STT HTTP backend is not reachable"
+                : `STT model '${this.sttConfig?.model ?? "small"}' is not downloaded`)
+            : "voice transcription is not enabled on this gateway";
         }
+        const model = this.sttConfig?.model || "small";
 
         if (unavailable) {
           logger.warn(`[telegram] Dropping voice message: ${unavailable}`);
@@ -247,7 +249,7 @@ export class TelegramConnector implements Connector {
               voiceLike.file_id,
               tmpDir,
             );
-            return await sttTranscribe(localPath, model, language);
+            return await sttTranscribe(localPath, model, language, this.sttConfig);
           } finally {
             try {
               fs.rmSync(tmpDir, { recursive: true, force: true });
