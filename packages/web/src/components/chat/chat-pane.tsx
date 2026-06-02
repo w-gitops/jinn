@@ -2,6 +2,7 @@
 import { lazy, Suspense, useState, useCallback, useEffect, useRef } from 'react'
 import { api } from '@/lib/api'
 import { useOrg } from '@/hooks/use-employees'
+import { useTts } from '@/hooks/use-tts'
 import { ChatMessages } from '@/components/chat/chat-messages'
 import { ChatInput } from '@/components/chat/chat-input'
 import { ChatEmployeePicker } from '@/components/chat/chat-employee-picker'
@@ -81,6 +82,7 @@ export function ChatPane({
   // persisted session value while a turn is in flight; cleared on completion/stop.
   const [liveContextTokens, setLiveContextTokens] = useState<number | null>(null)
   const intermediateStartRef = useRef<number>(-1)
+  const tts = useTts(sessionId)
   const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(null)
   const sessionIdRef = useRef(sessionId)
   const onMetaRef = useRef(onSessionMetaChange)
@@ -715,7 +717,7 @@ export function ChatPane({
           <CliTerminal sessionId={sessionId} />
         </Suspense>
       ) : (sessionId || messages.length > 0) ? (
-        <ChatMessages messages={messages} loading={loading} streamingText={streamingText} subAgents={subAgents} />
+        <ChatMessages messages={messages} loading={loading} streamingText={streamingText} subAgents={subAgents} tts={tts} />
       ) : null}
 
       {/* Queue panel — hidden in the live xterm view (noise on top of the PTY). */}

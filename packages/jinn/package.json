@@ -1,5 +1,5 @@
 {
-  "name": "jinn-cli",
+  "name": "@w-gitops/jinn-cli",
   "version": "0.17.1",
   "description": "Lightweight AI gateway daemon orchestrating Claude Code, Codex, and Antigravity CLI",
   "license": "MIT",
@@ -50,5 +50,6 @@
     "@types/ws": "^8.5.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.0"
-  }
+  },
+  "private": true
 }

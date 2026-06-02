@@ -354,6 +354,8 @@ export interface TelegramConnectorConfig {
     model?: string;
     language?: string;
     languages?: string[];
+    backend?: "local" | "http";
+    url?: string;
   };
 }
 
@@ -508,6 +510,18 @@ export interface JinnConfig {
     /** @deprecated Use `languages` instead. Kept for backwards compat. */
     language?: string;
     languages?: string[];
+    /** "local" uses whisper-cli binary (default); "http" proxies to an OpenAI-compatible STT server. */
+    backend?: "local" | "http";
+    /** Base URL for HTTP backend, e.g. "http://192.168.200.42:9001". */
+    url?: string;
+  };
+  tts?: {
+    enabled?: boolean;
+    /** Base URL of the Chatterbox TTS server, e.g. "http://192.168.200.42:9004/v1". */
+    url?: string;
+    voice?: string;
+    /** Audio format — always use "mp3" (NEVER "wav" — Chatterbox wav is IEEE-float, not PCM). */
+    format?: "mp3" | "opus";
   };
   remotes?: Record<string, { url: string; label?: string }>;
 }

@@ -1629,7 +1629,7 @@ export async function handleApiRequest(
     if (method === "GET" && pathname === "/api/stt/status") {
       const config = context.getConfig();
       const languages = resolveLanguages(config.stt);
-      const status = getSttStatus(config.stt?.model, languages);
+      const status = getSttStatus(config.stt, languages);
       return json(res, status);
     }
 
@@ -1686,7 +1686,7 @@ export async function handleApiRequest(
       fs.writeFileSync(tmpFile, audioBuffer);
 
       try {
-        const text = await sttTranscribe(tmpFile, model, language);
+        const text = await sttTranscribe(tmpFile, model, language, config.stt);
         return json(res, { text });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
