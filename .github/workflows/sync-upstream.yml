@@ -127,8 +127,9 @@ jobs:
           BODY=$(printf '## Upstream sync\n\nUpstream version: **%s**\nCommits ahead (dev..upstream/main): **%s**\n\n%s\n\n<details><summary>commit list</summary>\n\n```\n%s\n```\n</details>\n\nTarget: `dev`. Do-not-merge pending review.\n' \
             "$UP" "${{ steps.log.outputs.count }}" "$STATE_NOTE" "${{ steps.log.outputs.body }}")
           # idempotent: reuse existing PR for this branch if present
-          if gh pr view "$BR" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh pr edit "$BR" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$BODY"
+          EXISTING_PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BR" --json number --jq '.[0].number' 2>/dev/null)
+          if [ -n "$EXISTING_PR" ]; then
+            gh pr edit "$EXISTING_PR" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$BODY"
           else
             gh pr create --repo "$GITHUB_REPOSITORY" --base dev --head "$BR" --title "$TITLE" --body "$BODY" $DRAFT
           fi
