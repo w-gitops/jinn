@@ -302,13 +302,23 @@ export class SlackConnector implements Connector {
       const messageTs = event.item.ts;
       const emoji = event.reaction;
 
-      // Skip old reactions replayed on boot
-      if (this.ignoreOldMessagesOnBoot && isOldSlackMessage(messageTs, this.bootTimeMs)) {
-        logger.debug(`Ignoring old Slack reaction on ${messageTs}`);
+      // Skip reactions that were replayed on boot. Gate on the REACTION's own event time
+      // (event_ts), NOT the reacted-to message's age — a fresh reaction on an old message
+      // (e.g. approving an approval card that has been waiting for hours) must still be honored.
+      const reactionTs = (event as any).event_ts || messageTs;
+      if (this.ignoreOldMessagesOnBoot && isOldSlackMessage(reactionTs, this.bootTimeMs)) {
+        logger.debug(`Ignoring old (replayed-on-boot) Slack reaction event ${reactionTs}`);
         return;
       }
 
       logger.info(`[slack] Reaction :${emoji}: by ${event.user} on ${channelId}:${messageTs}`);
+
+      // Instant ack so the user can see the gateway heard the reaction.
+      try {
+        await this.app.client.reactions.add({ channel: channelId, timestamp: messageTs, name: "eyes" });
+      } catch (err) {
+        logger.debug(`[slack] eyes ack skipped (likely already reacted): ${err}`);
+      }
 
       // Fetch the reacted-to message text
       // Try conversations.history first (works for root messages),

@@ -92,14 +92,19 @@ export function buildContext(opts: {
     });
   }
 
-  // ── STANDARD: Self-evolution ────────────────────────────────
+  // ── STANDARD: Self-evolution (onboarding only) ──────────────
+  // Steady-state self-evolution guidance lives in CLAUDE.md/AGENTS.md (auto-loaded).
+  // Only the dynamic onboarding flow for a fresh install is emitted here.
   if (!opts.employee) {
-    sections.push({
-      tier: Tier.STANDARD,
-      marker: "## Self-evolution",
-      content: buildEvolutionContext(portalName),
-      summary: `## Self-evolution\nUpdate knowledge files in \`~/.jinn/knowledge/\` when you learn new info about the user or their projects.`,
-    });
+    const evolution = buildEvolutionContext(portalName);
+    if (evolution) {
+      sections.push({
+        tier: Tier.STANDARD,
+        marker: "## Self-evolution",
+        content: evolution,
+        summary: `## Self-evolution\nThis is a new install — onboard the user (see CLAUDE.md).`,
+      });
+    }
   }
 
   // ── ESSENTIAL: Session context ──────────────────────────────
@@ -184,15 +189,9 @@ export function buildContext(opts: {
     });
   }
 
-  // ── OPTIONAL: Delegation protocol (COO only) ───────────────
-  if (!opts.employee) {
-    sections.push({
-      tier: Tier.OPTIONAL,
-      marker: "## Employee Delegation",
-      content: buildDelegationProtocol(gatewayUrl, portalName, opts.config),
-      summary: `## Employee Delegation Protocol\nDelegate via \`POST ${gatewayUrl}/api/sessions\` with \`{prompt, employee, parentSessionId}\`. Check children via \`GET /api/sessions/:id/children\`.`,
-    });
-  }
+  // Delegation protocol lives in CLAUDE.md/AGENTS.md (auto-loaded). The live
+  // gateway URL + the /api/sessions endpoints needed to delegate are emitted
+  // in the Gateway API reference section below, so nothing is lost here.
 
   // ── STANDARD: Gateway API reference ─────────────────────────
   sections.push({
@@ -301,40 +300,23 @@ function buildChainOfCommand(
   return "\n" + lines.join("\n") + "\n";
 }
 
+/**
+ * COO identity ANCHOR — intentionally minimal. The full operating manual
+ * (principles, home-dir layout, org system, delegation, toolbox, conventions)
+ * lives in `CLAUDE.md` / `AGENTS.md` at `~/.jinn` and is auto-loaded by every
+ * engine (claude reads CLAUDE.md; codex/agy read AGENTS.md → symlinked to
+ * CLAUDE.md). We only anchor identity + point at the manual so the manual is
+ * never duplicated into this prompt.
+ */
 function buildIdentity(portalName: string, operatorName?: string, language?: string): string {
-  const operatorLine = operatorName
-    ? `\nThe user's name is **${operatorName}**. Address them by name when appropriate.`
-    : "";
-
+  const operatorLine = operatorName ? ` You report to **${operatorName}** (CEO).` : "";
   const languageInstruction = language && language !== "English"
-    ? `\n**Language**: Always respond in ${language}. All your communication with the user must be in ${language}.`
+    ? `\n\n**Language**: Always respond in ${language}.`
     : "";
 
   return `# You are ${portalName}
 
-${portalName} is a personal AI assistant and gateway daemon. You are proactive, helpful, and opinionated — not a passive tool. You anticipate needs, suggest improvements, and take initiative when appropriate.${operatorLine}
-
-## Core principles
-- **Be proactive**: Don't just answer questions — suggest next steps, flag issues, offer to do related tasks.
-- **Be concise**: Respect the user's time. Lead with the answer, not the reasoning.
-- **Be capable**: You have access to the filesystem, can run commands, call APIs, send messages via connectors, and manage the system.
-- **Be honest**: If you don't know something or can't do something, say so clearly.
-- **Remember context**: You're part of a persistent system. Sessions can be resumed. Build on previous work.
-${languageInstruction}
-## Your home directory
-Your working directory is \`~/.jinn\` (${JINN_HOME}). This contains:
-- \`config.yaml\` — your configuration (engines, connectors, logging)
-- \`org/\` — employee definitions (YAML files defining AI workers)
-- \`skills/\` — reusable skill prompts
-- \`docs/\` — documentation and knowledge base
-- \`knowledge/\` — persistent knowledge files
-- \`cron/\` — scheduled job definitions and run history
-- \`sessions/\` — session database
-- \`logs/\` — gateway logs
-- \`CLAUDE.md\` — user-defined instructions (always follow these)
-- \`AGENTS.md\` — agent/employee documentation
-
-You can read, write, and modify any of these files to configure yourself, create new employees, add skills, etc.`;
+You are ${portalName}, COO of the user's AI organization.${operatorLine} Your full operating manual is in \`CLAUDE.md\` / \`AGENTS.md\` at \`~/.jinn\` (${JINN_HOME}) — auto-loaded by your engine. Follow it.${languageInstruction}`;
 }
 
 function buildSessionContext(opts: {
@@ -371,8 +353,8 @@ function buildConfigContext(config: JinnConfig, gatewayUrl: string): string {
   if (config.engines.codex?.model) {
     lines.push(`- Codex model: ${config.engines.codex.model}`);
   }
-  if (config.engines.gemini?.model) {
-    lines.push(`- Gemini model: ${config.engines.gemini.model}`);
+  if (config.engines.antigravity) {
+    lines.push(`- Antigravity model: ${config.engines.antigravity.model ?? "gemini-3-flash-preview (default)"}`);
   }
   if (config.logging) {
     lines.push(`- Log level: ${config.logging.level || "info"}`);
@@ -599,106 +581,30 @@ function buildEnvironmentContext(): string | null {
   return lines.join("\n");
 }
 
-function buildEvolutionContext(portalName: string): string {
+/**
+ * Onboarding-only. Steady-state self-evolution guidance (update knowledge files,
+ * CLAUDE.md on persistent feedback, etc.) lives in CLAUDE.md/AGENTS.md and is
+ * auto-loaded — so this returns null once the install is configured.
+ */
+function buildEvolutionContext(portalName: string): string | null {
   const profilePath = path.join(JINN_HOME, "knowledge", "user-profile.md");
   let profileContent = "";
   try { profileContent = fs.readFileSync(profilePath, "utf-8").trim(); } catch {}
 
   const isNew = profileContent.length < 50;
+  if (!isNew) return null;
 
-  const lines: string[] = [`## Self-evolution`];
-
-  if (isNew) {
-    lines.push(`**ONBOARDING MODE**: This is a new or unconfigured ${portalName} installation.`);
-    lines.push(`Before answering the user's request, introduce yourself briefly and ask them:`);
-    lines.push(`1. What's your name and what do you do? (business, role, projects)`);
-    lines.push(`2. What should ${portalName} help you automate? (code reviews, deployments, monitoring, etc.)`);
-    lines.push(`3. Communication preferences — emoji style, verbosity (concise vs detailed), language`);
-    lines.push(`4. Any active projects ${portalName} should know about?`);
-    lines.push(`\nAfter the user responds, write their answers to \`~/.jinn/knowledge/user-profile.md\` and \`~/.jinn/knowledge/preferences.md\`.`);
-    lines.push(`Then proceed to help with their original request.`);
-  } else {
-    lines.push(`You learn and evolve over time. When you discover new information about the user, their projects, or their preferences:`);
-    lines.push(`- Update \`~/.jinn/knowledge/user-profile.md\` with business/identity info`);
-    lines.push(`- Update \`~/.jinn/knowledge/preferences.md\` with style/communication preferences`);
-    lines.push(`- Update \`~/.jinn/knowledge/projects.md\` with project details`);
-    lines.push(`- If the user gives you persistent feedback (e.g. "always do X", "never do Y"), update \`~/.jinn/CLAUDE.md\``);
-    lines.push(`\nDo this silently — don't announce every file update. Just evolve.`);
-  }
-
-  return lines.join("\n");
-}
-
-/**
- * Delegation protocol: condensed version focusing on the essential API patterns.
- * Verbose examples and multi-paragraph explanations have been trimmed.
- */
-function buildDelegationProtocol(gatewayUrl: string, _portalName: string, config?: JinnConfig): string {
-  const defaultEngine = config?.engines.default || "claude";
-  const engineConfig = defaultEngine === "codex"
-    ? config?.engines.codex
-    : defaultEngine === "gemini"
-      ? config?.engines.gemini ?? config?.engines.claude
-      : config?.engines.claude;
-  const childOverride = engineConfig?.childEffortOverride;
-
-  const effortOverrideNote = childOverride
-    ? `\n> **Note**: \`childEffortOverride\` is set to \`"${childOverride}"\`. All child sessions use this effort level.`
-    : "";
-
-  return `## Employee Delegation Protocol
-
-You are the COO. You orchestrate employees by creating **linked child sessions**.
-
-### How delegation works
-
-1. **Detect**: Spot \`@employee-name\` tags or infer the right employee from context.
-
-2. **Check for existing children first**:
-\`\`\`bash
-curl -s ${gatewayUrl}/api/sessions/<your-session-id>/children
-\`\`\`
-If a child exists for this employee, reuse it (skip to step 5).
-
-3. **Brief**: Craft clear, targeted instructions — translate user words into actionable briefs.
-
-4. **Spawn**:
-\`\`\`bash
-curl -s -X POST ${gatewayUrl}/api/sessions \\
-  -H 'Content-Type: application/json' \\
-  -d '{"prompt": "<brief>", "employee": "<name>", "parentSessionId": "<your-session-id>"}'
-\`\`\`
-
-5. **Follow up** (existing child):
-\`\`\`bash
-curl -s -X POST ${gatewayUrl}/api/sessions/<child-id>/message \\
-  -H 'Content-Type: application/json' \\
-  -d '{"message": "<follow-up>"}'
-\`\`\`
-
-6. **Follow up via GET**: When a child replies, the gateway wakes you with a notification message, so you can end your turn and be called back. Callbacks are best-effort though — if you resume and a child you're waiting on hasn't reported, poll \`GET /api/sessions/:id?last=N\` (check \`status\` is \`idle\`) rather than stalling. Read only the latest messages to avoid context pollution.
-
-### Key rules
-- **Always reuse** child sessions — never create duplicates for the same employee.
-- **Parallel spawning**: For independent sub-tasks, spawn multiple employees simultaneously.
-- **Cross-reference**: Compare results from multiple employees before responding.
-- **Effort levels**: Include \`"effortLevel"\` in the API body: \`"low"\` (lookups), \`"medium"\` (routine), \`"high"\` (code/architecture).
-
-### Oversight Levels
-
-| Level | When | You do |
-|-------|------|--------|
-| **TRUST** | Simple lookups, status checks | Skim, relay directly |
-| **VERIFY** | Code changes, routine work | Read fully, spot-check key files |
-| **THOROUGH** | Architecture, breaking changes, security | Full review, multi-turn follow-up, verify changes |
-
-### Manager Delegation
-
-When a department has 3+ employees, promote a senior to **manager**. Managers handle their own delegation; you review their summaries, not individual work.
-
-### Your session ID
-
-Your current session ID is in the "Current session" section above. Use it as \`parentSessionId\`.${effortOverrideNote}`;
+  return [
+    `## Self-evolution`,
+    `**ONBOARDING MODE**: This is a new or unconfigured ${portalName} installation.`,
+    `Before answering the user's request, introduce yourself briefly and ask them:`,
+    `1. What's your name and what do you do? (business, role, projects)`,
+    `2. What should ${portalName} help you automate? (code reviews, deployments, monitoring, etc.)`,
+    `3. Communication preferences — emoji style, verbosity (concise vs detailed), language`,
+    `4. Any active projects ${portalName} should know about?`,
+    `\nAfter the user responds, write their answers to \`~/.jinn/knowledge/user-profile.md\` and \`~/.jinn/knowledge/preferences.md\`.`,
+    `Then proceed to help with their original request.`,
+  ].join("\n");
 }
 
 function buildApiReference(gatewayUrl: string, portalName: string): string {

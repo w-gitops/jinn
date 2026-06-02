@@ -16,6 +16,31 @@ engines:
     model: gpt-5.4
     effortLevel: high
 
+# Model + capability registry — single source of truth for the UI selectors.
+# Add a new model here (id + label + capability flags); no code change needed.
+# effortLevels gate the effort picker (empty = no effort support for that model).
+# Omit this whole block and the registry is synthesized from engines.<name>.model.
+models:
+  claude:
+    default: opus
+    effortMechanism: claude-flag
+    models:
+      - { id: opus, label: "Opus 4.8", supportsEffort: true, effortLevels: [low, medium, high], contextWindow: 1000000 }
+      - { id: claude-sonnet-4-6, label: "Sonnet 4.6", supportsEffort: true, effortLevels: [low, medium, high], contextWindow: 200000 }
+      - { id: claude-haiku-4-5, label: "Haiku 4.5", supportsEffort: true, effortLevels: [low, medium, high], contextWindow: 200000 }
+  codex:
+    default: gpt-5.4
+    effortMechanism: codex-config
+    models:
+      - { id: gpt-5.4, label: "GPT-5.4 Codex", supportsEffort: true, effortLevels: [low, medium, high, xhigh], contextWindow: 272000 }
+      - { id: gpt-5.5, label: "GPT-5.5", supportsEffort: true, effortLevels: [low, medium, high, xhigh], contextWindow: 272000 }
+  antigravity:
+    default: gemini-3-flash-preview
+    effortMechanism: none
+    models:
+      - { id: gemini-3-flash-preview, label: "Gemini 3 Flash", supportsEffort: false, effortLevels: [], contextWindow: 1000000 }
+      - { id: gemini-3-pro-preview, label: "Gemini 3 Pro", supportsEffort: false, effortLevels: [], contextWindow: 1000000 }
+
 connectors:
   slack:
     shareSessionInChannel: false

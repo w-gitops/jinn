@@ -53,6 +53,24 @@ describe('buildNewSessionParams', () => {
     expect(params).not.toHaveProperty('attachments')
   })
 
+  it('includes engine/model/effortLevel when provided (new-chat selector)', () => {
+    const params = buildNewSessionParams({
+      message: 'hi',
+      selectedEmployee: null,
+      engine: 'codex',
+      model: 'gpt-5.4',
+      effortLevel: 'xhigh',
+    })
+    expect(params).toMatchObject({ engine: 'codex', model: 'gpt-5.4', effortLevel: 'xhigh' })
+  })
+
+  it('omits engine/model/effortLevel keys when not provided', () => {
+    const params = buildNewSessionParams({ message: 'hi', selectedEmployee: null })
+    expect(params).not.toHaveProperty('engine')
+    expect(params).not.toHaveProperty('model')
+    expect(params).not.toHaveProperty('effortLevel')
+  })
+
   it('uses current selectedEmployee value, not stale initial value', () => {
     // Simulates the scenario where user first sees null (COO default),
     // then selects an employee before sending. The params must reflect

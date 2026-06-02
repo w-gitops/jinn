@@ -1,12 +1,16 @@
 import fs from "node:fs";
-import fsp from "node:fs/promises";
 import * as pty from "node-pty";
 import type { InterruptibleEngine, EngineRunOpts, EngineResult, EngineRateLimitInfo, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { JINN_HOME, CLAUDE_SETTINGS_DIR, HOOK_RELAY_SCRIPT } from "../shared/paths.js";
 import { writeSessionSettings } from "../shared/claude-settings.js";
 import { PtyLifecycleManager, type PtyHandle } from "./pty-lifecycle.js";
+import type { PtyControlEvent, PtyViewEngine, PtyIdleSpawnOpts } from "./pty-view-engine.js";
 import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
+import { SsePtyProxy, type SseDataEvent, type StreamCtx } from "./sse-pty-proxy.js";
+import { neutralizeForPaste } from "../shared/skill-commands.js";
+
+export type { PtyControlEvent } from "./pty-view-engine.js";
 
 interface InteractiveArgsOpts {
   prompt: string;
@@ -20,10 +24,6 @@ interface InteractiveArgsOpts {
 }
 
 interface TranscriptUsage { inputTokens: number; outputTokens: number; cacheTokens: number; assistantTurns: number; }
-
-interface TranscriptTailer {
-  stop(): void;
-}
 
 // $/million tokens. Conservative defaults.
 const MODEL_PRICES: Record<string, { in: number; out: number }> = {
@@ -59,6 +59,25 @@ function sumTranscriptUsage(content: string): TranscriptUsage {
     u.cacheTokens += Number(usage.cache_read_input_tokens ?? 0) + Number(usage.cache_creation_input_tokens ?? 0);
   }
   return u;
+}
+
+/** Most recent turn's input-context size (input + cache-read + cache-creation
+ *  tokens) from the transcript — how full the window is. Undefined if no usage. */
+function lastTurnContextTokens(transcriptPath: string): number | undefined {
+  let content: string;
+  try { content = fs.readFileSync(transcriptPath, "utf-8"); } catch { return undefined; }
+  let last: number | undefined;
+  for (const line of content.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    let msg: any;
+    try { msg = JSON.parse(t); } catch { continue; }
+    if (msg.type !== "assistant") continue;
+    const u = msg?.message?.usage;
+    if (!u) continue;
+    last = Number(u.input_tokens ?? 0) + Number(u.cache_read_input_tokens ?? 0) + Number(u.cache_creation_input_tokens ?? 0);
+  }
+  return last && last > 0 ? last : undefined;
 }
 
 function computeInteractiveCost(transcriptPath: string, model?: string): { cost: number; turns: number } | null {
@@ -107,122 +126,42 @@ function buildInteractiveArgs(o: InteractiveArgsOpts): string[] {
 }
 
 /**
- * Parse one transcript JSONL line into StreamDeltas.
- * Emits `text` deltas (incremental) and tool_use/tool_result markers. We intentionally
- * do NOT emit `text_snapshot` deltas here — those were a defense against `claude -p`'s
- * dropped-token streaming. Interactive mode tails the transcript file (append-only,
- * no drops), so cumulative snapshots are pure quadratic overhead.
+ * Translate one parsed Anthropic SSE `data:` event into StreamDeltas. This is the
+ * live streaming source (replacing the old transcript tailer): word-by-word text
+ * in true order, tool markers positioned correctly relative to text, and live
+ * context tokens from message_start.usage.
+ *  - message_start.usage         → `context` (input + cache_read + cache_creation)
+ *  - content_block_start tool_use → `tool_use` marker (in-order with text)
+ *  - content_block_delta text_delta → incremental `text` (word-by-word)
+ * tool_result is NOT in the assistant SSE stream (tools run between messages); the
+ * PostToolUse hook supplies that completion marker. input_json_delta / thinking
+ * deltas are intentionally not surfaced to the chat pane.
  */
-function parseTranscriptLine(line: string): StreamDelta[] {
-  const trimmed = line.trim();
-  if (!trimmed) return [];
-  let msg: any;
-  try { msg = JSON.parse(trimmed); } catch { return []; }
-
-  const out: StreamDelta[] = [];
-  const content = msg?.message?.content;
-  if (!Array.isArray(content)) return out;
-
-  if (msg.type === "assistant") {
-    let text = "";
-    for (const block of content) {
-      if (block.type === "text" && typeof block.text === "string") text += block.text;
-      else if (block.type === "tool_use") {
-        out.push({ type: "tool_use", content: `Using ${block.name ?? "tool"}`, toolName: String(block.name ?? "tool"), toolId: String(block.id ?? "") });
+export function sseEventToDeltas(e: SseDataEvent): StreamDelta[] {
+  switch (e.type) {
+    case "message_start": {
+      const u = (e as any).message?.usage;
+      if (!u) return [];
+      const ctx = Number(u.input_tokens ?? 0) + Number(u.cache_read_input_tokens ?? 0) + Number(u.cache_creation_input_tokens ?? 0);
+      return ctx > 0 ? [{ type: "context", content: String(ctx) }] : [];
+    }
+    case "content_block_start": {
+      const cb = (e as any).content_block;
+      if (cb?.type === "tool_use") {
+        return [{ type: "tool_use", content: String(cb.name ?? "tool"), toolName: String(cb.name ?? "tool"), toolId: String(cb.id ?? "") }];
       }
+      return [];
     }
-    if (text) {
-      out.push({ type: "text", content: text });
+    case "content_block_delta": {
+      const d = (e as any).delta;
+      if (d?.type === "text_delta" && typeof d.text === "string" && d.text.length > 0) {
+        return [{ type: "text", content: d.text }];
+      }
+      return [];
     }
-  } else if (msg.type === "user") {
-    for (const block of content) {
-      if (block.type === "tool_result") out.push({ type: "tool_result", content: "" });
-    }
+    default:
+      return [];
   }
-  return out;
-}
-
-/** Tail a transcript file, emitting StreamDeltas for each appended line.
- *  Uses async fs.promises so a slow disk read never blocks the event loop
- *  (which would stall the hook server, PTY data callbacks, and every other
- *  in-flight WS / HTTP handler). A single fd is kept open across reads and
- *  reused; readNew() guards against re-entry with a queued flag so two
- *  rapid fs.watch events can't race on the same fd. */
-function tailTranscript(filePath: string, onDelta: (d: StreamDelta) => void): TranscriptTailer {
-  let offset = 0;
-  try { offset = fs.statSync(filePath).size; } catch { /* file may not exist yet; offset stays 0 */ }
-  let buf = "";
-  let stopped = false;
-  let fh: fsp.FileHandle | undefined;
-  let reading = false;
-  let pending = false;
-
-  const ensureOpen = async (): Promise<fsp.FileHandle | undefined> => {
-    if (fh) return fh;
-    try { fh = await fsp.open(filePath, "r"); } catch { return undefined; }
-    return fh;
-  };
-
-  const readNew = async (): Promise<void> => {
-    if (stopped) return;
-    if (reading) { pending = true; return; }
-    reading = true;
-    try {
-      do {
-        pending = false;
-        let stat: fs.Stats;
-        try { stat = await fsp.stat(filePath); } catch { return; }
-        if (stat.size <= offset) return;
-        const handle = await ensureOpen();
-        if (!handle || stopped) return;
-        const size = stat.size - offset;
-        const chunk = Buffer.alloc(size);
-        let bytesRead: number;
-        try {
-          ({ bytesRead } = await handle.read(chunk, 0, size, offset));
-        } catch (err) {
-          // Read failure (disk error, revoked fd, etc.) leaves the cached fh in
-          // an unusable state — close+null it so the next watcher event re-opens
-          // the file cleanly instead of looping forever on a dead fd.
-          try { await handle.close(); } catch { /* already gone */ }
-          if (fh === handle) fh = undefined;
-          logger.warn(`tailTranscript read failed for ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
-          return;
-        }
-        offset += bytesRead;
-        buf += chunk.subarray(0, bytesRead).toString("utf-8");
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
-        for (const l of lines) {
-          for (const d of parseTranscriptLine(l)) {
-            onDelta(d);
-          }
-        }
-      } while (pending && !stopped);
-    } finally {
-      reading = false;
-    }
-  };
-
-  let watcher: fs.FSWatcher | undefined;
-  try { watcher = fs.watch(filePath, () => { void readNew(); }); } catch { /* file may not exist yet */ }
-  // One-shot drain shortly after attach in case the file was appended between
-  // SessionStart hook and watcher install. NOT a poll — just a single catch-up.
-  const initialDrain = setTimeout(() => { void readNew(); }, 30);
-  initialDrain.unref();
-  // Do NOT initial-drain at offset 0 — that would replay the resumed conversation
-  // history as fresh deltas. fs.watch picks up new appends from `offset` onward.
-
-  return {
-    stop() {
-      stopped = true;
-      watcher?.close();
-      clearTimeout(initialDrain);
-      // Close the fd off-thread; nothing waits on this.
-      void fh?.close().catch(() => { /* ignore */ });
-      fh = undefined;
-    },
-  };
 }
 
 export interface TurnResolverOpts {
@@ -314,23 +253,28 @@ const SCROLLBACK_CAP_BYTES = 262144;
 /** Bracketed-paste `text` into a PTY then submit with CR after a 50ms beat.
  *  Phase 0 finding: bracketed-paste does NOT neutralize a leading /, @, or ! —
  *  they still trigger the slash-command / mention / bash-mode handlers and the
- *  turn is never submitted. Prepend a space so it's treated as a literal message.
+ *  turn is never submitted. neutralizeForPaste() prepends a space for mentions,
+ *  bash-mode, and jinn-skill slash commands, while letting engine-native commands
+ *  (/compact, /clear, /model, …) pass through raw so the TUI actually runs them.
  *  Shared by injectPrompt() (warm-PTY first turn) and writeStdin() (raw WS input). */
 function pasteAndSubmit(proc: pty.IPty, text: string): void {
-  let payload = text;
-  if (/^[/@!]/.test(payload)) payload = " " + payload;
+  const payload = neutralizeForPaste(text);
   proc.write(`\x1b[200~${payload}\x1b[201~`);
   setTimeout(() => proc.write("\r"), 50);
 }
 
-/** Out-of-band control event for PTY subscribers. Currently only `reset` (emitted
- *  when the PTY respawns mid-session so the client xterm can clear and re-attach). */
-export type PtyControlEvent = { type: "reset" };
-
-export class InteractiveClaudeEngine implements InterruptibleEngine {
+export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngine {
   name = "claude" as const;
-  /** Active turn resolvers keyed by Jinn session id. */
-  private active = new Map<string, { resolver: TurnResolver; tailer?: TranscriptTailer }>();
+  /** Active turn resolvers keyed by Jinn session id. `boundProc` is the specific
+   *  PTY serving this turn (captured at spawn / warm-reuse). A PTY's onExit only
+   *  interrupts the active resolver when it IS that bound proc — so a stale PTY
+   *  released by a kill->respawn race can't poison the freshly-started turn.
+   *  `onStream` is the current turn's delta callback; the per-PTY SSE proxy routes
+   *  parsed events here (a PTY outlives its turn, so the proxy looks this up live). */
+  private active = new Map<string, { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty }>();
+  /** Sessions with an in-flight async idle-spawn (proxy.start awaited) — prevents
+   *  a second ensureIdleSpawn from racing in a duplicate PTY during that gap. */
+  private idleSpawning = new Set<string>();
   /** Per-session PTY output streams: scrollback ring buffer (chunk list + running byte total)
    *  + live subscribers. Survives PTY respawn. The chunk-list ring avoids the O(N) realloc
    *  that a `(buffer + d).slice(-CAP)` per data event would cause at hot output. */
@@ -348,6 +292,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
    *  warm PTY was reaped — otherwise spawn() falls back to 120×40 and the TUI
    *  text body is locked in at the wrong width. */
   private lastGeom = new Map<string, { cols: number; rows: number }>();
+  /** Model/effort the live PTY was spawned with, per session. `--model`/`--effort`
+   *  apply only at spawn, so a mid-chat switch must cold-respawn rather than reuse
+   *  the warm PTY (which would keep running the old model). */
+  private spawnParams = new Map<string, { model?: string; effortLevel?: string }>();
 
   constructor(
     private lifecycle: PtyLifecycleManager,
@@ -369,23 +317,37 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       appendSystemPrompt: opts.systemPrompt,
     });
 
-    const warm = this.lifecycle.getWarm(jinnSessionId);
+    let warm = this.lifecycle.getWarm(jinnSessionId);
+    // Mid-chat model/effort switch: `--model`/`--effort` bind at spawn, so a warm
+    // PTY would silently keep the OLD model. If the request differs from what this
+    // PTY was spawned with, drop the warm PTY and cold-respawn (--resume keeps the
+    // conversation) so the new model/effort actually takes effect.
+    if (warm) {
+      const prev = this.spawnParams.get(jinnSessionId);
+      const norm = (v?: string) => (!v || v === "default" ? "" : v);
+      if (prev && (norm(opts.model) !== norm(prev.model) || norm(opts.effortLevel) !== norm(prev.effortLevel))) {
+        logger.info(`InteractiveClaudeEngine: model/effort changed for ${jinnSessionId} (model ${prev.model ?? "default"}→${opts.model ?? "default"}, effort ${prev.effortLevel ?? "default"}→${opts.effortLevel ?? "default"}) — cold respawn`);
+        this.lifecycle.releaseSession(jinnSessionId);
+        warm = undefined;
+      }
+    }
     const resolver = new TurnResolver({
       fallbackSessionId: opts.resumeSessionId,
       assumeStarted: !!warm, // warm PTY = SessionStart already fired (turn 1 or idle spawn)
     });
-    const entry: { resolver: TurnResolver; tailer?: TranscriptTailer } = { resolver };
+    const entry: { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty } = { resolver, onStream: opts.onStream };
     this.active.set(jinnSessionId, entry);
 
     // Register BEFORE spawning so a fast SessionStart is buffered+drained, not lost.
     this.hookRegistry.register(jinnSessionId, (h) => {
       resolver.onHook(h);
-      if (h.hook_event_name === "SessionStart" && typeof h.transcript_path === "string" && !entry.tailer) {
-        entry.tailer = tailTranscript(h.transcript_path, (d) => opts.onStream?.(d));
-      }
-      if ((h.hook_event_name === "PreToolUse" || h.hook_event_name === "PostToolUse") && opts.onStream) {
+      // tool_use markers + intermediate text now stream from the per-PTY SSE proxy
+      // (content_block_start / content_block_delta) in true order. The hook only
+      // supplies tool_result — the assistant SSE stream has no tool_result event
+      // (tools execute locally between assistant messages).
+      if (h.hook_event_name === "PostToolUse" && opts.onStream) {
         opts.onStream({
-          type: h.hook_event_name === "PreToolUse" ? "tool_use" : "tool_result",
+          type: "tool_result",
           content: String(h.tool_name ?? ""),
           toolName: typeof h.tool_name === "string" ? h.tool_name : undefined,
         });
@@ -398,17 +360,34 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       // between getWarm() above and the proc.write() inside injectPrompt.
       this.lifecycle.turnStarted(jinnSessionId);
       this.injectPrompt(warm, opts);
+      entry.boundProc = (warm as any)._proc as pty.IPty | undefined;
     } else {
-      const handle = this.spawn(jinnSessionId, opts, settingsPath);
+      const handle = await this.spawn(jinnSessionId, opts, settingsPath);
       this.lifecycle.adopt(jinnSessionId, handle);
       this.lifecycle.turnStarted(jinnSessionId);
+      entry.boundProc = (handle as any)._proc as pty.IPty | undefined;
     }
+
+    // Watchdog: if the bound PTY dies without the resolver settling (e.g. the
+    // onExit identity-guard didn't match in a kill→respawn race), the turn would
+    // hang forever — runWebSession's 5s heartbeat would zombie status:"running"
+    // and the completion (session:completed + notifyParentSession parent callback)
+    // would never fire. Both the stuck "in progress" badge and lost child-session
+    // callbacks trace to this. Force-settle once the proc is provably dead so
+    // run() always resolves and the normal completion path runs.
+    const watchdog = setInterval(() => {
+      const p = entry.boundProc as { _exitCode?: number | null } | undefined;
+      if (p && p._exitCode != null) {
+        resolver.interrupt("Interrupted: claude process exited");
+      }
+    }, 5000);
+    watchdog.unref?.();
 
     let result: EngineResult;
     try {
       result = await resolver.promise;
     } finally {
-      entry.tailer?.stop();
+      clearInterval(watchdog);
       this.hookRegistry.unregister(jinnSessionId);
       this.active.delete(jinnSessionId);
       this.lifecycle.turnEnded(jinnSessionId); // manager decides kill vs keep-warm
@@ -419,6 +398,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     if (transcriptPath && !result.error) {
       const cost = computeInteractiveCost(transcriptPath, opts.model);
       if (cost) { result.cost = cost.cost; result.numTurns = cost.turns; }
+      // Context-meter: most recent turn's input context (input + cache), mirroring
+      // headless claude.ts so interactive/CLI-view turns also populate the meter.
+      const ctx = lastTurnContextTokens(transcriptPath);
+      if (ctx) result.contextTokens = ctx;
     }
     // Map a StopFailure rate-limit into result.rateLimit so manager.ts's
     // wait/retry/fallback machinery engages exactly as it does for `claude -p`.
@@ -429,11 +412,18 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
 
   /** Build the env passed to the claude PTY: inherits process.env but strips
    *  CLAUDECODE / CLAUDE_CODE_* so the child doesn't think it's nested, then
-   *  enables fullscreen rendering. Shared by spawn() and ensureIdleSpawn(). */
-  private buildPtyEnv(): Record<string, string> {
+   *  enables fullscreen rendering. Shared by spawn() and ensureIdleSpawn().
+   *  When `proxyPort` is given, points ANTHROPIC_BASE_URL at the per-PTY SSE
+   *  forward proxy on 127.0.0.1 — subscription OAuth token is passed separately
+   *  by claude, so this stays cc_entrypoint=cli / subsidy-safe (verified Item A). */
+  private buildPtyEnv(proxyPort?: number): Record<string, string> {
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
       if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) continue;
+      // Belt-and-suspenders: a stray API key/token would flip the child to metered
+      // API billing instead of the Max subscription. Strip both so the PTY session
+      // always resolves to subscription auth (cc_entrypoint=cli).
+      if (k === "ANTHROPIC_API_KEY" || k === "ANTHROPIC_AUTH_TOKEN") continue;
       if (v !== undefined) env[k] = v;
     }
     // Use claude's main-screen renderer (NOT the alt-screen fullscreen one).
@@ -442,13 +432,43 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     // impossible while NO_FLICKER is on. Trading mild flicker for usable scroll.
     env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN = "1";
     env.CLAUDE_CODE_RESUME_TOKEN_THRESHOLD = "999999999"; // suppress "resume from summary?" picker — always full-resume
+    if (proxyPort) env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${proxyPort}`;
     return env;
   }
 
+  /** Translate parsed SSE events from a PTY's proxy into StreamDeltas and route
+   *  them to the active turn's onStream. A PTY outlives its turn, so we look up
+   *  the live active entry here rather than capturing onStream at spawn. */
+  private handleSseEvent(jinnSessionId: string, e: SseDataEvent, ctx: StreamCtx): void {
+    const onStream = this.active.get(jinnSessionId)?.onStream;
+    if (!onStream) return; // idle PTY / no turn in flight — nothing to stream
+    // Tag sub-agent deltas so the chat pane routes them into a collapsible card
+    // instead of the main transcript; main-agent deltas pass through untagged.
+    for (const d of sseEventToDeltas(e)) onStream(ctx.subAgent ? { ...d, subAgent: ctx.subAgent } : d);
+  }
+
+  /** Allocate + start a per-PTY SSE forward proxy. Returns the proxy and its port,
+   *  or {port:0} if it failed to bind — in which case the PTY is spawned WITHOUT
+   *  ANTHROPIC_BASE_URL (direct to Anthropic): the turn still works, only live
+   *  word-by-word streaming degrades. */
+  private async startProxy(jinnSessionId: string): Promise<{ proxy: SsePtyProxy; port: number }> {
+    const proxy = new SsePtyProxy(jinnSessionId, (e, ctx) => this.handleSseEvent(jinnSessionId, e, ctx));
+    try {
+      const port = await proxy.start();
+      return { proxy, port };
+    } catch (err) {
+      logger.warn(`SSE proxy failed to start for session ${jinnSessionId} (streaming degraded): ${err instanceof Error ? err.message : String(err)}`);
+      proxy.stop();
+      return { proxy, port: 0 };
+    }
+  }
+
   /** Wrap a freshly-spawned pty.IPty in a PtyHandle and wire its output into
-   *  the session's scrollback ring buffer + live subscribers. Optional onExitExtra
-   *  runs on PTY exit (spawn() uses this to interrupt the active resolver). */
-  private wireProcToStream(jinnSessionId: string, proc: pty.IPty, onExitExtra?: () => void): PtyHandle {
+   *  the session's scrollback ring buffer + live subscribers. On PTY exit, if this
+   *  proc is the one bound to the active turn, the resolver is interrupted (a crash
+   *  with no Stop hook); a stale proc replaced by a respawn is treated as benign.
+   *  `proxy` (the per-PTY SSE forward proxy) is torn down when this PTY exits. */
+  private wireProcToStream(jinnSessionId: string, proc: pty.IPty, proxy?: SsePtyProxy): PtyHandle {
     const handle: PtyHandle = {
       pid: proc.pid,
       get killed() { return (proc as any)._exitCode != null; },
@@ -497,31 +517,51 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       }
     });
     proc.onExit(() => {
-      // Clear scrollback so a stale farewell (Claude's "Resume this session…" hint
-      // printed on SIGHUP shutdown) doesn't persist into the next PTY incarnation.
-      const s = this.streams.get(jinnSessionId);
-      if (s) {
-        s.chunks = [];
-        s.totalBytes = 0;
-        // If no WS subscribers are attached, the entry is dead weight — drop it so
-        // the map doesn't leak entries for every session that ever ran. Subscribers,
-        // when present, are kept so a future respawn can notify them via Task 4's
-        // reset event; that path also clears the subscribers Set on full teardown.
-        if (s.subscribers.size === 0) {
-          this.streams.delete(jinnSessionId);
+      // Session-level cleanup MUST be identity-gated. In a kill->respawn race the
+      // lifecycle/stream entries already point at the NEW PTY by the time THIS
+      // (old, killed) PTY's exit fires. releaseSession is keyed by sessionId, so an
+      // unguarded call here would kill the freshly-adopted PTY — whose own onExit
+      // then fires the spurious second "claude process exited". Only this PTY being
+      // the session's CURRENT warm handle means the cleanup is ours to do.
+      const isCurrent = this.lifecycle.getWarm(jinnSessionId) === handle;
+      if (isCurrent) {
+        // Clear scrollback so a stale farewell (Claude's "Resume this session…" hint
+        // printed on SIGHUP shutdown) doesn't persist into the next PTY incarnation.
+        const s = this.streams.get(jinnSessionId);
+        if (s) {
+          s.chunks = [];
+          s.totalBytes = 0;
+          // If no WS subscribers are attached, the entry is dead weight — drop it so
+          // the map doesn't leak entries for every session that ever ran. Subscribers,
+          // when present, are kept so a future respawn can notify them via Task 4's
+          // reset event; that path also clears the subscribers Set on full teardown.
+          if (s.subscribers.size === 0) {
+            this.streams.delete(jinnSessionId);
+          }
         }
+        // Release the lifecycle entry so the dead handle isn't picked up by a future
+        // run() as "warm" — that would inject into a corpse.
+        this.lifecycle.releaseSession(jinnSessionId);
       }
-      // Release the lifecycle entry so the dead handle isn't picked up by a future
-      // run() as "warm" — that would inject into a corpse.
-      this.lifecycle.releaseSession(jinnSessionId);
-      onExitExtra?.();
+      // Tear down THIS PTY's SSE forward proxy (one proxy per PTY) regardless.
+      proxy?.stop();
+      // PTY exited without a Stop hook (crash / early exit) — settle the active turn
+      // as interrupted so run()'s promise doesn't hang. BUT only if this dying proc is
+      // the one bound to the active turn: after a kill->respawn race the active entry
+      // holds the NEW turn's resolver+proc, and this (old, released) proc must not
+      // poison it. Identity mismatch => benign cleanup, no interrupt.
+      const e = this.active.get(jinnSessionId);
+      if (e && e.boundProc === proc) {
+        e.resolver.interrupt("Interrupted: claude process exited");
+      }
     });
     (handle as any)._proc = proc;
     return handle;
   }
 
-  /** node-pty spawn of the genuine claude binary (no -p → cc_entrypoint=cli). */
-  private spawn(jinnSessionId: string, opts: EngineRunOpts, settingsPath: string): PtyHandle {
+  /** node-pty spawn of the genuine claude binary (no -p → cc_entrypoint=cli).
+   *  Allocates a per-PTY SSE forward proxy first and points the child at it. */
+  private async spawn(jinnSessionId: string, opts: EngineRunOpts, settingsPath: string): Promise<PtyHandle> {
     const args = buildInteractiveArgs({
       prompt: opts.prompt,
       settingsPath,
@@ -532,10 +572,11 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       cliFlags: opts.cliFlags,
       attachments: opts.attachments,
     });
-    const env = this.buildPtyEnv();
+    const { proxy, port } = await this.startProxy(jinnSessionId);
+    const env = this.buildPtyEnv(port || undefined);
     const bin = opts.bin || "claude";
     const geom = this.lastGeom.get(jinnSessionId);
-    logger.info(`InteractiveClaudeEngine spawning ${bin} (resume: ${opts.resumeSessionId || "none"}, geom: ${geom ? `${geom.cols}×${geom.rows}` : "default"})`);
+    logger.info(`InteractiveClaudeEngine spawning ${bin} (resume: ${opts.resumeSessionId || "none"}, geom: ${geom ? `${geom.cols}×${geom.rows}` : "default"}, sseProxy: ${port || "off"})`);
     const proc = pty.spawn(bin, args, {
       name: "xterm-256color",
       cols: geom?.cols ?? 120,
@@ -543,20 +584,22 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       cwd: opts.cwd || JINN_HOME,
       env,
     });
-    return this.wireProcToStream(jinnSessionId, proc, () => {
-      // PTY exited without a Stop hook (crash / early exit) — settle as interrupted.
-      const e = this.active.get(jinnSessionId);
-      e?.resolver.interrupt("Interrupted: claude process exited");
-    });
+    this.spawnParams.set(jinnSessionId, { model: opts.model, effortLevel: opts.effortLevel });
+    return this.wireProcToStream(jinnSessionId, proc, port ? proxy : undefined);
   }
 
-  /** Spawn an idle PTY for the CLI/xterm view. If a claudeSessionId is provided,
+  /** Spawn an idle PTY for the CLI/xterm view. If an engineSessionId is provided,
    *  resumes that session; otherwise spawns a fresh `claude` so a brand-new CLI-mode
    *  session shows the TUI before the user types anything.
-   *  Does NOTHING if a warm PTY already exists or a turn is starting. */
-  ensureIdleSpawn(jinnSessionId: string, opts: { claudeSessionId?: string; cwd?: string; model?: string; bin?: string; cols?: number; rows?: number }): void {
+   *  Does NOTHING if a warm PTY already exists or a turn is starting.
+   *  Fire-and-forget (void): allocating the per-PTY SSE proxy is async, so the
+   *  actual spawn happens after a microtask; `idleSpawning` guards re-entrancy. */
+  ensureIdleSpawn(jinnSessionId: string, opts: PtyIdleSpawnOpts): void {
     if (this.lifecycle.getWarm(jinnSessionId)) return;
     if (this.active.has(jinnSessionId)) return; // a turn is starting/running — let run() spawn
+    if (this.idleSpawning.has(jinnSessionId)) return; // an idle spawn is already in flight
+    this.idleSpawning.add(jinnSessionId);
+
     const settingsPath = writeSessionSettings(CLAUDE_SETTINGS_DIR, jinnSessionId, {
       sessionId: jinnSessionId,
       relayScript: HOOK_RELAY_SCRIPT,
@@ -567,25 +610,43 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       "--disallowedTools", "AskUserQuestion", "ExitPlanMode",
       "--settings", settingsPath,
     ];
-    if (opts.claudeSessionId) args.unshift("--resume", opts.claudeSessionId);
+    if (opts.engineSessionId) args.unshift("--resume", opts.engineSessionId);
     if (opts.model) args.push("--model", opts.model);
-    const env = this.buildPtyEnv();
     const bin = opts.bin || "claude";
     // Caller (pty-ws) passes the client's current cols/rows. Cache them so a
     // future cold spawn through run() picks up the right geometry too.
     const cols = opts.cols ?? this.lastGeom.get(jinnSessionId)?.cols ?? 120;
     const rows = opts.rows ?? this.lastGeom.get(jinnSessionId)?.rows ?? 40;
     if (opts.cols && opts.rows) this.lastGeom.set(jinnSessionId, { cols: opts.cols, rows: opts.rows });
-    logger.info(`InteractiveClaudeEngine ensureIdleSpawn for session ${jinnSessionId} (resume ${opts.claudeSessionId || "none — fresh"}, geom ${cols}×${rows})`);
-    const proc = pty.spawn(bin, args, {
-      name: "xterm-256color",
-      cols,
-      rows,
-      cwd: opts.cwd || JINN_HOME,
-      env,
-    });
-    const handle = this.wireProcToStream(jinnSessionId, proc);
-    this.lifecycle.adopt(jinnSessionId, handle);
+
+    void (async () => {
+      try {
+        const { proxy, port } = await this.startProxy(jinnSessionId);
+        // Re-check after the async gap: a real turn (run) or another idle spawn may
+        // have claimed the session while we awaited the proxy bind. If so, don't
+        // adopt a duplicate PTY — drop our proxy and bail.
+        if (this.lifecycle.getWarm(jinnSessionId) || this.active.has(jinnSessionId)) {
+          proxy.stop();
+          return;
+        }
+        const env = this.buildPtyEnv(port || undefined);
+        logger.info(`InteractiveClaudeEngine ensureIdleSpawn for session ${jinnSessionId} (resume ${opts.engineSessionId || "none — fresh"}, geom ${cols}×${rows}, sseProxy: ${port || "off"})`);
+        const proc = pty.spawn(bin, args, {
+          name: "xterm-256color",
+          cols,
+          rows,
+          cwd: opts.cwd || JINN_HOME,
+          env,
+        });
+        const handle = this.wireProcToStream(jinnSessionId, proc, port ? proxy : undefined);
+        this.spawnParams.set(jinnSessionId, { model: opts.model, effortLevel: undefined });
+        this.lifecycle.adopt(jinnSessionId, handle);
+      } catch (err) {
+        logger.warn(`ensureIdleSpawn failed for session ${jinnSessionId}: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        this.idleSpawning.delete(jinnSessionId);
+      }
+    })();
   }
 
   /** Inject a follow-up prompt into a warm PTY via bracketed-paste + CR. */

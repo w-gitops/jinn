@@ -7,6 +7,18 @@ interface LiveProcess {
   terminationReason: string | null;
 }
 
+/**
+ * Most-recent-turn input-context size from a codex `turn.completed` usage object.
+ * codex's `cached_input_tokens` is a SUBSET of `input_tokens` (OpenAI semantics),
+ * so the window fill is `input_tokens` alone — summing would double-count.
+ * Best-effort: returns undefined on any shape mismatch.
+ */
+function extractCodexContextTokens(usage: unknown): number | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const n = Number((usage as Record<string, unknown>).input_tokens ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
 export class CodexEngine implements InterruptibleEngine {
   name = "codex" as const;
   private liveProcesses = new Map<string, LiveProcess>();
@@ -38,7 +50,10 @@ export class CodexEngine implements InterruptibleEngine {
 
   async run(opts: EngineRunOpts): Promise<EngineResult> {
     let prompt = opts.prompt;
-    if (opts.systemPrompt) {
+    // Only inject the system prompt on the FIRST turn of a conversation. On a
+    // resume (warm follow-up / restored session), codex already has it in the
+    // thread, so re-prepending it every turn just duplicates/bloats context.
+    if (opts.systemPrompt && !opts.resumeSessionId) {
       prompt = opts.systemPrompt + "\n\n---\n\n" + prompt;
     }
     if (opts.attachments?.length) {
@@ -77,6 +92,7 @@ export class CodexEngine implements InterruptibleEngine {
       let resultText = "";
       let numTurns = 0;
       let turnError: string | null = null;
+      let lastContextTokens: number | undefined;
       let lineBuf = "";
       const onStream = opts.onStream || null;
       const STDERR_MAX = 10 * 1024; // 10KB rolling window for error reporting
@@ -101,7 +117,11 @@ export class CodexEngine implements InterruptibleEngine {
               if (onStream) onStream(parsed.delta);
               break;
             case "text":
-              resultText += parsed.delta.content;
+              // Each agent_message item is a COMPLETE assistant message; codex emits
+              // several per turn (preamble + final). The result must be the FINAL
+              // message, not all of them concatenated — so replace, don't append.
+              // Live streaming of each block is unaffected (onStream below).
+              resultText = parsed.delta.content;
               if (onStream) onStream(parsed.delta);
               break;
             case "error":
@@ -110,6 +130,7 @@ export class CodexEngine implements InterruptibleEngine {
               break;
             case "usage":
               numTurns++;
+              if (parsed.contextTokens) lastContextTokens = parsed.contextTokens;
               break;
             case "turn_failed":
               turnError = parsed.message;
@@ -148,10 +169,11 @@ export class CodexEngine implements InterruptibleEngine {
                 threadId = parsed.threadId;
                 break;
               case "text":
-                resultText += parsed.delta.content;
+                resultText = parsed.delta.content; // final message wins (see above)
                 break;
               case "usage":
                 numTurns++;
+                if (parsed.contextTokens) lastContextTokens = parsed.contextTokens;
                 break;
               case "error":
                 turnError = parsed.message;
@@ -171,16 +193,21 @@ export class CodexEngine implements InterruptibleEngine {
             result: resultText,
             error: terminationReason,
             numTurns: numTurns || undefined,
+            ...(typeof lastContextTokens === "number" ? { contextTokens: lastContextTokens } : {}),
           });
           return;
         }
 
         if (code === 0 || (code !== null && threadId)) {
+          // A non-empty agent message means the turn genuinely succeeded — don't
+          // surface a transient/benign error item (e.g. the `web_search_request`
+          // deprecation notice that codex emits before the answer) as a failure.
           resolve({
             sessionId: threadId || opts.resumeSessionId || "",
             result: resultText,
-            error: turnError ?? undefined,
+            error: resultText.trim() ? undefined : (turnError ?? undefined),
             numTurns: numTurns || undefined,
+            ...(typeof lastContextTokens === "number" ? { contextTokens: lastContextTokens } : {}),
           });
           return;
         }
@@ -191,6 +218,7 @@ export class CodexEngine implements InterruptibleEngine {
           sessionId: threadId || opts.resumeSessionId || "",
           result: resultText,
           error: errMsg,
+          ...(typeof lastContextTokens === "number" ? { contextTokens: lastContextTokens } : {}),
         });
       });
 
@@ -233,7 +261,7 @@ export class CodexEngine implements InterruptibleEngine {
     | { type: "tool_end"; delta: StreamDelta }
     | { type: "text"; delta: StreamDelta }
     | { type: "error"; message: string }
-    | { type: "usage" }
+    | { type: "usage"; contextTokens?: number }
     | { type: "turn_failed"; message: string }
     | null {
     const trimmed = line.trim();
@@ -339,7 +367,13 @@ export class CodexEngine implements InterruptibleEngine {
 
       if (itemType === "error") {
         const message = String(item.message || "Unknown error");
-        if (message.includes("Under-development features") || message.includes("Model metadata")) {
+        // Benign notices codex emits as `error` items but that don't fail the turn.
+        if (
+          message.includes("Under-development features") ||
+          message.includes("Model metadata") ||
+          message.includes("deprecated") ||
+          message.includes("web_search_request")
+        ) {
           logger.debug(`[codex] suppressed warning: ${message.slice(0, 200)}`);
           return null;
         }
@@ -350,7 +384,7 @@ export class CodexEngine implements InterruptibleEngine {
     }
 
     if (eventType === "turn.completed") {
-      return { type: "usage" };
+      return { type: "usage", contextTokens: extractCodexContextTokens(msg.usage) };
     }
 
     if (eventType === "turn.failed") {

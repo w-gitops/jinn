@@ -9,6 +9,7 @@ import { THEMES } from "@/lib/themes"
 import type { ThemeId } from "@/lib/themes"
 import { api } from "@/lib/api"
 import { EmojiPicker } from "@/components/ui/emoji-picker"
+import { useModelRegistry } from "@/hooks/use-model-registry"
 
 // ---------------------------------------------------------------------------
 // Accent color presets
@@ -448,6 +449,19 @@ export default function SettingsPage() {
   const [languageValue, setLanguageValue] = useState(settings.language ?? "English")
   const [customHex, setCustomHex] = useState(settings.accentColor ?? "")
   const [showCooEmojiPicker, setShowCooEmojiPicker] = useState(false)
+
+  // Model/capability registry — drives the model + effort dropdowns (no hardcoded lists).
+  const { data: modelRegistry } = useModelRegistry()
+  const modelOptions = (engine: string, fallback: Array<{ value: string; label: string }>) => {
+    const models = modelRegistry?.engines?.[engine]?.models ?? []
+    return models.length ? models.map((m) => ({ value: m.id, label: m.label })) : fallback
+  }
+  const effortOptions = (engine: string, fallback: Array<{ value: string; label: string }>) => {
+    const levels = Array.from(new Set((modelRegistry?.engines?.[engine]?.models ?? []).flatMap((m) => m.effortLevels)))
+    return levels.length
+      ? [{ value: "default", label: "Default" }, ...levels.map((l) => ({ value: l, label: l.charAt(0).toUpperCase() + l.slice(1) }))]
+      : fallback
+  }
 
   // Gateway config state
   const [config, setConfig] = useState<Config>({})
@@ -950,11 +964,11 @@ export default function SettingsPage() {
                     onChange={(v) =>
                       updateConfig(["engines", "claude", "model"], v)
                     }
-                    options={[
-                      { value: "opus", label: "Opus (claude-opus-4-6)" },
-                      { value: "sonnet", label: "Sonnet (claude-sonnet-4-6)" },
-                      { value: "haiku", label: "Haiku (claude-haiku-4-5)" },
-                    ]}
+                    options={modelOptions("claude", [
+                      { value: "opus", label: "Opus" },
+                      { value: "sonnet", label: "Sonnet" },
+                      { value: "haiku", label: "Haiku" },
+                    ])}
                   />
                 </FieldRow>
                 <FieldRow label="Effort Level">
@@ -963,12 +977,12 @@ export default function SettingsPage() {
                     onChange={(v) =>
                       updateConfig(["engines", "claude", "effortLevel"], v)
                     }
-                    options={[
+                    options={effortOptions("claude", [
                       { value: "default", label: "Default" },
                       { value: "low", label: "Low" },
                       { value: "medium", label: "Medium" },
                       { value: "high", label: "High" },
-                    ]}
+                    ])}
                   />
                 </FieldRow>
 
@@ -996,14 +1010,14 @@ export default function SettingsPage() {
                     onChange={(v) =>
                       updateConfig(["engines", "codex", "model"], v)
                     }
-                    options={[
+                    options={modelOptions("codex", [
                       { value: "gpt-5.4", label: "GPT-5.4" },
                       { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
                       { value: "gpt-5.2-codex", label: "GPT-5.2 Codex" },
                       { value: "gpt-5.2", label: "GPT-5.2" },
                       { value: "gpt-5.1-codex-max", label: "GPT-5.1 Codex Max" },
                       { value: "gpt-5.1-codex-mini", label: "GPT-5.1 Codex Mini" },
-                    ]}
+                    ])}
                   />
                 </FieldRow>
                 <FieldRow label="Effort Level">
@@ -1012,13 +1026,13 @@ export default function SettingsPage() {
                     onChange={(v) =>
                       updateConfig(["engines", "codex", "effortLevel"], v)
                     }
-                    options={[
+                    options={effortOptions("codex", [
                       { value: "default", label: "Default" },
                       { value: "low", label: "Low" },
                       { value: "medium", label: "Medium" },
                       { value: "high", label: "High" },
                       { value: "xhigh", label: "Extra High" },
-                    ]}
+                    ])}
                   />
                 </FieldRow>
               </Section>

@@ -102,6 +102,7 @@ function rowToSession(row: Record<string, unknown>): Session {
     status: row.status as Session['status'],
     totalCost: (row.total_cost as number) ?? 0,
     totalTurns: (row.total_turns as number) ?? 0,
+    lastContextTokens: (row.last_context_tokens as number) ?? null,
     createdAt: row.created_at as string,
     lastActivity: row.last_activity as string,
     lastError: (row.last_error as string) ?? null,
@@ -167,6 +168,7 @@ export function migrateSessionsSchema(database: Database.Database): void {
     ['total_cost', 'REAL', '0'],
     ['total_turns', 'INTEGER', '0'],
     ['effort_level', 'TEXT'],
+    ['last_context_tokens', 'INTEGER'],
   ];
 
   for (const [name, type, defaultVal] of missingColumns) {
@@ -272,6 +274,7 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string; porta
     status: 'idle',
     totalCost: 0,
     totalTurns: 0,
+    lastContextTokens: null,
     createdAt: now,
     lastActivity: now,
     lastError: null,
@@ -299,6 +302,8 @@ export interface UpdateSessionFields {
   engineSessionId?: string | null;
   status?: Session['status'];
   model?: string | null;
+  effortLevel?: string | null;
+  lastContextTokens?: number | null;
   replyContext?: ReplyContext | null;
   messageId?: string | null;
   transportMeta?: JsonObject | null;
@@ -327,6 +332,14 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   if (updates.model !== undefined) {
     sets.push('model = ?');
     values.push(updates.model);
+  }
+  if (updates.effortLevel !== undefined) {
+    sets.push('effort_level = ?');
+    values.push(updates.effortLevel);
+  }
+  if (updates.lastContextTokens !== undefined) {
+    sets.push('last_context_tokens = ?');
+    values.push(updates.lastContextTokens);
   }
   if (updates.replyContext !== undefined) {
     sets.push('reply_context = ?');

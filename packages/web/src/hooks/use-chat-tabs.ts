@@ -1,14 +1,30 @@
 
 import { useState, useCallback, useEffect, useMemo } from 'react'
 
-export interface ChatTab {
+interface BaseTab {
+  label: string        // Employee name, session title, or file basename
+  /** If true, this is a "pinned" tab (VS Code style) — won't be replaced by preview. */
+  pinned?: boolean
+}
+
+export interface SessionTab extends BaseTab {
+  kind: 'session'
   sessionId: string
-  label: string        // Employee name or session title
   employeeName?: string // Employee name for avatar generation
   status: 'idle' | 'running' | 'error'
   unread: boolean
-  /** If true, this is a "pinned" tab (VS Code style) — won't be replaced by preview. */
-  pinned?: boolean
+}
+
+export interface FileTab extends BaseTab {
+  kind: 'file'
+  path: string
+}
+
+export type ChatTab = SessionTab | FileTab
+
+/** Stable identity for keying/dedupe across both kinds. */
+export function tabKey(t: ChatTab): string {
+  return t.kind === 'file' ? `file:${t.path}` : t.sessionId
 }
 
 const STORAGE_KEY = 'jinn-chat-tabs'
@@ -32,7 +48,16 @@ function loadTabs(): TabState {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = clampState(JSON.parse(raw))
-      return { tabs: parsed.tabs, activeIndex: parsed.activeIndex }
+      // Migrate persisted tabs that predate `kind`: a tab missing `kind` but
+      // carrying a sessionId is a legacy session tab.
+      const migrated = parsed.tabs.map((t) => {
+        const tab = t as Partial<ChatTab> & { sessionId?: string }
+        if (!tab.kind && tab.sessionId) {
+          return { ...tab, kind: 'session' } as ChatTab
+        }
+        return tab as ChatTab
+      })
+      return { tabs: migrated, activeIndex: parsed.activeIndex }
     }
   } catch {}
   return { tabs: [], activeIndex: -1 }
@@ -62,11 +87,12 @@ export function useChatTabs() {
    * - Otherwise, append a new preview tab.
    * The `pinned` field on the incoming tab is respected — if true, it opens pinned.
    */
-  const openTab = useCallback((incoming: ChatTab) => {
-    const tab: ChatTab = { ...incoming }
+  const openTab = useCallback((incoming: Omit<SessionTab, 'kind'>) => {
+    const tab: SessionTab = { ...incoming, kind: 'session' }
     setState((current) => {
-      // Already open? Just switch to it — keep existing label/status
-      const existing = current.tabs.findIndex((t) => t.sessionId === tab.sessionId)
+      // Already open? Just switch to it — keep existing label/status.
+      // Dedupe on session identity only among session tabs.
+      const existing = current.tabs.findIndex((t) => t.kind === 'session' && t.sessionId === tab.sessionId)
       if (existing >= 0) {
         return { tabs: current.tabs, activeIndex: existing }
       }
@@ -95,6 +121,26 @@ export function useChatTabs() {
         tabs: [...current.tabs, tab],
         activeIndex: current.tabs.length,
       }
+    })
+  }, [])
+
+  /** Open (or focus, if already open) a file tab. File tabs are pinned so the
+   *  preview-open flow never replaces them. */
+  const openFileTab = useCallback((path: string) => {
+    setState((current) => {
+      const existing = current.tabs.findIndex((t) => t.kind === 'file' && t.path === path)
+      if (existing >= 0) return { tabs: current.tabs, activeIndex: existing }
+      const label = path.split(/[\\/]/).pop() || path // basename only
+      const tab: FileTab = { kind: 'file', path, label, pinned: true }
+      if (current.tabs.length >= MAX_TABS) {
+        const replaceIdx = current.tabs.findIndex((t) => !t.pinned)
+        if (replaceIdx >= 0) {
+          const next = [...current.tabs]
+          next[replaceIdx] = tab
+          return { tabs: next, activeIndex: replaceIdx }
+        }
+      }
+      return { tabs: [...current.tabs, tab], activeIndex: current.tabs.length }
     })
   }, [])
 
@@ -173,15 +219,15 @@ export function useChatTabs() {
     setState((current) => ({ ...current, activeIndex: -1 }))
   }, [])
 
-  const updateTabStatus = useCallback((sessionId: string, updates: Partial<ChatTab>) => {
+  const updateTabStatus = useCallback((sessionId: string, updates: Partial<SessionTab>) => {
     setState((current) => {
-      const idx = current.tabs.findIndex((t) => t.sessionId === sessionId)
+      const idx = current.tabs.findIndex((t) => t.kind === 'session' && t.sessionId === sessionId)
       if (idx < 0) return current
-      const tab = current.tabs[idx]
+      const tab = current.tabs[idx] as SessionTab
       // Bail out if nothing actually changed — prevents infinite re-render loops
-      const keys = Object.keys(updates) as (keyof ChatTab)[]
+      const keys = Object.keys(updates) as (keyof SessionTab)[]
       if (keys.every((k) => tab[k] === updates[k])) return current
-      const nextTabs = current.tabs.map((t, i) => (i === idx ? { ...t, ...updates } : t))
+      const nextTabs: ChatTab[] = current.tabs.map((t, i) => (i === idx ? { ...tab, ...updates } : t))
       return { ...current, tabs: nextTabs }
     })
   }, [])
@@ -189,7 +235,7 @@ export function useChatTabs() {
   /** Close the tab for a given sessionId (no-op if not open). */
   const closeTabBySessionId = useCallback((sessionId: string) => {
     setState((current) => {
-      const idx = current.tabs.findIndex((t) => t.sessionId === sessionId)
+      const idx = current.tabs.findIndex((t) => t.kind === 'session' && t.sessionId === sessionId)
       if (idx < 0) return current
       const nextTabs = current.tabs.filter((_, i) => i !== idx)
       if (nextTabs.length === 0) return { tabs: [], activeIndex: -1 }
@@ -218,9 +264,14 @@ export function useChatTabs() {
         if (current.tabs.length === 0) return current
         const nextTabs: ChatTab[] = []
         for (const tab of current.tabs) {
+          // File tabs are never orphaned by the session list — keep unchanged.
+          if (tab.kind === 'file') {
+            nextTabs.push(tab)
+            continue
+          }
           const session = byId.get(tab.sessionId)
           if (!session) continue // orphan — drop
-          let updated = tab
+          let updated: SessionTab = tab
           // Normalize stale 'running' if server says otherwise
           if (
             tab.status === 'running' &&
@@ -244,14 +295,18 @@ export function useChatTabs() {
           // No structural change — only commit if any field actually changed
           const unchanged = nextTabs.every((t, i) => {
             const o = current.tabs[i]
-            return t.label === o.label && t.status === o.status && t.employeeName === o.employeeName
+            if (t.kind === 'session' && o.kind === 'session') {
+              return t.label === o.label && t.status === o.status && t.employeeName === o.employeeName
+            }
+            return t.label === o.label
           })
           if (unchanged) return current
         }
         let nextActive = current.activeIndex
         if (nextActive >= 0) {
-          const activeSid = current.tabs[nextActive]?.sessionId
-          nextActive = activeSid ? nextTabs.findIndex((t) => t.sessionId === activeSid) : -1
+          const activeTab = current.tabs[nextActive]
+          const activeKey = activeTab ? tabKey(activeTab) : null
+          nextActive = activeKey ? nextTabs.findIndex((t) => tabKey(t) === activeKey) : -1
           if (nextActive < 0) nextActive = nextTabs.length > 0 ? 0 : -1
         }
         return { tabs: nextTabs, activeIndex: nextActive }
@@ -262,12 +317,12 @@ export function useChatTabs() {
 
   return useMemo(() => ({
     tabs, activeTab, activeIndex,
-    openTab, closeTab, switchTab, nextTab, prevTab,
+    openTab, openFileTab, closeTab, switchTab, nextTab, prevTab,
     pinTab, moveTab,
     clearActiveTab, updateTabStatus,
     closeTabBySessionId, reconcileTabs,
   }), [tabs, activeTab, activeIndex,
-    openTab, closeTab, switchTab, nextTab, prevTab,
+    openTab, openFileTab, closeTab, switchTab, nextTab, prevTab,
     pinTab, moveTab,
     clearActiveTab, updateTabStatus,
     closeTabBySessionId, reconcileTabs])
