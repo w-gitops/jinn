@@ -1,0 +1,134 @@
+name: Upstream Sync
+
+# Daily merge of upstream hristo2612/jinn into our `dev` (our customizations live on dev).
+# Decoupled from the self-hosted runner: ubuntu-latest, zero secrets beyond the built-in GITHUB_TOKEN.
+on:
+  # SCHEDULE DISABLED until (1) the jinn-admin PAT is rotated and (2) a manual workflow_dispatch
+  # validates the flow end-to-end (Knox DEC-061 condition). Re-enable by uncommenting after first green dispatch.
+  # schedule:
+  #   # 06:00 America/New_York. EDT (UTC-4) -> 10:00 UTC. (During EST/UTC-5 this fires 05:00 local.)
+  #   - cron: "0 10 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    # never run on a fork of this repo
+    if: github.repository == 'w-gitops/jinn'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout dev (full history)
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "w-gitops-bot"
+          git config user.email "ci@w-gitops.local"
+
+      - name: Add upstream + fetch (public, no auth)
+        run: |
+          git remote add upstream https://github.com/hristo2612/jinn.git || \
+            git remote set-url upstream https://github.com/hristo2612/jinn.git
+          git fetch upstream --tags --prune
+
+      - name: Read versions
+        id: ver
+        run: |
+          UP_VER=$(git show upstream/main:packages/jinn/package.json | python3 -c 'import sys,json;print(json.load(sys.stdin)["version"])')
+          OUR_VER=$(git show dev:packages/jinn/package.json     | python3 -c 'import sys,json;print(json.load(sys.stdin)["version"])')
+          echo "upstream=$UP_VER" >> "$GITHUB_OUTPUT"
+          echo "ours=$OUR_VER"    >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          echo "Upstream $UP_VER vs ours $OUR_VER"
+
+      - name: Update vendor/upstream mirror (ff-only)
+        run: |
+          # mirror branch tracks upstream/main verbatim for auditability
+          git branch -f vendor/upstream upstream/main
+          git push origin vendor/upstream --force-with-lease
+
+      - name: Create/refresh sync branch off dev (idempotent)
+        id: branch
+        run: |
+          BR="sync/upstream-${{ steps.ver.outputs.date }}"
+          echo "branch=$BR" >> "$GITHUB_OUTPUT"
+          git checkout -B "$BR" origin/dev
+
+      - name: Merge upstream
+        id: merge
+        run: |
+          set +e
+          git merge --no-edit --no-ff upstream/main
+          RC=$?
+          set -e
+          if [ $RC -ne 0 ]; then
+            CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+            # Commit the CONFLICTED tree as-is (markers intact) so the PR diff shows real conflicts to
+            # reviewers — never a clean zero-diff. This is NOT a resolution; the [CONFLICT] draft must be
+            # resolved by hand. `git add -A` stages files with <<<<<<< / ======= / >>>>>>> markers present.
+            git add -A
+            git -c core.editor=true commit --no-verify -m "sync: upstream merge CONFLICT (markers intact, DO NOT MERGE) — ${CONFLICTS}"
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            echo "conflicts=$CONFLICTS" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=merged" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build + test (only when cleanly merged)
+        id: bt
+        if: steps.merge.outputs.status == 'merged'
+        run: |
+          set +e
+          corepack enable
+          pnpm install --frozen-lockfile && pnpm -r build && pnpm -r test
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: Push sync branch
+        run: git push origin "${{ steps.branch.outputs.branch }}" --force-with-lease
+
+      - name: Commit list (upstream..dect)
+        id: log
+        run: |
+          LOG=$(git log --oneline dev..upstream/main | head -50)
+          echo "count=$(echo "$LOG" | grep -c . )" >> "$GITHUB_OUTPUT"
+          { echo "body<<__EOF__"; echo "$LOG"; echo "__EOF__"; } >> "$GITHUB_OUTPUT"
+
+      - name: Open / update PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BR="${{ steps.branch.outputs.branch }}"
+          UP="${{ steps.ver.outputs.upstream }}"
+          STATUS="${{ steps.merge.outputs.status }}"
+          BTRC="${{ steps.bt.outputs.rc }}"
+          TITLE="sync: upstream jinn v${UP} -> dev (${{ steps.ver.outputs.date }})"
+          DRAFT=""; STATE_NOTE=""
+          if [ "$STATUS" = "conflict" ]; then
+            TITLE="[CONFLICT] $TITLE"; DRAFT="--draft"
+            STATE_NOTE="**MERGE CONFLICTS** — not resolved (no force-resolution). Conflicted files: ${{ steps.merge.outputs.conflicts }}"
+          elif [ -n "$BTRC" ] && [ "$BTRC" != "0" ]; then
+            TITLE="[TESTS FAILING] $TITLE"; DRAFT="--draft"
+            STATE_NOTE="**BUILD/TEST FAILED** (exit $BTRC) on the merged result. See the run logs."
+          else
+            STATE_NOTE="Clean merge; \`pnpm -r build && pnpm -r test\` green."
+          fi
+          BODY=$(printf '## Upstream sync\n\nUpstream version: **%s**\nCommits ahead (dev..upstream/main): **%s**\n\n%s\n\n<details><summary>commit list</summary>\n\n```\n%s\n```\n</details>\n\nTarget: `dev`. Do-not-merge pending review.\n' \
+            "$UP" "${{ steps.log.outputs.count }}" "$STATE_NOTE" "${{ steps.log.outputs.body }}")
+          # idempotent: reuse existing PR for this branch if present
+          if gh pr view "$BR" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh pr edit "$BR" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$BODY"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base dev --head "$BR" --title "$TITLE" --body "$BODY" $DRAFT
+          fi
