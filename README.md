@@ -243,7 +243,7 @@ you only need to visit `:5173`. The gateway auto-restarts when you edit backend
 source via Node's built-in `--watch` mode. To point the dev UI at a non-default
 gateway port, set `GATEWAY_PORT=<port>` before running `pnpm dev`.
 
-> **Prerequisites:** Node.js 22+, pnpm 10+, and the
+> **Prerequisites:** Node.js 24+, pnpm 10+, and the
 > [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`).
 
 ### Available Scripts
