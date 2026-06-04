@@ -38,8 +38,28 @@ This reuses two patterns already in the codebase:
   when the gateway returns). This keeps the chat conversation intact across the
   restart — a brief blip, full history preserved.
 
-**No changes to existing `start`/`stop` behavior.** No env detection, no
-lockfile. Habit: use `jinn restart` instead of `jinn stop && jinn start`.
+**`stop` is unchanged.** `start` gets one added guard (see Component 5): if a
+gateway is already running, `start` routes to the same race-free restart path
+instead of the current racy double-boot. No env detection, no lockfile. Habit:
+use `jinn restart` (or just re-run `jinn start`) instead of `jinn stop && jinn
+start`.
+
+### Why `start`-before-`stop` is broken today
+
+Running `jinn start` while the gateway is already up is a race that can leave you
+fully down:
+
+1. `startDaemon()` forks a new daemon and **immediately overwrites
+   `gateway.pid`** with the new PID — before it has proven it can boot.
+2. The new daemon's boot-time reap (`server.ts`) sends `SIGTERM` to the **old
+   gateway and all its PTYs** (including the calling session).
+3. The new daemon then calls `server.listen(port)`. If the old gateway hasn't
+   released the port yet (graceful shutdown is up to 5s), the new one hits
+   `EADDRINUSE` → `process.exit(1)`.
+
+Net: old gateway killed, new one possibly dead, `gateway.pid` stale. The fix
+(Component 5) adds an explicit **wait-for-port-free** gate, exactly as the
+detached helper does — eliminating the race for both orderings.
 
 ## Components
 
@@ -51,9 +71,7 @@ reparented process:
 1. `uncaughtException` / `unhandledRejection` guards (same as `daemon-entry.ts`).
 2. `loadConfig()`.
 3. `stop()` — SIGTERM the running gateway (best-effort; no-op if already down).
-4. Poll until the port is free **or** a timeout (~10s) elapses, using the
-   existing `findPidOnPort` / `getStatus` logic. Short sleep between polls
-   (~200ms).
+4. `await waitForPortFree(port)` — the shared helper (see Component 5).
 5. `startDaemon(config)` — bring up a fresh daemon.
 6. Exit 0.
 
@@ -91,6 +109,39 @@ program
   });
 ```
 
+### 5. `start` already-running guard + `waitForPortFree()` — `lifecycle.ts` + `cli/start.ts`
+
+New shared helper in `lifecycle.ts`:
+
+```
+export async function waitForPortFree(port: number, timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (findPidOnPort(port) === null) return true;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return false; // timed out; caller starts anyway (startGateway will surface EADDRINUSE)
+}
+```
+
+`runStart()` gains one guard at the top (after config/port resolution):
+
+```
+if (getStatus().running) {
+  if (opts.daemon) {
+    restartDetached(config);              // race-free detached restart
+    console.log("Gateway already running — restarting in background.");
+    return;
+  }
+  // foreground: stop the old one, wait for the port, then fall through to start
+  stop(config.gateway.port);
+  await waitForPortFree(config.gateway.port);
+}
+```
+
+So `jinn start` on an already-running gateway becomes a clean restart instead of
+the racy double-boot. `stop` and `restart` both reuse `waitForPortFree`.
+
 ## Flow after the change
 
 1. Agent (inside a session) runs `jinn restart`.
@@ -115,7 +166,8 @@ program
 ## Out of scope (explicitly not doing)
 
 - Env-var (`JINN_IN_SESSION`) detection to auto-harden naive `stop && start`.
-- Lockfile coordination between `stop` and `start`.
+- Lockfile coordination between `stop` and `start` (the `waitForPortFree` gate
+  makes it unnecessary).
 - Web rebuild folded into the command (`redeploy`).
 - Literal PTY survival across restart (PTY-broker architecture).
 
@@ -136,3 +188,5 @@ rebuilt + restarted to take effect.
   down and comes back and the web UI reconnects/resumes the conversation.
 - Manual (terminal): run `jinn restart` from a plain terminal; confirm it
   restarts cleanly with no session attached.
+- Manual: run `jinn start -d` while the gateway is already up; confirm it
+  cleanly restarts (no `EADDRINUSE`, no stale PID) instead of racing.
