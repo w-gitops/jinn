@@ -225,7 +225,14 @@ export function forkCodexSession(engineSessionId: string): ForkResult {
   // Read source, rewrite session_meta (first line) with new UUID
   const lines = fs.readFileSync(sourceFile, "utf-8").split("\n");
   if (lines.length > 0 && lines[0].trim()) {
-    const meta = JSON.parse(lines[0]);
+    let meta: { payload?: { id?: string }; timestamp?: string };
+    try {
+      meta = JSON.parse(lines[0]);
+    } catch (err) {
+      throw new Error(
+        `Codex session ${engineSessionId}: first line of ${sourceFile} is not valid JSON — ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     if (meta.payload?.id) {
       meta.payload.id = newUuid;
       meta.timestamp = now.toISOString();

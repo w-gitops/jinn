@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { SESSIONS_DB } from '../shared/paths.js';
+import { logger } from '../shared/logger.js';
 import type { JsonObject, ReplyContext, Session } from '../shared/types.js';
 
 let db: Database.Database;
@@ -68,19 +69,22 @@ CREATE TABLE IF NOT EXISTS files (
 )
 `;
 
-function parseJsonObject(value: unknown): JsonObject | null {
+function parseJsonObject(value: unknown, label?: string): JsonObject | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   try {
     const parsed = JSON.parse(value) as JsonObject;
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
   } catch {
+    // Graceful degrade (don't crash the load), but surface it — silent loss of
+    // reply_context/transport_meta otherwise shows up as a cryptic "no target".
+    logger.warn(`registry: dropped corrupt JSON in ${label ?? 'session field'}`);
     return null;
   }
 }
 
 function rowToSession(row: Record<string, unknown>): Session {
-  const replyContext = parseJsonObject(row.reply_context);
-  const transportMeta = parseJsonObject(row.transport_meta);
+  const replyContext = parseJsonObject(row.reply_context, 'reply_context');
+  const transportMeta = parseJsonObject(row.transport_meta, 'transport_meta');
   const sessionKey = ((row.session_key as string) || (row.source_ref as string));
   const connector = (row.connector as string) ?? (row.source as string) ?? null;
   return {

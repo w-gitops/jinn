@@ -19,6 +19,13 @@ export interface SseDataEvent {
   [k: string]: unknown;
 }
 
+/** Gateway-controlled marker injected into the MAIN agent's appended system prompt.
+ *  The proxy tees only requests whose system carries it — Task sub-agents get Claude
+ *  Code's own system prompt (no sentinel) and are therefore suppressed. This is the
+ *  one main-vs-sub signal the gateway fully owns, so it cannot drift like a request
+ *  fingerprint does. It is an HTML comment so the model ignores it. */
+export const MAIN_AGENT_SENTINEL = "<!-- jinn-main-agent:5c1f -->";
+
 /** Signature of `https.request`/`http.request` — the seam we inject in tests so
  *  the proxy can target a local fake upstream instead of api.anthropic.com. */
 type UpstreamRequestFn = (
@@ -60,18 +67,20 @@ function isRetriableUpstreamError(err: NodeJS.ErrnoException): boolean {
  * SSE `data:` event to `onEvent` — this is the live streaming source for the web
  * chat pane (word-by-word text, tool markers in true order, live context tokens).
  *
- * Auxiliary-suppression: besides the real conversation turn, Claude Code fires
+ * Tee gate (main-agent only): besides the real conversation turn, Claude Code fires
  * extra requests through this same proxy — haiku topic/title detection and quota
- * checks (NO tools), plus a smaller pre-flight conversation request before the full
- * turn. We tee to `onEvent` every request that carries a non-empty `tools` array
- * (the genuine agent turns) and suppress only the no-tools auxiliary calls (whose
- * output, e.g. a title-gen `{"title":...}`, must never leak into the transcript).
+ * checks (NO tools), plus Task sub-agents (which run in-process, so their nested
+ * /v1/messages flow through here too). We tee to `onEvent` ONLY the main agent's
+ * turns, identified by a gateway-controlled sentinel (MAIN_AGENT_SENTINEL) that the
+ * gateway injects into the main agent's appended system prompt. Sub-agents get
+ * Claude Code's own system prompt (no sentinel) and aux calls carry no tools, so
+ * both are suppressed — their output never leaks into the transcript.
  *
- * We deliberately do NOT try to fingerprint "main vs sub-agent": empirically the
- * main agent's own requests do not share a stable signature (tool set and system
- * drift across a turn as MCP tools/instructions load and per-request reminders are
- * injected), so any such heuristic suppressed legitimate turns and broke streaming.
- * Sub-agents therefore stream inline like any other tool work — there are no cards.
+ * Why a gateway-owned sentinel and not a request fingerprint: the main agent's own
+ * requests do NOT share a stable signature (tool set and system drift across a turn
+ * as MCP tools/instructions load and per-request reminders are injected), so every
+ * fingerprint heuristic we tried either dropped real turns (broke streaming) or
+ * leaked sub-agents. The sentinel is the one signal the gateway fully controls.
  */
 export class SsePtyProxy {
   private server: http.Server;
@@ -213,16 +222,16 @@ export class SsePtyProxy {
   }
 
   /** Is this request the MAIN agent's stream (the only one teed to the UI)? Main =
-   *  the first tool-bearing request's system fingerprint, then every later request
-   *  matching it. No/empty tools => an auxiliary call (haiku topic/title detection,
-   *  quota check); a different fingerprint => a Task sub-agent. Both are suppressed.
-   *  Fail-SAFE to suppression: the main agent's turns are always parseable, tool-
-   *  bearing, and fingerprint-stable. */
+   *  a tool-bearing request whose system carries the gateway's sentinel. No/empty
+   *  tools => an auxiliary call (haiku topic/title detection, quota check); tools but
+   *  no sentinel => a Task sub-agent (it gets Claude Code's own system prompt). Both
+   *  are suppressed so only the main agent streams to the transcript. */
   private shouldTeeToUi(body: Buffer): boolean {
-    let json: { tools?: unknown } | null = null;
-    try { json = JSON.parse(body.toString("utf-8")) as { tools?: unknown }; }
+    let json: { tools?: unknown; system?: unknown } | null = null;
+    try { json = JSON.parse(body.toString("utf-8")) as { tools?: unknown; system?: unknown }; }
     catch { return false; }                                          // non-JSON (e.g. count_tokens) — never a turn
-    return Array.isArray(json?.tools) && json.tools.length > 0;      // tool-bearing = a real agent turn
+    if (!Array.isArray(json?.tools) || json.tools.length === 0) return false; // aux call (no tools)
+    return systemHasSentinel(json?.system);                          // sentinel present => main agent
   }
 
   /** Consume complete SSE frames (separated by a blank line) from `buf`, JSON.parse
@@ -247,6 +256,20 @@ export class SsePtyProxy {
     }
     return buf;
   }
+}
+
+/** Does the request's `system` (a string or a content-block array) carry the
+ *  gateway's main-agent sentinel? */
+function systemHasSentinel(system: unknown): boolean {
+  if (typeof system === "string") return system.includes(MAIN_AGENT_SENTINEL);
+  if (Array.isArray(system)) {
+    return system.some(
+      (b) =>
+        typeof (b as { text?: unknown })?.text === "string" &&
+        (b as { text: string }).text.includes(MAIN_AGENT_SENTINEL),
+    );
+  }
+  return false;
 }
 
 /** Index of the first blank-line frame delimiter (\n\n or \r\n\r\n), or -1. */

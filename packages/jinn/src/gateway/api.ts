@@ -1007,13 +1007,15 @@ export async function handleApiRequest(
     if (method === "GET" && params) {
       const runFile = path.join(CRON_RUNS, `${params.id}.jsonl`);
       if (!fs.existsSync(runFile)) return json(res, []);
-      const lines = fs
-        .readFileSync(runFile, "utf-8")
-        .trim()
-        .split("\n")
-        .filter(Boolean)
-        .map((l) => JSON.parse(l));
-      return json(res, lines);
+      // Append-only JSONL: a crash mid-write can leave one dangling line. Skip the
+      // bad line(s) rather than 500-ing the whole history.
+      const runs: unknown[] = [];
+      let skipped = 0;
+      for (const l of fs.readFileSync(runFile, "utf-8").trim().split("\n").filter(Boolean)) {
+        try { runs.push(JSON.parse(l)); } catch { skipped++; }
+      }
+      if (skipped) logger.warn(`GET /api/cron/${params.id}/runs: skipped ${skipped} corrupt line(s)`);
+      return json(res, runs);
     }
 
     // POST /api/cron — create new cron job
@@ -1170,7 +1172,12 @@ export async function handleApiRequest(
     if (method === "GET" && params) {
       const boardPath = path.join(ORG_DIR, params.name, "board.json");
       if (!fs.existsSync(boardPath)) return notFound(res);
-      const board = JSON.parse(fs.readFileSync(boardPath, "utf-8"));
+      let board: unknown;
+      try { board = JSON.parse(fs.readFileSync(boardPath, "utf-8")); }
+      catch (err) {
+        logger.warn(`GET /api/org/departments/${params.name}/board: corrupt board.json — ${err instanceof Error ? err.message : String(err)}`);
+        return serverError(res, "board.json is corrupt");
+      }
       return json(res, board);
     }
 

@@ -7,7 +7,7 @@ import { writeSessionSettings } from "../shared/claude-settings.js";
 import { PtyLifecycleManager, type PtyHandle } from "./pty-lifecycle.js";
 import type { PtyControlEvent, PtyViewEngine, PtyIdleSpawnOpts } from "./pty-view-engine.js";
 import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
-import { SsePtyProxy, type SseDataEvent } from "./sse-pty-proxy.js";
+import { SsePtyProxy, MAIN_AGENT_SENTINEL, type SseDataEvent } from "./sse-pty-proxy.js";
 import { neutralizeForPaste } from "../shared/skill-commands.js";
 
 export type { PtyControlEvent } from "./pty-view-engine.js";
@@ -311,12 +311,6 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       return { sessionId: opts.resumeSessionId ?? "", result: "", error: "Interactive engine: a turn is already running for this session" };
     }
 
-    const settingsPath = writeSessionSettings(CLAUDE_SETTINGS_DIR, jinnSessionId, {
-      sessionId: jinnSessionId,
-      relayScript: HOOK_RELAY_SCRIPT,
-      appendSystemPrompt: opts.systemPrompt,
-    });
-
     let warm = this.lifecycle.getWarm(jinnSessionId);
     // Mid-chat model/effort switch: `--model`/`--effort` bind at spawn, so a warm
     // PTY would silently keep the OLD model. If the request differs from what this
@@ -331,6 +325,21 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
         warm = undefined;
       }
     }
+
+    // Write the per-turn --settings file AFTER any cold-respawn release above:
+    // releaseSession() fires onCleanup → cleanupSessionSettings(), which DELETES this
+    // exact file. Writing it earlier meant the model/effort cold-respawn spawned
+    // `claude --settings <file>` against a file we'd just unlinked → the CLI/xterm
+    // view showed "Settings file not found". Appends the main-agent sentinel so the
+    // SSE proxy tees ONLY this top-level agent's turns (sub-agents get Claude Code's
+    // own system prompt, no sentinel) — see SsePtyProxy.shouldTeeToUi.
+    const settingsPath = writeSessionSettings(CLAUDE_SETTINGS_DIR, jinnSessionId, {
+      sessionId: jinnSessionId,
+      relayScript: HOOK_RELAY_SCRIPT,
+      appendSystemPrompt: opts.systemPrompt
+        ? `${opts.systemPrompt}\n\n${MAIN_AGENT_SENTINEL}`
+        : MAIN_AGENT_SENTINEL,
+    });
     const resolver = new TurnResolver({
       fallbackSessionId: opts.resumeSessionId,
       assumeStarted: !!warm, // warm PTY = SessionStart already fired (turn 1 or idle spawn)
