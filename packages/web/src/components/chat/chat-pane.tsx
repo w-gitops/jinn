@@ -371,6 +371,17 @@ export function ChatPane({
 
       const isRunning = session.status === 'running'
 
+      // A gateway restart marks the in-flight session "interrupted" — there is no
+      // turn running anymore, but the WS session:completed/stopped event that would
+      // normally clear the spinner died with the old gateway. Clear the stuck
+      // loading state here so the conversation is immediately usable again; the
+      // next message resumes the session via the engine's --resume.
+      if (session.status === 'interrupted') {
+        setLoading(false)
+        streamingTextRef.current = ''
+        setStreamingText('')
+      }
+
       if (isRunning) {
         const cached = loadIntermediateMessages(id)
         if (cached.length > 0) {
@@ -435,12 +446,16 @@ export function ChatPane({
     loadSession(sessionId)
   }, [sessionId]) // loadSession is stable (useCallback with [] deps)
 
-  // Reload on reconnect — only fires when WS genuinely reconnects (connectionSeq changes)
-  // Only reloads running sessions; completed sessions don't need a refetch on every WS hiccup.
+  // Reload on reconnect — only fires when WS genuinely reconnects (connectionSeq changes).
+  // Reloads running AND interrupted sessions: a gateway restart marks the open session
+  // "interrupted", and without a refetch the UI keeps a stuck spinner (the clearing
+  // session:completed/stopped WS event died with the old gateway). Completed/idle
+  // sessions don't need a refetch on every WS hiccup.
   // Debounced 300ms so a burst of connectionSeq bumps collapses into a single loadSession.
   useEffect(() => {
     if (!connectionSeq || !sessionIdRef.current) return
-    if (currentSession?.status !== 'running') return
+    const st = currentSession?.status
+    if (st !== 'running' && st !== 'interrupted') return
     const handle = setTimeout(() => {
       loadSession(sessionIdRef.current!)
     }, 300)
