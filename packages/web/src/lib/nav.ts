@@ -1,5 +1,6 @@
 import {
   MessageSquare,
+  AudioLines,
   Users,
   Clock,
   LayoutGrid,
@@ -17,6 +18,7 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { href: "/", label: "Chat", icon: MessageSquare },
+  { href: "/talk", label: "Talk", icon: AudioLines },
   { href: "/org", label: "Organization", icon: Users },
   { href: "/kanban", label: "Kanban", icon: LayoutGrid },
   { href: "/cron", label: "Cron", icon: Clock },
