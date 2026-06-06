@@ -9,9 +9,13 @@
  */
 import { useLayoutEffect, useRef, useState } from "react"
 import { AuraAvatar } from "./aura-avatar"
+import { channelIdentity } from "./channel-identity"
 import type { AvatarState } from "./types"
 import type { TalkChild } from "./use-talk"
 import "./constellation.css"
+
+/** A channel's stable key — its label when known, else its session id. */
+const channelKey = (c: TalkChild) => c.label || c.id
 
 interface ConstellationProps {
   state: AvatarState
@@ -40,6 +44,13 @@ export function Constellation({ state, level, children }: ConstellationProps) {
   const { w, h } = dims
   const ready = w > 0 && h > 0
   const hasKids = children.length > 0
+
+  // The channel currently in focus = the most recently spawned child still
+  // working (non-idle). The main orb morphs toward its hue; its satellite +
+  // link are highlighted, the others recede. Null → pure AURA identity.
+  const activeChild = [...children].reverse().find((c) => c.state !== "idle") ?? null
+  const activeId = activeChild?.id ?? null
+  const mainHue = activeChild ? channelIdentity(channelKey(activeChild)).hue : undefined
 
   // Orb sizing scales with the smaller viewport dimension (mobile-first).
   const base = Math.max(160, Math.min(Math.min(w, h || w) * 0.62, 340))
@@ -72,40 +83,56 @@ export function Constellation({ state, level, children }: ConstellationProps) {
             const from: Pt = { x: mainCenter.x, y: mainCenter.y + mainSize * 0.42 }
             const to: Pt = { x: childCenter(i).x, y: childCenter(i).y - childSize * 0.5 }
             const d = linkPath(from, to)
-            const active = c.state !== "idle"
+            const flowing = c.state !== "idle"
+            const isFocused = c.id === activeId
+            // The focused channel's tether wears that channel's hue (a shared-
+            // colour link making "the main orb is talking to THIS one" legible).
+            const stroke = isFocused ? `hsl(${channelIdentity(channelKey(c)).hue} 72% 58%)` : undefined
+            const opacity = c.state === "idle" ? 0.3 : isFocused ? 1 : 0.5
             return (
-              <g key={c.id} style={{ opacity: c.state === "idle" ? 0.35 : 1, transition: "opacity 450ms ease" }}>
-                <path className="cst-link-base" d={d} />
-                {active && <path className="cst-link-flow" d={d} />}
-                {active && <path className="cst-link-return" d={d} />}
+              <g key={c.id} style={{ opacity, transition: "opacity 450ms ease" }}>
+                <path className="cst-link-base" d={d} style={stroke ? { stroke } : undefined} />
+                {flowing && <path className="cst-link-flow" d={d} style={stroke ? { stroke } : undefined} />}
+                {flowing && <path className="cst-link-return" d={d} style={stroke ? { stroke } : undefined} />}
               </g>
             )
           })}
         </svg>
       )}
 
-      {/* Orchestrator (main) orb */}
+      {/* Orchestrator (main) orb — morphs toward the focused channel's hue. */}
       {ready && (
         <div
           className="cst-orb"
           style={{ left: mainCenter.x, top: mainCenter.y, zIndex: 2 }}
         >
-          <AuraAvatar state={state} level={level} size={Math.round(mainSize)} />
+          <AuraAvatar state={state} level={level} size={Math.round(mainSize)} channelHue={mainHue} />
         </div>
       )}
 
-      {/* Satellite (COO child) orbs */}
+      {/* Satellite (COO child) orbs — each painted with its own channel hue. */}
       {ready && children.map((c, i) => {
         const center = childCenter(i)
         const isNew = !mountedRef.current.has(c.id)
         if (isNew) mountedRef.current.add(c.id)
+        const isFocused = c.id === activeId
+        const hue = channelIdentity(channelKey(c)).hue
         return (
           <div
             key={c.id}
             className={`cst-orb ${isNew ? "cst-orb-enter" : ""} ${c.state === "idle" ? "cst-orb-leaving" : ""}`}
-            style={{ left: center.x, top: center.y, zIndex: 3 }}
+            style={{
+              left: center.x,
+              top: center.y,
+              zIndex: isFocused ? 4 : 3,
+              ...(c.state === "idle" ? {} : { opacity: isFocused ? 1 : 0.55 }),
+            }}
           >
-            <AuraAvatar state={c.state === "idle" ? "idle" : "thinking"} size={Math.round(childSize)} />
+            {/* Inner scaler: the focused satellite swells, the others recede —
+                a transform-only highlight that never re-inits the orb canvas. */}
+            <div className="cst-orb-scale" data-active={isFocused}>
+              <AuraAvatar state={c.state === "idle" ? "idle" : "thinking"} size={Math.round(childSize)} channelHue={hue} />
+            </div>
             {c.label && <span className="cst-orb-label">{c.label}</span>}
           </div>
         )

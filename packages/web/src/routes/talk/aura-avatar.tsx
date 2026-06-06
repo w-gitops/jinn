@@ -35,6 +35,15 @@ export interface AuraAvatarProps {
   level?: number
   /** Orb diameter wrapper in px. Default 340. */
   size?: number
+  /**
+   * Channel hue (0..360) this orb should morph toward. For the MAIN orb this is
+   * the currently-patched COO channel (undefined → ease back to AURA's amber);
+   * for a satellite it's that channel's own identity. Eased via a spring so a
+   * switch sweeps smoothly across the wheel rather than snapping.
+   */
+  channelHue?: number
+  /** Tint strength 0..1 (default 1 when `channelHue` is set). */
+  channelMix?: number
   className?: string
 }
 
@@ -77,6 +86,62 @@ function parseColor(input: string): RGB {
 }
 
 const rgba = (c: RGB, a: number) => `rgba(${c.r | 0},${c.g | 0},${c.b | 0},${a})`
+const rgbStr = (c: RGB) => `rgb(${c.r | 0},${c.g | 0},${c.b | 0})`
+
+// ---------------------------------------------------------------------------
+// Channel tinting colour math (pure). Used to morph the orb toward an active
+// channel's hue. Kept here as rendering glue; the deterministic key→hue mapping
+// (the part worth testing) lives in channel-identity.ts.
+// ---------------------------------------------------------------------------
+function rgbToHsl(c: RGB): { h: number; s: number; l: number } {
+  const r = c.r / 255, g = c.g / 255, b = c.b / 255
+  const max = Math.max(r, g, b), min = Math.min(r, g, b)
+  const l = (max + min) / 2
+  const d = max - min
+  if (d === 0) return { h: 0, s: 0, l }
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+  let h: number
+  if (max === r) h = ((g - b) / d) % 6
+  else if (max === g) h = (b - r) / d + 2
+  else h = (r - g) / d + 4
+  h *= 60
+  if (h < 0) h += 360
+  return { h, s, l }
+}
+
+function hslToRgb(h: number, s: number, l: number): RGB {
+  h = ((h % 360) + 360) % 360
+  const c = (1 - Math.abs(2 * l - 1)) * s
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1))
+  const m = l - c / 2
+  let r = 0, g = 0, b = 0
+  if (h < 60) { r = c; g = x } else if (h < 120) { r = x; g = c }
+  else if (h < 180) { g = c; b = x } else if (h < 240) { g = x; b = c }
+  else if (h < 300) { r = x; b = c } else { r = c; b = x }
+  return { r: (r + m) * 255, g: (g + m) * 255, b: (b + m) * 255 }
+}
+
+/** Interpolate two hue angles along the shortest path on the colour wheel. */
+function lerpAngle(a: number, b: number, t: number): number {
+  let d = ((b - a + 540) % 360) - 180
+  return a + d * t
+}
+
+function lerpRGB(a: RGB, b: RGB, t: number): RGB {
+  return { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t }
+}
+
+/** Rotate a colour's hue `amount` (0..1) toward `towardHue`, keeping its s/l. */
+function shiftHueToward(c: RGB, towardHue: number, amount: number): RGB {
+  if (amount <= 0.001) return c
+  const hsl = rgbToHsl(c)
+  return hslToRgb(lerpAngle(hsl.h, towardHue, amount), hsl.s, hsl.l)
+}
+
+const DEG = Math.PI / 180
+/** How far the plasma CORE rotates toward a channel at full patch (the outer
+ *  accent layers go all the way; the core keeps some amber warmth). */
+const CORE_SHIFT = 0.7
 
 /** Per-state targets the springs chase. Tuned so transitions feel alive. */
 interface StateTargets {
@@ -149,9 +214,19 @@ export function AuraAvatar({
   state,
   level,
   size = 340,
+  channelHue,
+  channelMix,
   className,
 }: AuraAvatarProps): JSX.Element {
   const reduced = usePrefersReducedMotion()
+
+  // --- Channel tint, chased as a 2D vector on the hue circle ---------------
+  // Representing the tint as (cos, sin)·strength means: no channel → springs to
+  // the origin (neutral amber); switching channels sweeps along a chord through
+  // the desaturated centre instead of snapping the hue across the wheel.
+  const tintStrength = channelHue != null ? Math.max(0, Math.min(1, channelMix ?? 1)) : 0
+  const tintX = useSpringValue(channelHue != null ? Math.cos(channelHue * DEG) * tintStrength : 0, SPRING_PRESETS.gentle)
+  const tintY = useSpringValue(channelHue != null ? Math.sin(channelHue * DEG) * tintStrength : 0, SPRING_PRESETS.gentle)
 
   // --- Spring-chased per-state scalars ------------------------------------
   const t = useMemo(() => targetsFor(state), [state])
@@ -183,6 +258,8 @@ export function AuraAvatar({
     arc,
     rippleRate,
     level: levelSpring,
+    tintX,
+    tintY,
     hasLevel,
     state,
     reduced,
@@ -197,6 +274,8 @@ export function AuraAvatar({
     arc,
     rippleRate,
     level: levelSpring,
+    tintX,
+    tintY,
     hasLevel,
     state,
     reduced,
@@ -259,6 +338,7 @@ export function AuraAvatar({
     const maxRippleR = (px / 2) * 0.96
 
     const accent = accentRef.current
+    const baseAccentStr = rgbStr(accent)
     const core = {
       hi: parseColor(CORE.hi),
       mid: parseColor(CORE.mid),
@@ -273,14 +353,17 @@ export function AuraAvatar({
     let breathePhase = 0
     let lastTs: number | null = null
     let smoothAmp = 0
+    // Last value written to the CSS glow var, so we only touch the DOM on change.
+    let lastGlow: string | null | undefined = undefined
     type Ripple = { r: number; a: number }
     const ripples: Ripple[] = []
 
-    // Three plasma blobs with independent organic drift params.
+    // Three plasma blobs with independent organic drift params. `colKey` selects
+    // a (possibly channel-tinted) core colour each frame.
     const blobs = [
-      { baseX: -0.04, baseY: -0.08, rad: 0.47, sp: 0.9, ph: 0.0, col: core.bloom, amp: 0.13 },
-      { baseX: 0.05, baseY: 0.04, rad: 0.38, sp: 0.72, ph: 2.1, col: core.mid, amp: 0.11 },
-      { baseX: -0.02, baseY: 0.1, rad: 0.27, sp: 1.15, ph: 4.0, col: core.hi, amp: 0.1 },
+      { baseX: -0.04, baseY: -0.08, rad: 0.47, sp: 0.9, ph: 0.0, colKey: "bloom" as const, amp: 0.13 },
+      { baseX: 0.05, baseY: 0.04, rad: 0.38, sp: 0.72, ph: 2.1, colKey: "mid" as const, amp: 0.11 },
+      { baseX: -0.02, baseY: 0.1, rad: 0.27, sp: 1.15, ph: 4.0, colKey: "hi" as const, amp: 0.1 },
     ]
 
     const draw = (now: number) => {
@@ -330,6 +413,29 @@ export function AuraAvatar({
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx.clearRect(0, 0, px, px)
 
+      // ===== 0. Resolve channel tint from the eased 2D hue vector =====
+      // strength = vector length (0 = neutral amber, 1 = fully patched to the
+      // channel); hue = vector angle. Outer accent layers take the full hue;
+      // the plasma core rotates a fraction (CORE_SHIFT) so it keeps amber warmth.
+      const tStrength = Math.min(1, Math.hypot(s.tintX, s.tintY))
+      let cHi = core.hi, cMid = core.mid, cBloom = core.bloom, cLow = core.low
+      let eAccent = accent
+      if (tStrength > 0.002) {
+        const tHue = (Math.atan2(s.tintY, s.tintX) * 180) / Math.PI
+        cHi = shiftHueToward(core.hi, tHue, tStrength * CORE_SHIFT)
+        cMid = shiftHueToward(core.mid, tHue, tStrength * CORE_SHIFT)
+        cBloom = shiftHueToward(core.bloom, tHue, tStrength * CORE_SHIFT)
+        cLow = shiftHueToward(core.low, tHue, tStrength * CORE_SHIFT * 0.5)
+        eAccent = lerpRGB(accent, hslToRgb(tHue, 0.72, 0.6), tStrength)
+      }
+      const colFor = (k: "hi" | "mid" | "bloom") => (k === "hi" ? cHi : k === "mid" ? cMid : cBloom)
+      // Keep the CSS glow halo in step with the tint (one var write per change).
+      const wrap = wrapRef.current
+      if (wrap) {
+        const want = tStrength > 0.002 ? rgbStr(eAccent) : baseAccentStr
+        if (want !== lastGlow) { wrap.style.setProperty("--aura-accent", want); lastGlow = want }
+      }
+
       // ===== 1. Emanating ripples (behind ring, listening + speaking) =====
       const rippleStart = R + R * 0.08
       if (moving && s.rippleRate > 0.05) {
@@ -349,7 +455,7 @@ export function AuraAvatar({
         }
         ctx.beginPath()
         ctx.arc(CX, CY, p.r, 0, Math.PI * 2)
-        ctx.strokeStyle = rgba(accent, p.a)
+        ctx.strokeStyle = rgba(eAccent, p.a)
         ctx.lineWidth = Math.max(1, R * 0.016)
         ctx.stroke()
       }
@@ -373,7 +479,7 @@ export function AuraAvatar({
         else ctx.moveTo(x, y)
       }
       ctx.closePath()
-      ctx.strokeStyle = rgba(core.hi, 0.22 + amp * 0.5)
+      ctx.strokeStyle = rgba(cHi, 0.22 + amp * 0.5)
       ctx.lineWidth = Math.max(1, R * 0.012)
       ctx.stroke()
 
@@ -382,7 +488,7 @@ export function AuraAvatar({
         const a0 = time * 2
         ctx.beginPath()
         ctx.arc(CX, CY, rOrb + R * 0.266, a0, a0 + 1.7)
-        ctx.strokeStyle = rgba(core.hi, 0.85 * s.arc)
+        ctx.strokeStyle = rgba(cHi, 0.85 * s.arc)
         ctx.lineWidth = Math.max(1.5, R * 0.023)
         ctx.lineCap = "round"
         ctx.stroke()
@@ -392,7 +498,7 @@ export function AuraAvatar({
         const dy = CY + Math.sin(da) * (rOrb + R * 0.266)
         ctx.beginPath()
         ctx.arc(dx, dy, R * 0.03, 0, Math.PI * 2)
-        ctx.fillStyle = rgba(accent, 0.9 * s.arc)
+        ctx.fillStyle = rgba(eAccent, 0.9 * s.arc)
         ctx.fill()
       }
 
@@ -413,7 +519,7 @@ export function AuraAvatar({
           ctx.beginPath()
           ctx.moveTo(CX + c * baseR, CY + sn * baseR)
           ctx.lineTo(CX + c * (baseR + h), CY + sn * (baseR + h))
-          ctx.strokeStyle = rgba(accent, (0.3 + amp * 0.5) * s.equalizer)
+          ctx.strokeStyle = rgba(eAccent, (0.3 + amp * 0.5) * s.equalizer)
           ctx.stroke()
         }
       }
@@ -437,9 +543,9 @@ export function AuraAvatar({
         rOrb,
       )
       const b = Math.min(1.4, bright)
-      grad.addColorStop(0, rgba({ r: core.hi.r * b, g: core.hi.g * b, b: core.hi.b * b }, 1))
-      grad.addColorStop(0.34, rgba({ r: core.mid.r * b, g: core.mid.g * b, b: core.mid.b * b }, 1))
-      grad.addColorStop(0.7, rgba(core.low, 1))
+      grad.addColorStop(0, rgba({ r: cHi.r * b, g: cHi.g * b, b: cHi.b * b }, 1))
+      grad.addColorStop(0.34, rgba({ r: cMid.r * b, g: cMid.g * b, b: cMid.b * b }, 1))
+      grad.addColorStop(0.7, rgba(cLow, 1))
       grad.addColorStop(1, rgba(core.deep, 1))
       ctx.fillStyle = grad
       ctx.fillRect(CX - rOrb, CY - rOrb, rOrb * 2, rOrb * 2)
@@ -448,6 +554,7 @@ export function AuraAvatar({
       ctx.globalCompositeOperation = "screen"
       const energy = s.blob
       for (const bl of blobs) {
+        const col = colFor(bl.colKey)
         const drift = bl.amp * energy
         const ox =
           bl.baseX * rOrb +
@@ -463,9 +570,9 @@ export function AuraAvatar({
         const br = rOrb * bl.rad * (1 + 0.12 * Math.sin(time * bl.sp * 1.3 + bl.ph) * (energy - 0.6))
         const bg = ctx.createRadialGradient(bx, by, 0, bx, by, br)
         const ba = 0.85 * Math.min(1.3, bright)
-        bg.addColorStop(0, rgba(bl.col, ba))
-        bg.addColorStop(0.6, rgba(bl.col, ba * 0.28))
-        bg.addColorStop(1, rgba(bl.col, 0))
+        bg.addColorStop(0, rgba(col, ba))
+        bg.addColorStop(0.6, rgba(col, ba * 0.28))
+        bg.addColorStop(1, rgba(col, 0))
         ctx.fillStyle = bg
         ctx.beginPath()
         ctx.arc(bx, by, br, 0, Math.PI * 2)
@@ -491,8 +598,8 @@ export function AuraAvatar({
       const spX = CX - rOrb * 0.32
       const spY = CY - rOrb * 0.38
       const sp = ctx.createRadialGradient(spX, spY, 0, spX, spY, rOrb * 0.5)
-      sp.addColorStop(0, rgba(core.hi, 0.55 * Math.min(1.2, bright)))
-      sp.addColorStop(0.5, rgba(core.bloom, 0.12))
+      sp.addColorStop(0, rgba(cHi, 0.55 * Math.min(1.2, bright)))
+      sp.addColorStop(0.5, rgba(cBloom, 0.12))
       sp.addColorStop(1, "rgba(255,255,255,0)")
       ctx.globalCompositeOperation = "screen"
       ctx.fillStyle = sp
@@ -506,7 +613,7 @@ export function AuraAvatar({
       // 5e. Crisp rim light around the orb edge for definition.
       ctx.beginPath()
       ctx.arc(CX, CY, rOrb, 0, Math.PI * 2)
-      ctx.strokeStyle = rgba(core.hi, 0.18 + amp * 0.18)
+      ctx.strokeStyle = rgba(cHi, 0.18 + amp * 0.18)
       ctx.lineWidth = Math.max(1, R * 0.01)
       ctx.stroke()
 
