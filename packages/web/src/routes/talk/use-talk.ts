@@ -10,7 +10,10 @@
  *        → when it delegates to a COO child, the gateway emits talk:focus; we
  *          track that child so the UI can render it as a satellite orb.
  *        → when a COO child finishes, the orchestrator is woken (📩) and narrates
- *          — another session:delta + spoken turn, fully hands-free.
+ *          — another session:delta + spoken turn.
+ *
+ * Mic control is plain tap-to-talk: tap the mic to start listening, tap again to
+ * send. After a reply is spoken the loop returns to idle and waits for the next tap.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useGateway } from "@/hooks/use-gateway"
@@ -31,8 +34,6 @@ import {
 } from "./protocol"
 import type { TranscriptEntry } from "./transcript"
 import type { AvatarState, Card } from "./types"
-import { VadEndpointer, VAD_DEFAULTS, BARGE_IN_DEFAULTS } from "./vad"
-import { MicEnergyMonitor } from "./mic-energy"
 import { threadReducer, type TalkThread, type ThreadAction } from "./thread-store"
 
 export type { TalkThread } from "./thread-store"
@@ -40,10 +41,6 @@ export type { TalkThread } from "./thread-store"
 /** Most recent cards kept on the surface at once (older ones drift out). */
 const MAX_CARDS = 4
 
-/** localStorage key for the hands-free (continuous) mode preference. */
-const HANDS_FREE_KEY = "talk-hands-free"
-/** Gap after AURA stops speaking before the mic auto-reopens (hands-free). */
-const AUTO_REOPEN_DELAY_MS = 450
 /** How long a finished COO thread keeps orbiting (as a satellite) before parking. */
 const THREAD_PARK_MS = 4500
 
@@ -68,9 +65,6 @@ export interface UseTalkReturn {
   listening: boolean
   sttAvailable: boolean | null
   ttsStatus: TtsStatus
-  /** Hands-free (continuous) mode: VAD auto-send + barge-in + auto-reopen. */
-  handsFree: boolean
-  toggleHandsFree: () => void
   /** Route the next dispatch to continue an existing thread (null → new). */
   selectThread: (id: string | null) => void
   /** Rename a thread's topic label (UI-only). */
@@ -91,28 +85,10 @@ export function useTalk(): UseTalkReturn {
   const [cards, setCards] = useState<Card[]>([])
   const [level, setLevel] = useState<number | undefined>(undefined)
   const [ttsStatus, setTtsStatus] = useState<TtsStatus>({ kind: "idle" })
-  const [handsFree, setHandsFree] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false
-    return localStorage.getItem(HANDS_FREE_KEY) === "1"
-  })
 
   const [orchestratorId, setOrchestratorId] = useState<string | null>(null)
   const orchestratorIdRef = useRef<string | null>(null)
   orchestratorIdRef.current = orchestratorId
-
-  // Mirrors of state read from inside rAF ticks / timers / WS callbacks.
-  const handsFreeRef = useRef(handsFree)
-  handsFreeRef.current = handsFree
-  const stateRef = useRef(state)
-  stateRef.current = state
-
-  // Hands-free turn-taking machinery.
-  const vadRef = useRef<VadEndpointer | null>(null)
-  const vadFiredRef = useRef(false)
-  const autoListenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Late-bound refs so rAF ticks / effects can call the latest stop/startListening.
-  const stopRef = useRef<() => void>(() => {})
-  const startListeningRef = useRef<() => void>(() => {})
 
   const playerRef = useRef<TalkAudioPlayer | null>(null)
   if (!playerRef.current) playerRef.current = new TalkAudioPlayer()
@@ -175,19 +151,6 @@ export function useTalk(): UseTalkReturn {
           }
           const rms = Math.sqrt(sum / buf.length)
           setLevel(Math.min(1, rms * 3.2))
-          // Hands-free VAD auto-endpointing: once the user has actually spoken,
-          // a trailing silence ends the turn and sends it — no second tap.
-          if (
-            handsFreeRef.current &&
-            !vadFiredRef.current &&
-            vadRef.current &&
-            sttRef.current.state === "recording"
-          ) {
-            if (vadRef.current.push(rms, performance.now()) === "endpoint") {
-              vadFiredRef.current = true
-              stopRef.current()
-            }
-          }
         } else setLevel(undefined)
       } else {
         const player = playerRef.current
@@ -270,27 +233,12 @@ export function useTalk(): UseTalkReturn {
 
   const clearCards = useCallback(() => setCards([]), [])
 
-  // ---- Hands-free auto-reopen ----------------------------------------------
-  // After AURA finishes speaking, in hands-free mode reopen the mic for the next
-  // turn so the conversation continues without a tap. Guarded so it only fires
-  // when still idle + hands-free + STT usable (never tight-loops on no-model).
-  const scheduleAutoListen = useCallback(() => {
-    if (!handsFreeRef.current) return
-    if (sttRef.current.available === false) return
-    if (autoListenTimerRef.current) clearTimeout(autoListenTimerRef.current)
-    autoListenTimerRef.current = setTimeout(() => {
-      autoListenTimerRef.current = null
-      if (handsFreeRef.current && stateRef.current === "idle") startListeningRef.current()
-    }, AUTO_REOPEN_DELAY_MS)
-  }, [])
-
   // ---- WS subscription -----------------------------------------------------
   useEffect(() => {
     const player = playerRef.current!
     player.onIdle(() => {
       setState((s) => (s === "speaking" ? "idle" : s))
       stopLevelLoop()
-      scheduleAutoListen()
     })
 
     const sid = (p: unknown): string | undefined =>
@@ -311,12 +259,11 @@ export function useTalk(): UseTalkReturn {
         setState("speaking")
         speakRef.current
           .speak(text)
-          .then(() => { setState((s) => (s === "speaking" ? "idle" : s)); scheduleAutoListen() })
-          .catch(() => { setState((s) => (s === "speaking" ? "idle" : s)); scheduleAutoListen() })
+          .then(() => { setState((s) => (s === "speaking" ? "idle" : s)) })
+          .catch(() => { setState((s) => (s === "speaking" ? "idle" : s)) })
       } else {
         setState("idle")
         stopLevelLoop()
-        scheduleAutoListen()
       }
       audioThisTurnRef.current = false
     }
@@ -411,7 +358,7 @@ export function useTalk(): UseTalkReturn {
     })
 
     return () => { unsub() }
-  }, [gateway, appendAssistantText, dispatchThread, schedulePark, startLevelLoop, stopLevelLoop, upsertCard, patchCard, dismissCard, clearCards, scheduleAutoListen])
+  }, [gateway, appendAssistantText, dispatchThread, schedulePark, startLevelLoop, stopLevelLoop, upsertCard, patchCard, dismissCard, clearCards])
 
   // ---- Bootstrap orchestrator + probe TTS ----------------------------------
   useEffect(() => {
@@ -430,25 +377,18 @@ export function useTalk(): UseTalkReturn {
     return () => { alive = false }
   }, [])
 
-  // ---- Mic control ---------------------------------------------------------
+  // ---- Mic control (plain tap-to-talk) -------------------------------------
   const startListening = useCallback(() => {
-    if (autoListenTimerRef.current) { clearTimeout(autoListenTimerRef.current); autoListenTimerRef.current = null }
     playerRef.current?.resume()
     // Unlock browser TTS within the user gesture (iOS Safari requires this, or
     // the post-network reply is silently blocked).
     try { speakRef.current.prime() } catch { /* noop */ }
-    // Arm a fresh VAD endpointer for this utterance (hands-free auto-send).
-    if (!vadRef.current) vadRef.current = new VadEndpointer(VAD_DEFAULTS)
-    else vadRef.current.reset()
-    vadFiredRef.current = false
     setState("listening")
     startLevelLoop("mic")
     void sttRef.current.handleMicClick()
   }, [startLevelLoop])
-  startListeningRef.current = startListening
 
   const stop = useCallback(async () => {
-    if (autoListenTimerRef.current) { clearTimeout(autoListenTimerRef.current); autoListenTimerRef.current = null }
     turnSeqRef.current++
     const seq = turnSeqRef.current
     const s = sttRef.current
@@ -474,67 +414,20 @@ export function useTalk(): UseTalkReturn {
           setState("idle"); stopLevelLoop()
         }
       } else {
-        // Empty/failed transcription (e.g. VAD endpointed on noise). In
-        // hands-free, re-arm the mic so the conversation doesn't stall.
-        setState("idle"); stopLevelLoop(); scheduleAutoListen()
+        // Empty/failed transcription — return to idle and wait for the next tap.
+        setState("idle"); stopLevelLoop()
       }
     } else {
       s.cancelRecording()
       playerRef.current?.reset()
       setState("idle"); stopLevelLoop()
     }
-  }, [stopLevelLoop, scheduleAutoListen])
-  stopRef.current = stop
-
-  const toggleHandsFree = useCallback(() => {
-    setHandsFree((prev) => {
-      const next = !prev
-      try { localStorage.setItem(HANDS_FREE_KEY, next ? "1" : "0") } catch { /* noop */ }
-      // Turning it off mid-conversation: cancel any pending auto-reopen.
-      if (!next && autoListenTimerRef.current) {
-        clearTimeout(autoListenTimerRef.current)
-        autoListenTimerRef.current = null
-      }
-      return next
-    })
-  }, [])
-
-  // ---- Barge-in: talk over AURA to interrupt (hands-free only) --------------
-  // While AURA is speaking we run a short-lived AEC-enabled mic monitor. On
-  // SUSTAINED speech energy above a raised threshold (BARGE_IN_DEFAULTS) we
-  // cancel the TTS and immediately open a fresh listening turn. The echo-
-  // cancellation + threshold + onset-sustain together stop AURA's own voice
-  // (leaking through the speaker) from interrupting herself.
-  const onBargeIn = useCallback(() => {
-    try { speakRef.current.cancel() } catch { /* noop */ }
-    playerRef.current?.reset()
-    audioThisTurnRef.current = false
-    startListeningRef.current()
-  }, [])
-
-  useEffect(() => {
-    if (!handsFree || state !== "speaking") return
-    const monitor = new MicEnergyMonitor()
-    const detector = new VadEndpointer(BARGE_IN_DEFAULTS)
-    let done = false
-    monitor
-      .start((rms, now) => {
-        if (done) return
-        if (detector.push(rms, now) === "speech-start") {
-          done = true
-          monitor.stop()
-          onBargeIn()
-        }
-      })
-      .catch(() => { /* mic unavailable → no barge-in, tap still works */ })
-    return () => { done = true; monitor.stop() }
-  }, [handsFree, state, onBargeIn])
+  }, [stopLevelLoop])
 
   // ---- Cleanup -------------------------------------------------------------
   useEffect(() => {
     return () => {
       if (levelRafRef.current) cancelAnimationFrame(levelRafRef.current)
-      if (autoListenTimerRef.current) clearTimeout(autoListenTimerRef.current)
       for (const t of parkTimers.current.values()) clearTimeout(t)
       parkTimers.current.clear()
       try { speakRef.current.cancel() } catch { /* noop */ }
@@ -552,10 +445,9 @@ export function useTalk(): UseTalkReturn {
       listening,
       sttAvailable: stt.available,
       ttsStatus,
-      handsFree, toggleHandsFree,
       selectThread, renameThread, dismissThread,
       startListening, stop,
     }),
-    [state, entries, threads, targetThreadId, cards, level, gateway.connected, listening, stt.available, ttsStatus, handsFree, toggleHandsFree, selectThread, renameThread, dismissThread, startListening, stop],
+    [state, entries, threads, targetThreadId, cards, level, gateway.connected, listening, stt.available, ttsStatus, selectThread, renameThread, dismissThread, startListening, stop],
   )
 }

@@ -1,14 +1,14 @@
 /**
  * Jinn Talk — /talk route (AURA voice surface).
  *
- * Mobile-first, hands-free. The orchestrator orb sits center; when it spawns COO
- * child sessions they appear as satellite orbs (see Constellation). One big mic
- * button drives the loop (tap to talk, tap to send). TTS is browser SpeechSynthesis
- * by default, so it speaks aloud on the phone with no server deps.
+ * Mobile-first. The orchestrator orb sits center; when it spawns COO child
+ * sessions they appear as satellite orbs (see Constellation). One big mic button
+ * drives the loop (tap to talk, tap to send). TTS is browser SpeechSynthesis by
+ * default, so it speaks aloud on the phone with no server deps.
  */
 import { useCallback } from "react"
 import { Link } from "react-router-dom"
-import { ArrowLeft, Mic, Square, Sun, Moon, Infinity as InfinityIcon } from "lucide-react"
+import { ArrowLeft, Mic, Square, Sun, Moon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/routes/providers"
 import { Constellation } from "./constellation"
@@ -30,12 +30,12 @@ export default function TalkPage() {
 
   const hint = (() => {
     if (!talk.connected) return "Connecting to Jinn…"
-    if (talk.listening) return talk.handsFree ? "Listening — pause when you're done" : "Listening…"
+    if (talk.listening) return "Listening… tap to send"
     if (talk.state === "thinking") return "Thinking…"
-    if (talk.state === "speaking") return talk.handsFree ? "Speaking — talk over me to interrupt" : "Speaking…"
+    if (talk.state === "speaking") return "Speaking…"
     if (talk.ttsStatus.kind === "error") return "Voice output unavailable on this device"
     if (talk.sttAvailable === false) return "Speech-to-text not installed — mic shows visual only"
-    return talk.handsFree ? "Hands-free on — tap to start" : "Tap to talk"
+    return "Tap to talk"
   })()
 
   return (
@@ -115,21 +115,6 @@ export default function TalkPage() {
         className="absolute inset-x-0 bottom-0 z-30 flex flex-col items-center gap-3"
         style={{ paddingBottom: "max(env(safe-area-inset-bottom), 22px)" }}
       >
-        {/* Hands-free (continuous) toggle — opt-in VAD auto-send + barge-in.
-            Tap-to-talk stays the default/fallback for noisy environments. */}
-        <button
-          onClick={talk.toggleHandsFree}
-          aria-pressed={talk.handsFree}
-          aria-label="Toggle hands-free mode"
-          className={cn(
-            "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-footnote backdrop-blur-md transition-colors active:scale-95",
-            talk.handsFree
-              ? "border-[var(--accent)] bg-[var(--accent-fill)] text-[var(--accent)]"
-              : "border-[var(--separator)] bg-[var(--material-regular)] text-[var(--text-tertiary)]",
-          )}
-        >
-          <InfinityIcon size={14} /> Hands-free {talk.handsFree ? "on" : "off"}
-        </button>
         <p className="text-caption1 text-[var(--text-quaternary)]">{hint}</p>
         <button
           onClick={onMic}
