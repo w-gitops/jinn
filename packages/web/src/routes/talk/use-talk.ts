@@ -250,18 +250,38 @@ export function useTalk(): UseTalkReturn {
       TALK_EVENTS.ttsDownloadError,
     ])
 
-    const speakReplyIfNeeded = () => {
+    // Speak the completed reply. The transcript is driven SENTENCE-BY-SENTENCE:
+    // as each sentence utterance starts, we REPLACE the assistant caption with
+    // that sentence (tagged with its index) so it switches in sync with the
+    // voice instead of showing one concatenated blob.
+    const speakReplyIfNeeded = (asstId: string | null) => {
+      const finalize = () => {
+        if (!asstId) return
+        setEntries((prev) => prev.map((e) => (e.id === asstId ? { ...e, partial: false } : e)))
+      }
       const text = turnTextRef.current.trim()
       if (audioThisTurnRef.current) {
-        // Kokoro audio is playing; player.onIdle will settle.
+        // Kokoro audio is playing; player.onIdle will settle. No per-sentence
+        // callbacks from server audio, so just finalize the full caption.
         setState("speaking")
+        finalize()
       } else if (text && speakRef.current.supported) {
         setState("speaking")
         speakRef.current
-          .speak(text)
-          .then(() => { setState((s) => (s === "speaking" ? "idle" : s)) })
-          .catch(() => { setState((s) => (s === "speaking" ? "idle" : s)) })
+          .speak(text, {
+            onSentence: ({ text: sentence, index }) => {
+              if (!asstId) return
+              setEntries((prev) =>
+                prev.map((e) =>
+                  e.id === asstId ? { ...e, text: sentence, seg: index, partial: true } : e,
+                ),
+              )
+            },
+          })
+          .then(() => { setState((s) => (s === "speaking" ? "idle" : s)); finalize() })
+          .catch(() => { setState((s) => (s === "speaking" ? "idle" : s)); finalize() })
       } else {
+        finalize()
         setState("idle")
         stopLevelLoop()
       }
@@ -345,9 +365,11 @@ export function useTalk(): UseTalkReturn {
         case "session:completed": {
           void (payload as SessionCompletedEvent)
           if (isOrch) {
-            setEntries((prev) => prev.map((e) => (e.id === asstIdRef.current ? { ...e, partial: false } : e)))
+            // Hand the finished assistant entry id to the speaker so it can swap
+            // the caption per spoken sentence; the speaker finalizes `partial`.
+            const finishedId = asstIdRef.current
             asstIdRef.current = null
-            speakReplyIfNeeded()
+            speakReplyIfNeeded(finishedId)
           } else if (isChild && s) {
             dispatchThread({ type: "done", id: s, ts: Date.now() })
             schedulePark(s)

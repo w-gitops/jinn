@@ -17,8 +17,53 @@ export interface SpeakOptions {
   rate?: number
   /** 0..2, default 1. */
   pitch?: number
-  /** Fired per spoken word (Web Speech boundary event) for transcript sync. */
+  /** Fired per spoken word (Web Speech boundary event), relative to the current sentence. */
   onWord?: (info: { charIndex: number; word: string }) => void
+  /**
+   * Fired as each SENTENCE utterance STARTS, so the transcript can mirror the
+   * current spoken sentence (switching, not concatenating). On the no-TTS
+   * fallback path it fires on an estimated-duration timer.
+   */
+  onSentence?: (info: { text: string; index: number; total: number }) => void
+}
+
+/**
+ * Split a reply into discrete sentences (pure — exported for tests).
+ *
+ * Breaks on sentence terminators (`. ! ? …`, including grouped runs like `?!`
+ * or `...`) and on newlines, keeping the terminator with its sentence and
+ * preserving trailing text that has no terminator. A terminator only ends a
+ * sentence when followed by whitespace or end-of-string, so decimals like
+ * `3.14` stay intact. Abbreviation handling (`Mr.`) is intentionally not done.
+ */
+export function splitSentences(text: string): string[] {
+  if (!text) return []
+  const result: string[] = []
+  let buf = ""
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === "\n") {
+      if (buf.trim()) result.push(buf.trim())
+      buf = ""
+      continue
+    }
+    buf += ch
+    if (ch === "." || ch === "!" || ch === "?" || ch === "…") {
+      // Absorb a run of consecutive terminators (e.g. "?!" or "...").
+      while (i + 1 < text.length && /[.!?…]/.test(text[i + 1])) {
+        buf += text[++i]
+      }
+      const next = text[i + 1]
+      // End the sentence only at a boundary (whitespace or end of input), so
+      // mid-token dots like "3.14" don't split.
+      if (next === undefined || /\s/.test(next)) {
+        if (buf.trim()) result.push(buf.trim())
+        buf = ""
+      }
+    }
+  }
+  if (buf.trim()) result.push(buf.trim())
+  return result
 }
 
 export interface SpeakHandle {
@@ -87,6 +132,10 @@ export function useSpeak(): SpeakHandle {
   const resolveRef = useRef<(() => void) | null>(null)
   // Timers driving the fallback (no-TTS) path: end timer + per-word timers.
   const fallbackTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([])
+  // Monotonic token for the in-flight speak() call. Each sentence in a reply is
+  // a separate chained utterance; this lets a newer speak()/cancel() invalidate
+  // the chain so it never speaks a stale next sentence.
+  const speakSeqRef = useRef(0)
 
   // Load voices on mount. Voices are frequently empty on the first synchronous
   // call, so we also listen for the async `voiceschanged` event.
@@ -129,6 +178,8 @@ export function useSpeak(): SpeakHandle {
   }, [])
 
   const cancel = useCallback(() => {
+    // Invalidate any in-flight sentence chain so queued onend handlers bail.
+    speakSeqRef.current++
     clearFallbackTimers()
     if (typeof window !== "undefined" && window.speechSynthesis) {
       window.speechSynthesis.cancel()
@@ -159,7 +210,8 @@ export function useSpeak(): SpeakHandle {
 
   const speak = useCallback(
     (text: string, opts?: SpeakOptions): Promise<void> => {
-      // Cancel anything already in flight so promises never overlap.
+      // Invalidate any in-flight chain, then cancel so promises never overlap.
+      const seq = ++speakSeqRef.current
       clearFallbackTimers()
       if (typeof window !== "undefined" && window.speechSynthesis) {
         window.speechSynthesis.cancel()
@@ -170,6 +222,14 @@ export function useSpeak(): SpeakHandle {
 
       const rate = opts?.rate ?? 1
       const pitch = opts?.pitch ?? 1
+      const onWord = opts?.onWord
+      const onSentence = opts?.onSentence
+
+      // Segment the reply so each sentence is spoken (and captioned) on its own,
+      // switching in sync with the voice instead of one concatenated blob.
+      const sentences = splitSentences(text)
+      if (sentences.length === 0) return Promise.resolve()
+      const total = sentences.length
 
       const synth =
         typeof window !== "undefined" ? window.speechSynthesis : undefined
@@ -181,34 +241,41 @@ export function useSpeak(): SpeakHandle {
       if (synth) {
         return new Promise<void>((resolve) => {
           resolveRef.current = resolve
-
-          const utterance = new SpeechSynthesisUtterance(text)
-          if (voiceRef.current) utterance.voice = voiceRef.current
-          utterance.rate = rate
-          utterance.pitch = pitch
-          utteranceRef.current = utterance
-
-          if (opts?.onWord) {
-            const onWord = opts.onWord
-            utterance.onboundary = (e: SpeechSynthesisEvent) => {
-              // Only word boundaries drive the transcript; ignore sentence marks.
-              if (e.name !== "word") return
-              onWord({
-                charIndex: e.charIndex,
-                word: wordAt(text, e.charIndex),
-              })
-            }
-          }
-
-          utterance.onend = () => {
-            if (utteranceRef.current === utterance) settle()
-          }
-          utterance.onerror = () => {
-            if (utteranceRef.current === utterance) settle()
-          }
-
           setSpeaking(true)
-          synth.speak(utterance)
+
+          const speakAt = (i: number) => {
+            if (seq !== speakSeqRef.current) return // superseded / cancelled
+            if (i >= total) {
+              settle()
+              return
+            }
+            const sentence = sentences[i]
+            const utterance = new SpeechSynthesisUtterance(sentence)
+            if (voiceRef.current) utterance.voice = voiceRef.current
+            utterance.rate = rate
+            utterance.pitch = pitch
+            utteranceRef.current = utterance
+
+            utterance.onstart = () => {
+              if (seq !== speakSeqRef.current) return
+              onSentence?.({ text: sentence, index: i, total })
+            }
+            if (onWord) {
+              utterance.onboundary = (e: SpeechSynthesisEvent) => {
+                // Only word boundaries drive the transcript; ignore sentence marks.
+                if (e.name !== "word") return
+                onWord({ charIndex: e.charIndex, word: wordAt(sentence, e.charIndex) })
+              }
+            }
+            // Advance to the next sentence on end OR error (so one failed
+            // utterance can't strand the rest of the reply).
+            utterance.onend = () => speakAt(i + 1)
+            utterance.onerror = () => speakAt(i + 1)
+
+            synth.speak(utterance)
+          }
+
+          speakAt(0)
         })
       }
 
@@ -217,31 +284,39 @@ export function useSpeak(): SpeakHandle {
         resolveRef.current = resolve
         setSpeaking(true)
 
-        const words = text.split(/\s+/).filter(Boolean)
-        const totalMs = Math.max(
-          MIN_ESTIMATED_MS,
-          (words.length / WORDS_PER_MINUTE) * 60_000,
-        )
-
-        // Fire onWord on a timer so the transcript reveal stays in sync.
-        if (opts?.onWord && words.length > 0) {
-          const onWord = opts.onWord
-          const perWord = totalMs / words.length
-          let charIndex = 0
-          words.forEach((word, i) => {
-            const at = charIndex
-            const timer = setTimeout(() => {
-              onWord({ charIndex: at, word })
-            }, perWord * i)
-            fallbackTimersRef.current.push(timer)
-            // +1 approximates the single whitespace char between words.
-            charIndex += word.length + 1
-          })
-        }
+        let acc = 0
+        sentences.forEach((sentence, i) => {
+          const words = sentence.split(/\s+/).filter(Boolean)
+          const durMs = Math.max(
+            MIN_ESTIMATED_MS,
+            (words.length / WORDS_PER_MINUTE) * 60_000,
+          )
+          const startAt = acc
+          const startTimer = setTimeout(() => {
+            if (seq !== speakSeqRef.current) return
+            onSentence?.({ text: sentence, index: i, total })
+            // Fire onWord on a timer so any word-level consumer stays in sync.
+            if (onWord && words.length > 0) {
+              const perWord = durMs / words.length
+              let charIndex = 0
+              words.forEach((word, wi) => {
+                const at = charIndex
+                const timer = setTimeout(() => {
+                  if (seq === speakSeqRef.current) onWord({ charIndex: at, word })
+                }, perWord * wi)
+                fallbackTimersRef.current.push(timer)
+                // +1 approximates the single whitespace char between words.
+                charIndex += word.length + 1
+              })
+            }
+          }, startAt)
+          fallbackTimersRef.current.push(startTimer)
+          acc += durMs
+        })
 
         const endTimer = setTimeout(() => {
-          settle()
-        }, totalMs)
+          if (seq === speakSeqRef.current) settle()
+        }, acc)
         fallbackTimersRef.current.push(endTimer)
       })
     },

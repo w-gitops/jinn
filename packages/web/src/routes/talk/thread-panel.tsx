@@ -65,6 +65,7 @@ export function ThreadPanel({ threads, targetThreadId, onSelect, onRename, onDis
                 key={t.id}
                 className="tp__chip"
                 data-selected={selected}
+                data-parked={!t.orbiting}
                 style={{ ["--tp-hue" as string]: String(t.hue) }}
               >
                 <span className={`tp__dot${running ? " tp__dot--running" : ""}`} />

@@ -91,6 +91,17 @@
   border-color: hsl(var(--tp-hue) 70% 55%);
   background: color-mix(in srgb, hsl(var(--tp-hue) 70% 55%) 14%, transparent);
 }
+/* Parked (finished, no longer orbiting) threads stay listed + clickable, just
+   dimmed slightly so running threads read as the active ones. Selection or
+   hover restores full presence. */
+.tp__chip[data-parked="true"] {
+  opacity: 0.7;
+  transition: opacity 200ms ease, border-color 200ms ease, background 200ms ease;
+}
+.tp__chip[data-parked="true"]:hover,
+.tp__chip[data-parked="true"][data-selected="true"] {
+  opacity: 1;
+}
 
 .tp__dot {
   width: 9px;

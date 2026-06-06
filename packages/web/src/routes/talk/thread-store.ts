@@ -31,8 +31,13 @@ export interface TalkThread {
   ts: number
 }
 
-/** Most threads kept before the oldest parked one is aged out. */
-export const MAX_THREADS = 6
+/**
+ * Runaway guard only. Real talk sessions never approach this — completing a COO
+ * child must NEVER age a thread out, so the cap sits far above realistic usage
+ * and only bounds a truly pathological list. The normal removal path is the
+ * explicit `dismiss` action.
+ */
+export const MAX_THREADS = 50
 
 /** Clean a raw dispatch string into a compact topic label. */
 export function deriveLabel(raw: string): string {
@@ -102,7 +107,11 @@ export function threadReducer(threads: TalkThread[], action: ThreadAction): Talk
   }
 }
 
-/** Keep at most MAX_THREADS, aging out the oldest parked (else oldest) thread. */
+/**
+ * Runaway guard: keep at most MAX_THREADS, aging out the oldest parked (else
+ * oldest) thread. This only fires in pathological cases — normal completion
+ * (done + park) keeps every thread; the user removes one via `dismiss`.
+ */
 function cap(threads: TalkThread[]): TalkThread[] {
   if (threads.length <= MAX_THREADS) return threads
   const byAge = [...threads].sort((a, b) => a.ts - b.ts)

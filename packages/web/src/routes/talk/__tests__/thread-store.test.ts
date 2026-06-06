@@ -72,16 +72,57 @@ describe("threadReducer", () => {
     expect(ts).toHaveLength(0)
   })
 
-  it("caps at MAX_THREADS, dropping the oldest parked thread first", () => {
+  it("completing many threads then focusing new ones never drops finished ones", () => {
+    // Real talk sessions create well under the runaway cap. Finishing (done) and
+    // parking a thread must NEVER remove it — only dismiss does.
+    const N = 20
     let ts: TalkThread[] = []
-    // Fill past the cap: all parked except the last one.
-    for (let i = 0; i < MAX_THREADS + 1; i++) {
+    for (let i = 0; i < N; i++) {
       ts = f(ts, `coo${i}`, `t${i}`, i)
       ts = threadReducer(ts, { type: "done", id: `coo${i}`, ts: i })
-      if (i < MAX_THREADS) ts = threadReducer(ts, { type: "park", id: `coo${i}` })
+      ts = threadReducer(ts, { type: "park", id: `coo${i}` })
+    }
+    // Focus a few brand-new threads on top.
+    ts = f(ts, "new1", "fresh1", 1000)
+    ts = f(ts, "new2", "fresh2", 1001)
+    expect(ts.length).toBe(N + 2)
+    // Every finished+parked thread is still present.
+    for (let i = 0; i < N; i++) {
+      const t = ts.find((x) => x.id === `coo${i}`)
+      expect(t).toBeDefined()
+      expect(t!.state).toBe("idle")
+      expect(t!.orbiting).toBe(false)
+    }
+  })
+
+  it("a done+parked thread still exists in the list", () => {
+    let ts = f([], "coo1", "homy-lead", 1)
+    ts = threadReducer(ts, { type: "done", id: "coo1", ts: 2 })
+    ts = threadReducer(ts, { type: "park", id: "coo1" })
+    expect(ts).toHaveLength(1)
+    expect(ts[0]).toMatchObject({ id: "coo1", state: "idle", orbiting: false })
+  })
+
+  it("only dismiss removes a thread — done and park never do", () => {
+    let ts = f([], "coo1", "a", 1)
+    ts = threadReducer(ts, { type: "done", id: "coo1", ts: 2 })
+    expect(ts).toHaveLength(1)
+    ts = threadReducer(ts, { type: "park", id: "coo1" })
+    expect(ts).toHaveLength(1)
+    ts = threadReducer(ts, { type: "dismiss", id: "coo1" })
+    expect(ts).toHaveLength(0)
+  })
+
+  it("runaway guard still bounds the list at the large cap", () => {
+    let ts: TalkThread[] = []
+    // Create far more than the cap, all parked (the age-out victims).
+    for (let i = 0; i < MAX_THREADS + 5; i++) {
+      ts = f(ts, `coo${i}`, `t${i}`, i)
+      ts = threadReducer(ts, { type: "done", id: `coo${i}`, ts: i })
+      if (i < MAX_THREADS + 4) ts = threadReducer(ts, { type: "park", id: `coo${i}` })
     }
     expect(ts).toHaveLength(MAX_THREADS)
-    // The oldest parked one (coo0) was aged out.
+    // The oldest parked one (coo0) was aged out by the runaway guard.
     expect(ts.find((t) => t.id === "coo0")).toBeUndefined()
   })
 

@@ -26,6 +26,12 @@ export interface TranscriptEntry {
   role: "user" | "assistant"
   text: string
   partial?: boolean
+  /**
+   * Sentence index while the reply is being spoken. The view re-keys on
+   * `id#seg` so each new sentence fully REPLACES the previous one (switch)
+   * instead of appending into a growing blob.
+   */
+  seg?: number
 }
 
 export interface TranscriptProps {
@@ -99,11 +105,13 @@ export function Transcript({ entries, className }: TranscriptProps): JSX.Element
 
       {assistant ? (
         <p className="transcript__reply">
-          {/* Keyed on the assistant id ALONE (not the text) so the word run
+          {/* Keyed on `id#seg`: within one sentence (stable seg) the word run
               persists across streaming deltas — only newly appended words mount
-              and blur in; revealed words stay settled. A new turn (new id)
-              remounts and replays from scratch. */}
-          <WordReveal key={assistant.id} text={assistant.text} />
+              and blur in. When the spoken sentence advances (seg changes) the
+              key changes, so the whole run remounts and the new sentence blurs
+              in, fully REPLACING the previous one instead of concatenating. A
+              new turn (new id) likewise remounts from scratch. */}
+          <WordReveal key={`${assistant.id}#${assistant.seg ?? 0}`} text={assistant.text} />
           {assistant.partial ? (
             <span className="transcript__cursor" aria-hidden="true" />
           ) : null}
