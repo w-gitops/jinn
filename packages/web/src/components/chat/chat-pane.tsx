@@ -16,6 +16,25 @@ import { saveIntermediateMessages, loadIntermediateMessages, clearIntermediateMe
 
 type Listener = (event: string, payload: unknown) => void
 
+/** After a reconnect, if a turn is still 'loading' but no delta has arrived for
+ *  this long, assume the session:completed frame was dropped and reconcile from
+ *  the server to clear a stuck spinner. */
+const COMPLETION_WATCHDOG_MS = 8000
+
+/** Decide whether the post-reconnect watchdog should treat the turn as stuck
+ *  (i.e. recover from a dropped completion). Pure for testing. */
+export function shouldRecoverStuckTurn(args: {
+  loading: boolean
+  msSinceLastDelta: number
+  serverStatus: string | undefined
+  watchdogMs?: number
+}): boolean {
+  const watchdogMs = args.watchdogMs ?? COMPLETION_WATCHDOG_MS
+  if (!args.loading) return false
+  if (args.msSinceLastDelta < watchdogMs) return false
+  return args.serverStatus !== 'running'
+}
+
 interface ChatPaneProps {
   sessionId: string | null
   isActive: boolean
@@ -71,6 +90,13 @@ export function ChatPane({
   // where the OLD pane's setLoading(true) was lost in the remount). Otherwise the
   // thinking indicator wouldn't show until the first WS delta arrives.
   const [loading, setLoading] = useState<boolean>(() => !!pendingUserMessage)
+  // Mirror `loading` into a ref so reconnect-keyed effects can read the current
+  // in-flight state at fire time without re-running on every send.
+  const loadingRef = useRef(loading)
+  useEffect(() => { loadingRef.current = loading }, [loading])
+  // Timestamp of the last streaming activity for THIS session; used by the
+  // post-reconnect completion watchdog to tell "still streaming" from "stuck".
+  const lastDeltaAtRef = useRef<number>(0)
   const streamingTextRef = useRef('')
   const [streamingText, setStreamingText] = useState('')
   // Live context-token count streamed mid-turn (message_start.usage). Overrides the
@@ -153,6 +179,7 @@ export function ChatPane({
       if (!sid || p.sessionId !== sid) return
 
       if (event === 'session:delta') {
+        lastDeltaAtRef.current = Date.now()
         const deltaType = String(p.type || 'text')
 
         if (deltaType === 'text') {
@@ -455,12 +482,54 @@ export function ChatPane({
   useEffect(() => {
     if (!connectionSeq || !sessionIdRef.current) return
     const st = currentSession?.status
-    if (st !== 'running' && st !== 'interrupted') return
+    // Also backfill when a turn is in flight LOCALLY (loadingRef): handleSend sets
+    // loading=true without setting status='running' (status is only refreshed from
+    // the server later), so a reconnect mid-turn would otherwise skip the backfill
+    // and never recover the deltas missed while the socket was dead. Read via ref so
+    // the effect still only re-runs on a real reconnect or status change.
+    if (st !== 'running' && st !== 'interrupted' && !loadingRef.current) return
     const handle = setTimeout(() => {
       loadSession(sessionIdRef.current!)
     }, 300)
     return () => clearTimeout(handle)
   }, [connectionSeq, currentSession?.status]) // loadSession is stable; sessionIdRef.current is read at call time
+
+  // Completion watchdog — recover from a DROPPED session:completed frame.
+  // session:completed is a single point of failure: if that one WS frame dies with
+  // a half-open socket right at completion, loading stays true forever (loadSession
+  // deliberately won't clear it, and no other event will). After a reconnect, if
+  // we're still loading and have been silent past the watchdog window, verify
+  // against the server and clear the stuck spinner if the turn actually finished.
+  useEffect(() => {
+    if (!connectionSeq) return
+    if (!loadingRef.current) return
+    const id = sessionIdRef.current
+    if (!id) return
+    const timer = setTimeout(async () => {
+      if (!loadingRef.current) return
+      if (Date.now() - lastDeltaAtRef.current < COMPLETION_WATCHDOG_MS) return // still actively streaming
+      try {
+        const session = (await api.getSession(id)) as Record<string, unknown>
+        if (shouldRecoverStuckTurn({
+          loading: loadingRef.current,
+          msSinceLastDelta: Date.now() - lastDeltaAtRef.current,
+          serverStatus: session.status as string | undefined,
+        })) {
+          // Missed the terminal event — clear the stuck spinner and reconcile
+          // messages from the authoritative server snapshot.
+          setLoading(false)
+          streamingTextRef.current = ''
+          setStreamingText('')
+          setLiveContextTokens(null)
+          intermediateStartRef.current = -1
+          await loadSession(id)
+        }
+      } catch {
+        // best-effort; a later interaction will reconcile
+      }
+    }, COMPLETION_WATCHDOG_MS)
+    return () => clearTimeout(timer)
+  }, [connectionSeq]) // loadSession is stable; refs read at fire time
 
 
   const handleInterrupt = useCallback(async () => {
@@ -486,6 +555,9 @@ export function ChatPane({
         return [...prev, userMsg]
       })
       setLoading(true)
+      // Mark fresh activity so the completion watchdog doesn't treat a just-sent
+      // turn as "silent" if a reconnect lands before the first delta arrives.
+      lastDeltaAtRef.current = Date.now()
 
       try {
         // Upload any attached files to the server in parallel and collect file IDs
