@@ -56,8 +56,10 @@ export function ChildSessionModal({ sessionId, open, onClose }: ChildSessionModa
 
 /** Body is split out so useSessionChat only runs while the modal is open. */
 function ChildSessionBody({ sessionId }: { sessionId: string }) {
-  const { messages, session, isLoading } = useSessionChat(sessionId)
+  const { messages, streamingText, loading, session, isInitialLoading } =
+    useSessionChat(sessionId)
   const label = headerLabel(session, sessionId)
+  const hasContent = messages.length > 0 || !!streamingText
 
   return (
     <>
@@ -68,18 +70,19 @@ function ChildSessionBody({ sessionId }: { sessionId: string }) {
       </DialogHeader>
 
       <div className="flex min-h-0 flex-1 flex-col bg-[var(--bg)]">
-        {isLoading ? (
+        {isInitialLoading ? (
           <div className="flex flex-1 items-center justify-center px-[var(--space-4)] py-[var(--space-8)] text-[length:var(--text-footnote)] text-[var(--text-tertiary)]">
             Loading conversation…
           </div>
-        ) : messages.length === 0 ? (
+        ) : !hasContent ? (
           <div className="flex flex-1 items-center justify-center px-[var(--space-4)] py-[var(--space-8)] text-[length:var(--text-footnote)] text-[var(--text-tertiary)]">
             No messages yet
           </div>
         ) : (
           // Reuse the main chat renderer verbatim — groupMessages + per-message
-          // bubbles + markdown/file-links live inside ChatMessages.
-          <ChatMessages messages={messages} loading={false} />
+          // bubbles + markdown/file-links live inside ChatMessages. Now driven by
+          // the shared live pipeline so it streams tokens + media in real time.
+          <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
         )}
       </div>
     </>

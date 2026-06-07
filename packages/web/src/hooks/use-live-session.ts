@@ -1,0 +1,562 @@
+/**
+ * useLiveSession — the live read pipeline for one gateway session.
+ *
+ * Extracted verbatim from ChatPane so it can be reused read-only by the Talk
+ * child-session modal (which previously only refetched on terminal events and
+ * thus never showed live streaming or live media). It owns:
+ *   - the message list + the optimistic streaming-text bubble
+ *   - the full WS event set (session:delta text/tool/context, :notification,
+ *     :attachment, :interrupted, :stopped, :completed)
+ *   - server load + reconcile (lib/conversations.reconcileMessages)
+ *   - reconnect (connectionSeq) backfill + the dropped-completion watchdog
+ *
+ * ChatPane consumes the SAME hook for its read side and keeps its composer/send
+ * on top, driving the optimistic write path through the small write API
+ * (beginSend/failSend/appendLocal/reset). The modal passes `readOnly: true`,
+ * which seeds `loading` from the session's running state and skips the
+ * localStorage intermediate cache (that cache belongs to the editable pane).
+ *
+ * Behaviour for the editable (ChatPane) path is intended to be byte-for-byte
+ * identical to the previous inline implementation.
+ */
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { api } from '@/lib/api'
+import type { Message, MediaAttachment } from '@/lib/conversations'
+import {
+  saveIntermediateMessages,
+  loadIntermediateMessages,
+  clearIntermediateMessages,
+  reconcileMessages,
+} from '@/lib/conversations'
+
+type Listener = (event: string, payload: unknown) => void
+
+/** After a reconnect, if a turn is still 'loading' but no delta has arrived for
+ *  this long, assume the session:completed frame was dropped and reconcile from
+ *  the server to clear a stuck spinner. */
+export const COMPLETION_WATCHDOG_MS = 8000
+
+/** Decide whether the post-reconnect watchdog should treat the turn as stuck
+ *  (i.e. recover from a dropped completion). Pure for testing. */
+export function shouldRecoverStuckTurn(args: {
+  loading: boolean
+  msSinceLastDelta: number
+  serverStatus: string | undefined
+  watchdogMs?: number
+}): boolean {
+  const watchdogMs = args.watchdogMs ?? COMPLETION_WATCHDOG_MS
+  if (!args.loading) return false
+  if (args.msSinceLastDelta < watchdogMs) return false
+  return args.serverStatus !== 'running'
+}
+
+export interface SessionMetaUpdate {
+  engine?: string
+  engineSessionId?: string
+  model?: string
+  title?: string
+  employee?: string
+}
+
+export interface UseLiveSessionOptions {
+  /** Gateway subscribe for WS events. */
+  subscribe: (fn: Listener) => () => void
+  /** Gateway connection seq — bumping it triggers reconnect backfill. */
+  connectionSeq?: number
+  /** Read-only consumers (the Talk modal) seed loading from running state and
+   *  never write the localStorage intermediate cache. */
+  readOnly?: boolean
+  /** Initial optimistic message (just-created-from-new-chat user bubble). */
+  pendingUserMessage?: Message
+  /** Notified when session meta is loaded (sidebar/tab labels). */
+  onMeta?: (meta: SessionMetaUpdate) => void
+  /** Notified when a turn completes (sidebar refresh). */
+  onRefresh?: () => void
+}
+
+export interface UseLiveSessionResult {
+  messages: Message[]
+  streamingText: string
+  loading: boolean
+  session: Record<string, unknown> | null
+  liveContextTokens: number | null
+  /** Re-load (reconcile) a session from the server. */
+  reload: (id: string) => Promise<void>
+  // --- write API (editable pane only) ---
+  /** Optimistically append the user message + arm loading for a send. */
+  beginSend: (userMsg: Message) => void
+  /** A send failed: clear loading + append an error bubble. */
+  failSend: (text: string) => void
+  /** Append a local-only message (status replies, etc.). */
+  appendLocal: (msg: Message) => void
+  /** Clear the pane (new chat). */
+  reset: () => void
+}
+
+export function useLiveSession(
+  sessionId: string | null,
+  opts: UseLiveSessionOptions,
+): UseLiveSessionResult {
+  const { subscribe, connectionSeq, readOnly = false } = opts
+
+  const [messages, setMessages] = useState<Message[]>(() =>
+    opts.pendingUserMessage ? [opts.pendingUserMessage] : [],
+  )
+  // Seed loading=true when mounting with a pendingUserMessage (just-created new chat
+  // where the OLD pane's setLoading(true) was lost in the remount). Otherwise the
+  // thinking indicator wouldn't show until the first WS delta arrives.
+  const [loading, setLoading] = useState<boolean>(() => !!opts.pendingUserMessage)
+  const loadingRef = useRef(loading)
+  useEffect(() => { loadingRef.current = loading }, [loading])
+  const lastDeltaAtRef = useRef<number>(0)
+  const streamingTextRef = useRef('')
+  const [streamingText, setStreamingText] = useState('')
+  const [liveContextTokens, setLiveContextTokens] = useState<number | null>(null)
+  const intermediateStartRef = useRef<number>(-1)
+  const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(null)
+  const sessionIdRef = useRef(sessionId)
+  const justCompletedAtRef = useRef<number>(0)
+  const loadTokenRef = useRef(0)
+
+  const readOnlyRef = useRef(readOnly)
+  useEffect(() => { readOnlyRef.current = readOnly }, [readOnly])
+  const onMetaRef = useRef(opts.onMeta)
+  useEffect(() => { onMetaRef.current = opts.onMeta }, [opts.onMeta])
+  const onRefreshRef = useRef(opts.onRefresh)
+  useEffect(() => { onRefreshRef.current = opts.onRefresh }, [opts.onRefresh])
+
+  useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
+
+  // Helper: persist intermediate messages to localStorage (editable pane only).
+  const persistIntermediate = useCallback((msgs: Message[], sid: string | null) => {
+    if (readOnlyRef.current) return
+    if (!sid) return
+    const start = intermediateStartRef.current
+    if (start < 0) return
+    const intermediate = msgs.slice(start)
+    if (intermediate.length > 0) {
+      saveIntermediateMessages(sid, intermediate)
+    }
+  }, [])
+
+  // Listen for session events via subscribe
+  useEffect(() => {
+    return subscribe((event, payload) => {
+      const p = payload as Record<string, unknown>
+      const sid = sessionIdRef.current
+      if (!sid || p.sessionId !== sid) return
+
+      if (event === 'session:delta') {
+        lastDeltaAtRef.current = Date.now()
+        // Read-only consumers have no send path to arm loading; a delta means
+        // the session is actively running, so reflect that as the spinner.
+        if (readOnlyRef.current) setLoading(true)
+        const deltaType = String(p.type || 'text')
+
+        if (deltaType === 'text') {
+          const chunk = String(p.content || '')
+          streamingTextRef.current += chunk
+          setStreamingText(streamingTextRef.current)
+        } else if (deltaType === 'text_snapshot') {
+          const snapshot = String(p.content || '')
+          if (snapshot.length >= streamingTextRef.current.length) {
+            streamingTextRef.current = snapshot
+            setStreamingText(snapshot)
+          }
+        } else if (deltaType === 'tool_use') {
+          if (streamingTextRef.current) {
+            const flushed = streamingTextRef.current
+            streamingTextRef.current = ''
+            setStreamingText('')
+            setMessages((prev) => {
+              if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
+              const updated = [
+                ...prev,
+                {
+                  id: crypto.randomUUID(),
+                  role: 'assistant' as const,
+                  content: flushed,
+                  timestamp: Date.now(),
+                },
+              ]
+              persistIntermediate(updated, sid)
+              return updated
+            })
+          }
+          const toolName = String(p.toolName || 'tool')
+          setMessages((prev) => {
+            if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
+            const updated = [
+              ...prev,
+              {
+                id: crypto.randomUUID(),
+                role: 'assistant' as const,
+                content: `Using ${toolName}`,
+                timestamp: Date.now(),
+                toolCall: toolName,
+              },
+            ]
+            persistIntermediate(updated, sid)
+            return updated
+          })
+        } else if (deltaType === 'tool_result') {
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last && last.role === 'assistant' && last.toolCall) {
+              updated[updated.length - 1] = { ...last, content: `Used ${last.toolCall}` }
+            }
+            persistIntermediate(updated, sid)
+            return updated
+          })
+        } else if (deltaType === 'context') {
+          const n = Number(p.content)
+          if (Number.isFinite(n) && n > 0) setLiveContextTokens(n)
+        }
+      }
+
+      if (event === 'session:notification') {
+        const notifMessage = String(p.message || '')
+        if (notifMessage) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: 'notification' as const,
+              content: notifMessage,
+              timestamp: Date.now(),
+            },
+          ])
+        }
+      }
+
+      if (event === 'session:attachment') {
+        const media = Array.isArray(p.media) ? (p.media as MediaAttachment[]) : []
+        // Use the server's canonical message id so the next history fetch merges
+        // (not duplicates) this message. Guard against re-append if the event fires twice.
+        const attachmentId = typeof p.id === 'string' ? p.id : crypto.randomUUID()
+        if (media.length > 0) {
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === attachmentId)) return prev
+            return [
+              ...prev,
+              {
+                id: attachmentId,
+                role: 'assistant' as const,
+                content: String(p.content || ''),
+                timestamp: p.timestamp ? Number(p.timestamp) : Date.now(),
+                media,
+              },
+            ]
+          })
+        }
+      }
+
+      if (event === 'session:interrupted') {
+        streamingTextRef.current = ''
+        setStreamingText('')
+      }
+
+      if (event === 'session:stopped') {
+        setLoading(false)
+        setStreamingText('')
+        setLiveContextTokens(null)
+      }
+
+      if (event === 'session:completed') {
+        streamingTextRef.current = ''
+        setStreamingText('')
+        setLoading(false)
+        setLiveContextTokens(null)
+        intermediateStartRef.current = -1
+        justCompletedAtRef.current = Date.now()
+
+        const completedSessionId = sid || (p.sessionId ? String(p.sessionId) : null)
+        if (completedSessionId && !readOnlyRef.current) {
+          clearIntermediateMessages(completedSessionId)
+        }
+
+        if (p.result) {
+          setMessages((prev) => {
+            const cleaned = [...prev]
+            const last = cleaned[cleaned.length - 1]
+            // Pop the optimistic streaming-text bubble so the canonical result replaces it,
+            // but NEVER pop an attachment (media) message — it's already persisted and would
+            // otherwise vanish until reload.
+            if (last && last.role === 'assistant' && !last.toolCall && !(last.media && last.media.length > 0)) {
+              cleaned.pop()
+            }
+            return [
+              ...cleaned,
+              {
+                id: crypto.randomUUID(),
+                role: 'assistant' as const,
+                content: String(p.result),
+                timestamp: Date.now(),
+              },
+            ]
+          })
+        }
+        if (p.error && !p.result) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: 'assistant' as const,
+              content: `Error: ${p.error}`,
+              timestamp: Date.now(),
+            },
+          ])
+        }
+        // Refresh the current session record so post-turn fields (notably
+        // lastContextTokens for the context meter, and status) update without a
+        // manual reload. Light getSession only — does NOT touch messages (we just
+        // set them above; loadSession would re-reconcile and could flicker).
+        if (completedSessionId && completedSessionId === sid) {
+          api.getSession(completedSessionId)
+            .then((s) => setCurrentSession(s as Record<string, unknown>))
+            .catch(() => { /* best-effort; next load will pick it up */ })
+        }
+        onRefreshRef.current?.()
+      }
+    })
+  }, [subscribe, persistIntermediate])
+
+  // Load session data
+  const loadSession = useCallback(async (id: string) => {
+    const myToken = ++loadTokenRef.current
+    try {
+      const session = (await api.getSession(id)) as Record<string, unknown>
+      if (myToken !== loadTokenRef.current) {
+        return
+      }
+      setCurrentSession(session)
+      const meta = {
+        engine: session.engine ? String(session.engine) : undefined,
+        engineSessionId: session.engineSessionId ? String(session.engineSessionId) : undefined,
+        model: session.model ? String(session.model) : undefined,
+        title: session.title ? String(session.title) : undefined,
+        employee: session.employee ? String(session.employee) : undefined,
+      }
+      onMetaRef.current?.(meta)
+
+      const history = session.messages || session.history || []
+      const backendMessages: Message[] = Array.isArray(history)
+        ? history.map((m: Record<string, unknown>) => ({
+            // Preserve the server's stable message id so live-pushed messages
+            // (e.g. attachments) merge/dedupe by id instead of duplicating.
+            id: typeof m.id === 'string' ? m.id : crypto.randomUUID(),
+            role: (m.role as 'user' | 'assistant' | 'notification') || 'assistant',
+            content: String(m.content || m.text || ''),
+            timestamp: m.timestamp ? Number(m.timestamp) : Date.now(),
+            ...(Array.isArray(m.media) && m.media.length > 0
+              ? { media: m.media as MediaAttachment[] }
+              : {}),
+          }))
+        : []
+      if (session.status === 'error' && session.lastError) {
+        const lastMessage = backendMessages[backendMessages.length - 1]
+        const errorText = `Error: ${String(session.lastError)}`
+        if (!lastMessage || lastMessage.role !== 'assistant' || lastMessage.content !== errorText) {
+          backendMessages.push({
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: errorText,
+            timestamp: Date.now(),
+          })
+        }
+      }
+
+      const isRunning = session.status === 'running'
+
+      // Read-only consumers (the modal) have no send path that owns `loading`, so
+      // seed it from the running state here. The editable pane must NEVER set
+      // loading=true on load (a stale GET after completion would re-arm a stuck
+      // spinner), so this is gated on readOnly.
+      if (readOnlyRef.current) {
+        setLoading(isRunning)
+      }
+
+      // A gateway restart marks the in-flight session "interrupted" — there is no
+      // turn running anymore, but the WS session:completed/stopped event that would
+      // normally clear the spinner died with the old gateway. Clear the stuck
+      // loading state here so the conversation is immediately usable again; the
+      // next message resumes the session via the engine's --resume.
+      if (session.status === 'interrupted') {
+        setLoading(false)
+        streamingTextRef.current = ''
+        setStreamingText('')
+      }
+
+      if (isRunning) {
+        const cached = readOnlyRef.current ? [] : loadIntermediateMessages(id)
+        if (cached.length > 0) {
+          intermediateStartRef.current = backendMessages.length
+          // Reconcile so a live-pushed attachment not yet in the snapshot survives.
+          setMessages((current) => reconcileMessages(current, [...backendMessages, ...cached]))
+        } else {
+          intermediateStartRef.current = backendMessages.length
+          setMessages((current) => {
+            // If backend has FEWER messages than local, the backend snapshot is stale —
+            // local already contains streaming-completed messages not yet persisted (or
+            // a stale-snapshot race during slow GET). Keep current.
+            if (backendMessages.length < current.length) {
+              return current
+            }
+            const next = backendMessages.length > 0 ? backendMessages : current
+            return reconcileMessages(current, next)
+          })
+        }
+        // Loading state is owned by handleSend (sets true) + WS session:completed/stopped (sets false).
+        // loadSession must NEVER set loading=true — a stale GET arriving after completion would
+        // re-arm the spinner and stick (the WS completion event has already passed).
+      } else {
+        if (!readOnlyRef.current) clearIntermediateMessages(id)
+        intermediateStartRef.current = -1
+        setMessages((current) => {
+          // If backend has FEWER messages than local, the backend snapshot is stale —
+          // local already contains streaming-completed messages not yet persisted (or
+          // a stale-snapshot race during slow GET). Keep current.
+          if (backendMessages.length < current.length) {
+            return current
+          }
+          const next = backendMessages.length > 0 ? backendMessages : current
+          return reconcileMessages(current, next)
+        })
+      }
+    } catch {
+      setMessages([])
+      setCurrentSession(null)
+      intermediateStartRef.current = -1
+    }
+  }, [])
+
+  // Load on session change
+  useEffect(() => {
+    if (!sessionId) {
+      setMessages([])
+      setLoading(false)
+      setCurrentSession(null)
+      streamingTextRef.current = ''
+      setStreamingText('')
+      intermediateStartRef.current = -1
+      return
+    }
+    // Clear streaming state immediately to avoid stale content flash
+    streamingTextRef.current = ''
+    setStreamingText('')
+    // NOTE: do NOT setLoading(false) here. Loading is owned by handleSend (true) and
+    // WS session:completed/stopped (false). Clearing here would clobber the lazy-init
+    // loading=true set by useState() when this pane mounted with pendingUserMessage.
+    loadSession(sessionId)
+  }, [sessionId]) // loadSession is stable (useCallback with [] deps)
+
+  // Reload on reconnect — only fires when WS genuinely reconnects (connectionSeq changes).
+  // Reloads running AND interrupted sessions: a gateway restart marks the open session
+  // "interrupted", and without a refetch the UI keeps a stuck spinner (the clearing
+  // session:completed/stopped WS event died with the old gateway). Completed/idle
+  // sessions don't need a refetch on every WS hiccup.
+  // Debounced 300ms so a burst of connectionSeq bumps collapses into a single loadSession.
+  useEffect(() => {
+    if (!connectionSeq || !sessionIdRef.current) return
+    const st = currentSession?.status
+    // Also backfill when a turn is in flight LOCALLY (loadingRef): handleSend sets
+    // loading=true without setting status='running' (status is only refreshed from
+    // the server later), so a reconnect mid-turn would otherwise skip the backfill
+    // and never recover the deltas missed while the socket was dead. Read via ref so
+    // the effect still only re-runs on a real reconnect or status change.
+    if (st !== 'running' && st !== 'interrupted' && !loadingRef.current) return
+    const handle = setTimeout(() => {
+      loadSession(sessionIdRef.current!)
+    }, 300)
+    return () => clearTimeout(handle)
+  }, [connectionSeq, currentSession?.status]) // loadSession is stable; sessionIdRef.current is read at call time
+
+  // Completion watchdog — recover from a DROPPED session:completed frame.
+  // session:completed is a single point of failure: if that one WS frame dies with
+  // a half-open socket right at completion, loading stays true forever (loadSession
+  // deliberately won't clear it, and no other event will). After a reconnect, if
+  // we're still loading and have been silent past the watchdog window, verify
+  // against the server and clear the stuck spinner if the turn actually finished.
+  useEffect(() => {
+    if (!connectionSeq) return
+    if (!loadingRef.current) return
+    const id = sessionIdRef.current
+    if (!id) return
+    const timer = setTimeout(async () => {
+      if (!loadingRef.current) return
+      if (Date.now() - lastDeltaAtRef.current < COMPLETION_WATCHDOG_MS) return // still actively streaming
+      try {
+        const session = (await api.getSession(id)) as Record<string, unknown>
+        if (shouldRecoverStuckTurn({
+          loading: loadingRef.current,
+          msSinceLastDelta: Date.now() - lastDeltaAtRef.current,
+          serverStatus: session.status as string | undefined,
+        })) {
+          // Missed the terminal event — clear the stuck spinner and reconcile
+          // messages from the authoritative server snapshot.
+          setLoading(false)
+          streamingTextRef.current = ''
+          setStreamingText('')
+          setLiveContextTokens(null)
+          intermediateStartRef.current = -1
+          await loadSession(id)
+        }
+      } catch {
+        // best-effort; a later interaction will reconcile
+      }
+    }, COMPLETION_WATCHDOG_MS)
+    return () => clearTimeout(timer)
+  }, [connectionSeq]) // loadSession is stable; refs read at fire time
+
+  // --- write API (editable pane) ---
+  const beginSend = useCallback((userMsg: Message) => {
+    setMessages((prev) => {
+      intermediateStartRef.current = prev.length + 1
+      return [...prev, userMsg]
+    })
+    setLoading(true)
+    // Mark fresh activity so the completion watchdog doesn't treat a just-sent
+    // turn as "silent" if a reconnect lands before the first delta arrives.
+    lastDeltaAtRef.current = Date.now()
+  }, [])
+
+  const failSend = useCallback((text: string) => {
+    setLoading(false)
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        role: 'assistant' as const,
+        content: text,
+        timestamp: Date.now(),
+      },
+    ])
+  }, [])
+
+  const appendLocal = useCallback((msg: Message) => {
+    setMessages((prev) => [...prev, msg])
+  }, [])
+
+  const reset = useCallback(() => {
+    setMessages([])
+    setLoading(false)
+    setCurrentSession(null)
+    streamingTextRef.current = ''
+    setStreamingText('')
+    intermediateStartRef.current = -1
+  }, [])
+
+  return {
+    messages,
+    streamingText,
+    loading,
+    session: currentSession,
+    liveContextTokens,
+    reload: loadSession,
+    beginSend,
+    failSend,
+    appendLocal,
+    reset,
+  }
+}

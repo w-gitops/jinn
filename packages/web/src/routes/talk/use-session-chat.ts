@@ -1,15 +1,15 @@
-import { useEffect } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { api } from '@/lib/api'
 import { useGateway } from '@/hooks/use-gateway'
-import type { Message, MediaAttachment } from '@/lib/conversations'
+import { useLiveSession } from '@/hooks/use-live-session'
+import type { Message } from '@/lib/conversations'
 
 /**
  * Read-only conversation loader for a single (child) session, used by the Talk
- * UI's child-session modal. Mirrors the server→Message normalization that
- * chat-pane.tsx applies on load (same id/role/content/timestamp/media mapping)
- * so the messages render identically to the main chat. Unlike chat-pane this
- * hook never mutates the session — it only fetches + (optionally) refetches.
+ * child-session modal. A thin wrapper over the shared `useLiveSession` (the same
+ * live read pipeline the main chat uses) in `readOnly` mode — so the modal now
+ * streams live tokens (session:delta), shows live media (session:attachment) and
+ * the thinking spinner, instead of only refetching on terminal events. It pulls
+ * `subscribe`/`connectionSeq` from the gateway itself, so callers just pass a
+ * sessionId.
  */
 
 export interface SessionMeta {
@@ -21,65 +21,25 @@ export interface SessionMeta {
   status?: string
 }
 
-interface SessionChatResult {
+export interface SessionChatResult {
   messages: Message[]
+  /** Streaming reply text (live, mid-turn). */
+  streamingText: string
+  /** A reply is in flight — drives the thinking indicator. */
+  loading: boolean
   session: Record<string, unknown> | undefined
-  isLoading: boolean
-  error: Error | null
-  refetch: () => void
-}
-
-/** Same shape chat-pane builds from `session.messages`/`session.history`. */
-function normalizeMessages(session: Record<string, unknown> | undefined): Message[] {
-  if (!session) return []
-  const history = session.messages || session.history || []
-  if (!Array.isArray(history)) return []
-  return history.map((m: Record<string, unknown>) => ({
-    id: typeof m.id === 'string' ? m.id : crypto.randomUUID(),
-    role: (m.role as 'user' | 'assistant' | 'notification') || 'assistant',
-    content: String(m.content || m.text || ''),
-    timestamp: m.timestamp ? Number(m.timestamp) : Date.now(),
-    ...(Array.isArray(m.media) && m.media.length > 0
-      ? { media: m.media as MediaAttachment[] }
-      : {}),
-  }))
+  /** The first fetch hasn't resolved yet (nothing loaded). */
+  isInitialLoading: boolean
 }
 
 export function useSessionChat(sessionId: string | null): SessionChatResult {
-  const { subscribe } = useGateway()
-
-  const query = useQuery({
-    queryKey: ['session-chat', sessionId],
-    queryFn: () => api.getSession(sessionId as string),
-    enabled: sessionId != null,
-  })
-
-  // BONUS live-update: the gateway emits session:delta (per-token) and
-  // session:completed / session:updated (terminal) carrying { sessionId }.
-  // getSession only returns persisted messages, so refetch on the terminal
-  // events (cheap, no per-token spam) to pull in the finished turn.
-  const { refetch } = query
-  useEffect(() => {
-    if (sessionId == null) return
-    const unsub = subscribe((event: string, payload: unknown) => {
-      const sid = (payload as { sessionId?: string } | null)?.sessionId
-      if (sid !== sessionId) return
-      if (
-        event === 'session:completed' ||
-        event === 'session:updated' ||
-        event === 'session:stopped'
-      ) {
-        refetch()
-      }
-    })
-    return unsub
-  }, [sessionId, subscribe, refetch])
-
+  const { subscribe, connectionSeq } = useGateway()
+  const live = useLiveSession(sessionId, { subscribe, connectionSeq, readOnly: true })
   return {
-    messages: normalizeMessages(query.data),
-    session: query.data,
-    isLoading: query.isLoading,
-    error: (query.error as Error | null) ?? null,
-    refetch: () => { refetch() },
+    messages: live.messages,
+    streamingText: live.streamingText,
+    loading: live.loading,
+    session: live.session ?? undefined,
+    isInitialLoading: live.session == null && live.messages.length === 0,
   }
 }
