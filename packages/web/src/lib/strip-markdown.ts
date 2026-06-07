@@ -18,16 +18,26 @@ export function stripMarkdown(raw: string): string {
   let text = raw
   // Headings: leading #'s followed by whitespace.
   text = text.replace(/^#{1,6}\s+/gm, "")
-  // Bold/italic markers (*, **, ***, _, __, ___).
-  text = text.replace(/\*{1,3}|_{1,3}/g, "")
+  // Emphasis — strip ONLY paired markers that WRAP content, so snake_case,
+  // __dunder__, file_names, math (`2 * 3`) and URL underscores survive intact
+  // (this text is now also read aloud by TTS, so over-stripping is a real
+  // voice-fidelity loss, not just a cosmetic label issue).
+  //   asterisks: ***x*** / **x** / *x*  (markers hug non-space content)
+  text = text.replace(/\*\*\*(?=\S)(.+?)(?<=\S)\*\*\*/g, "$1")
+  text = text.replace(/\*\*(?=\S)(.+?)(?<=\S)\*\*/g, "$1")
+  text = text.replace(/(?<![\w*])\*(?!\*)(?=\S)(.+?)(?<=\S)(?<!\*)\*(?![\w*])/g, "$1")
+  //   single-underscore italic at word boundaries only (NOT inside identifiers
+  //   and NOT the outer markers of a __dunder__ token).
+  text = text.replace(/(?<![\w_])_(?!_)(?=\S)(.+?)(?<=\S)(?<!_)_(?![\w_])/g, "$1")
   // List markers (-, *, •, numbered) at line start.
   text = text.replace(/^[ \t]*[-*•]\s+/gm, "")
   text = text.replace(/^[ \t]*\d+[.)]\s+/gm, "")
   // Blockquotes.
   text = text.replace(/^>\s*/gm, "")
-  // Code fence lines (incl. a language tag) — BEFORE the inline-backtick strip,
-  // so the ``` delimiter and its `ts`/`js` tag are dropped as a unit.
-  text = text.replace(/^[ \t]*```\w*[ \t]*$/gm, "")
+  // Code fence lines (incl. any info string — `ts`, `c++`, `ts title="x"`) —
+  // BEFORE the inline-backtick strip, so the ``` delimiter and its tag are
+  // dropped as a unit rather than leaving a stray `c++` line.
+  text = text.replace(/^[ \t]*```.*$/gm, "")
   // Inline code backticks.
   text = text.replace(/`+/g, "")
   // Link syntax [text](url) → text.
