@@ -15,7 +15,7 @@
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
 import type { ApiContext } from "../gateway/api.js";
 import { createSession, getSessionBySessionKey } from "../sessions/registry.js";
-import { validateCard } from "./card-validate.js";
+import { validateCard, validateCardPatch } from "./card-validate.js";
 import { TALK_EVENTS } from "./protocol.js";
 import { getTalkTts } from "./tts-stream.js";
 
@@ -143,6 +143,14 @@ export async function handleTalkApi(
       }
       if (typeof body.patch !== "object" || body.patch === null || Array.isArray(body.patch)) {
         badRequest(res, "patch must be a non-null object");
+        return true;
+      }
+      // Field-validate the patch with the same rigor as a full card, so a patch
+      // can't inject a malformed details/options/hunks/rows after the initial
+      // card passed and crash the renderer.
+      const patchCheck = validateCardPatch(body.patch);
+      if (!patchCheck.ok) {
+        badRequest(res, patchCheck.error);
         return true;
       }
       context.emit(TALK_EVENTS.cardUpdate, {

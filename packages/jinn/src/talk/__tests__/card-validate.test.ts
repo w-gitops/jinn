@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateCard } from "../card-validate.js";
+import { validateCard, validateCardPatch } from "../card-validate.js";
 
 describe("validateCard", () => {
   it("accepts a valid card of each of the 8 types", () => {
@@ -122,5 +122,78 @@ describe("validateCard", () => {
 
   it("rejects a diff card with empty hunks", () => {
     expect(validateCard({ id: "d5", type: "diff", hunks: [] }).ok).toBe(false);
+  });
+
+  // --- nested optional fields must not fail open (white-screen guard) ---
+
+  it("rejects an approval card with non-array details", () => {
+    const r = validateCard({ id: "d3", type: "approval", summary: "ok", details: "nope" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/details/);
+  });
+
+  it("rejects an approval card whose detail item lacks string v", () => {
+    expect(
+      validateCard({ id: "d3", type: "approval", summary: "ok", details: [{ k: "A", v: 7 }] }).ok,
+    ).toBe(false);
+  });
+
+  it("rejects a choice option with non-array meta", () => {
+    const r = validateCard({
+      id: "d1",
+      type: "choice",
+      options: [{ id: "a", label: "A", meta: "nope" }],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/meta/);
+  });
+
+  it("rejects a choice option with a non-string detail/badge", () => {
+    expect(validateCard({ id: "d1", type: "choice", options: [{ id: "a", label: "A", detail: 7 }] }).ok).toBe(false);
+    expect(validateCard({ id: "d1", type: "choice", options: [{ id: "a", label: "A", badge: {} }] }).ok).toBe(false);
+  });
+
+  it("rejects a diff hunk whose before is an object (not a string)", () => {
+    const r = validateCard({ id: "d5", type: "diff", hunks: [{ label: "x", before: { a: 1 }, after: "b" }] });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/before|after|label/);
+  });
+});
+
+describe("validateCardPatch", () => {
+  it("accepts an empty patch and simple scalar patches", () => {
+    expect(validateCardPatch({}).ok).toBe(true);
+    expect(validateCardPatch({ title: "X", badge: "DONE", progress: 0.7 }).ok).toBe(true);
+    expect(validateCardPatch({ state: "done" }).ok).toBe(true);
+  });
+
+  it("rejects non-object patches", () => {
+    expect(validateCardPatch(null).ok).toBe(false);
+    expect(validateCardPatch([]).ok).toBe(false);
+    expect(validateCardPatch("nope").ok).toBe(false);
+  });
+
+  it("rejects a malformed scalar / status patch", () => {
+    expect(validateCardPatch({ title: 7 }).ok).toBe(false);
+    expect(validateCardPatch({ progress: "fast" }).ok).toBe(false);
+    expect(validateCardPatch({ state: "exploded" }).ok).toBe(false);
+  });
+
+  it("rejects malformed nested fields (the post-pass injection vector)", () => {
+    expect(validateCardPatch({ details: "nope" }).ok).toBe(false);
+    expect(validateCardPatch({ details: [{ k: "A", v: 1 }] }).ok).toBe(false);
+    expect(validateCardPatch({ options: [{ id: "a", label: "A", meta: "x" }] }).ok).toBe(false);
+    expect(validateCardPatch({ hunks: [{ before: { a: 1 } }] }).ok).toBe(false);
+    expect(validateCardPatch({ columns: ["ok", 5] }).ok).toBe(false);
+  });
+
+  it("accepts valid nested patches (comparison or keyvalue rows)", () => {
+    expect(validateCardPatch({ rows: [{ label: "P", cells: ["1", "2"] }] }).ok).toBe(true);
+    expect(validateCardPatch({ rows: [{ k: "Uptime", v: "99%" }] }).ok).toBe(true);
+    expect(validateCardPatch({ details: [{ k: "A", v: "B" }] }).ok).toBe(true);
+  });
+
+  it("rejects rows that are neither comparison nor keyvalue shaped", () => {
+    expect(validateCardPatch({ rows: [{ nope: true }] }).ok).toBe(false);
   });
 });

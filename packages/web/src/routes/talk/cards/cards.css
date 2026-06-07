@@ -500,6 +500,9 @@ a.jt-card--link:hover {
 .jt-cmp__wrap {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+  /* The deck is pointer-events:none; re-enable here so a wide table can be
+     scrolled horizontally on touch. */
+  pointer-events: auto;
 }
 .jt-cmp {
   width: 100%;
@@ -584,7 +587,7 @@ a.jt-card--link:hover {
 }
 .jt-approval__btn--danger {
   background: var(--system-red);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 
 /* ---- keyvalue card (also used for approval details) ---- */

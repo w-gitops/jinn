@@ -160,9 +160,6 @@ export type Card =
 
 export type CardType = Card["type"]
 
-/** Card types whose buttons send actions back to the orchestrator. */
-export const INTERACTIVE_CARD_TYPES = new Set<CardType>(["choice", "approval"])
-
 // ============================================================================
 // Parallel-task tracker — multiple concurrent jobs the COO is running.
 // ============================================================================

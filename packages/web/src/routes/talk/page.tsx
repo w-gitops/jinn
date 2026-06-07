@@ -14,6 +14,7 @@ import { useTheme } from "@/routes/providers"
 import { Constellation } from "./constellation"
 import { Transcript } from "./transcript"
 import { CardStack } from "./cards/card-stack"
+import { ErrorBoundary } from "@/components/error-boundary"
 import { ThreadPanel } from "./thread-panel"
 import { ChildSessionModal } from "./child-session-modal"
 import { useTalkContext } from "./talk-provider"
@@ -119,7 +120,20 @@ export default function TalkPage() {
             maxHeight: "46dvh",
           }}
         >
-          <CardStack cards={talk.cards} onAction={talk.cardAction} />
+          {/* Fence the deck: a malformed card degrades to a small "card failed"
+              note instead of unmounting the whole Talk app. Resets when the card
+              set changes (orchestrator re-push / clear). */}
+          <ErrorBoundary
+            label="talk-cards"
+            resetKey={talk.cards.map((c) => c.id).join(",")}
+            fallback={
+              <div className="pointer-events-none rounded-[var(--radius-lg)] border border-[var(--separator)] bg-[var(--material-regular)] px-4 py-2 text-caption1 text-[var(--text-tertiary)] backdrop-blur-md">
+                A card couldn’t be displayed.
+              </div>
+            }
+          >
+            <CardStack cards={talk.cards} onAction={talk.cardAction} />
+          </ErrorBoundary>
         </div>
       )}
 
