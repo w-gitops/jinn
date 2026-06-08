@@ -66,6 +66,25 @@ export function engineAvailable(config: JinnConfig, name: EngineName): boolean {
   return isInstalled(bin, engineBinOverride(config, name));
 }
 
+/** Type guard: is `name` one of the four known engines? */
+export function isKnownEngine(name: string): name is EngineName {
+  return (ENGINE_NAMES as readonly string[]).includes(name);
+}
+
+/** Install hint per engine, surfaced when a missing CLI blocks a session. */
+const ENGINE_INSTALL_HINT: Record<EngineName, string> = {
+  claude: "npm install -g @anthropic-ai/claude-code",
+  codex: "npm install -g @openai/codex",
+  antigravity: "install the Antigravity CLI (agy)",
+  pi: "install the Pi CLI",
+};
+
+/** Actionable error message for a session blocked by a missing engine binary. */
+export function engineUnavailableMessage(config: JinnConfig, name: EngineName): string {
+  const bin = engineBinOverride(config, name) || ENGINE_BIN[name];
+  return `Engine "${name}" is not available — the "${bin}" CLI was not found on your PATH. Install it (${ENGINE_INSTALL_HINT[name]}) or set engines.${name}.bin in config.yaml to its full path, then retry.`;
+}
+
 /** Snapshot of dynamically-discovered Pi models (null until first discovery). */
 let discoveredPiModels: ModelInfo[] | null = null;
 

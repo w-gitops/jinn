@@ -24,7 +24,7 @@ import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
-import { effortLevelsForModel } from "../shared/models.js";
+import { effortLevelsForModel, engineAvailable, isKnownEngine, engineUnavailableMessage } from "../shared/models.js";
 import { detectRateLimit, isDeadSessionError } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit } from "../shared/usageAwareness.js";
 import { loadJobs } from "../cron/jobs.js";
@@ -220,6 +220,27 @@ export class SessionManager {
     }
 
     insertMessage(session.id, "user", msg.text);
+
+    // Pre-flight: fail fast with an actionable error if the engine's CLI binary
+    // isn't installed. Otherwise the (interactive PTY) engine spawns a missing
+    // command, exits silently, and the turn produces no output and no error.
+    if (isKnownEngine(session.engine) && !engineAvailable(this.config, session.engine)) {
+      const errMsg = engineUnavailableMessage(this.config, session.engine);
+      logger.error(`Session ${session.id} blocked: ${errMsg}`);
+      const erroredSession = updateSession(session.id, {
+        status: "error",
+        lastActivity: new Date().toISOString(),
+        lastError: errMsg,
+      });
+      insertMessage(session.id, "assistant", `⛔ ${errMsg}`);
+      await connector.replyMessage(target, `⛔ ${errMsg}`).catch(() => {});
+      // Wake the parent COO if this was a delegated child session (parity with
+      // the normal error path; no-op for top-level sessions).
+      if (erroredSession) {
+        notifyParentSession(erroredSession, { error: errMsg }, { alwaysNotify: employee?.alwaysNotify });
+      }
+      return;
+    }
 
     const capabilities = connector.getCapabilities();
     const decorateMessages = session.source !== "cron";

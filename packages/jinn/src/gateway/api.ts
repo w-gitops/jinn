@@ -6,7 +6,7 @@ import path from "node:path";
 import yaml from "js-yaml";
 import type { CronJob, Engine, IncomingMessage, JinnConfig, Session, StreamDelta, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
-import { getModelRegistry, invalidateModelRegistry, effortLevelsForModel, refreshPiModels } from "../shared/models.js";
+import { getModelRegistry, invalidateModelRegistry, effortLevelsForModel, refreshPiModels, engineAvailable, isKnownEngine, engineUnavailableMessage } from "../shared/models.js";
 import { validateSessionPatch } from "../sessions/session-patch.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
@@ -1657,38 +1657,30 @@ export async function handleApiRequest(
         ? `\n\n## Language\nAlways respond in ${language}. All communication with the user must be in ${language}.`
         : "";
 
-      // Update CLAUDE.md with personalized COO name and language
-      const claudeMdPath = path.join(JINN_HOME, "CLAUDE.md");
-      if (fs.existsSync(claudeMdPath)) {
-        let claudeMd = fs.readFileSync(claudeMdPath, "utf-8");
-        // Replace the identity line in CLAUDE.md
-        claudeMd = claudeMd.replace(
-          /^You are \w+, the COO of the user's AI organization\.$/m,
-          `You are ${effectiveName}, the COO of the user's AI organization.`,
-        );
-        // Remove existing language section if present, then add new one if needed
-        claudeMd = claudeMd.replace(/\n\n## Language\nAlways respond in .+\. All communication with the user must be in .+\./m, "");
-        if (languageSection) {
-          claudeMd = claudeMd.trimEnd() + languageSection + "\n";
-        }
-        fs.writeFileSync(claudeMdPath, claudeMd);
-      }
+      // Personalize the operating manual with the chosen COO name + language.
+      // The shipped identity line is bold, e.g.
+      //   "You are **Jinn**, a personal AI assistant and COO of an AI organization."
+      // (The previous CLAUDE.md regex expected unbolded "...the COO of the user's
+      // AI organization." and never matched, so the rename silently no-op'd.)
+      const personalizeManual = (filePath: string) => {
+        let md = fs.readFileSync(filePath, "utf-8");
+        // Replace just the bold name token; `[^*]+` supports multi-word names.
+        md = md.replace(/^You are \*\*[^*]+\*\*/m, `You are **${effectiveName}**`);
+        // Reset any prior language section, then append the new one if needed.
+        md = md.replace(/\n\n## Language\nAlways respond in .+\. All communication with the user must be in .+\./m, "");
+        if (languageSection) md = md.trimEnd() + languageSection + "\n";
+        fs.writeFileSync(filePath, md);
+      };
 
-      // Update AGENTS.md with personalized name and language
+      // CLAUDE.md is canonical. AGENTS.md is normally a symlink → CLAUDE.md, so we
+      // edit CLAUDE.md directly and skip the symlink (avoids double-processing the
+      // same file). Only the rare non-symlink fallback copy is personalized too.
+      const claudeMdPath = path.join(JINN_HOME, "CLAUDE.md");
+      if (fs.existsSync(claudeMdPath)) personalizeManual(claudeMdPath);
+
       const agentsMdPath = path.join(JINN_HOME, "AGENTS.md");
-      if (fs.existsSync(agentsMdPath)) {
-        let agentsMd = fs.readFileSync(agentsMdPath, "utf-8");
-        // Replace the bold identity line (e.g. "You are **Jinn**")
-        agentsMd = agentsMd.replace(
-          /You are \*\*\w+\*\*/,
-          `You are **${effectiveName}**`,
-        );
-        // Remove existing language section if present, then add new one if needed
-        agentsMd = agentsMd.replace(/\n\n## Language\nAlways respond in .+\. All communication with the user must be in .+\./m, "");
-        if (languageSection) {
-          agentsMd = agentsMd.trimEnd() + languageSection + "\n";
-        }
-        fs.writeFileSync(agentsMdPath, agentsMd);
+      if (fs.existsSync(agentsMdPath) && !fs.lstatSync(agentsMdPath).isSymbolicLink()) {
+        personalizeManual(agentsMdPath);
       }
 
       context.emit("config:updated", { portal: updated.portal });
@@ -2135,6 +2127,29 @@ async function runWebSession(
     const { scanOrg } = await import("./org.js");
     const registry = scanOrg();
     employee = findEmployee(currentSession.employee, registry);
+  }
+
+  // Pre-flight: fail fast with an actionable error if the engine's CLI binary
+  // isn't installed. Otherwise the (interactive PTY) engine spawns a missing
+  // command, exits silently, and the turn produces no output and no error.
+  // We surface it the way runWebSession reports errors and return normally
+  // (throwing here would escape the queue task as an unhandled rejection).
+  if (isKnownEngine(currentSession.engine) && !engineAvailable(config, currentSession.engine)) {
+    const errMsg = engineUnavailableMessage(config, currentSession.engine);
+    logger.error(`Web session ${currentSession.id} blocked: ${errMsg}`);
+    insertMessage(currentSession.id, "assistant", `⛔ ${errMsg}`);
+    const erroredSession = updateSession(currentSession.id, {
+      status: "error",
+      lastActivity: new Date().toISOString(),
+      lastError: errMsg,
+    });
+    context.emit("session:completed", { sessionId: currentSession.id, result: null, error: errMsg });
+    // Wake the parent COO if this was a delegated child session (parity with
+    // the normal error path; no-op for top-level sessions).
+    if (erroredSession) {
+      notifyParentSession(erroredSession, { error: errMsg }, { alwaysNotify: employee?.alwaysNotify });
+    }
+    return;
   }
 
   const { scanOrg: scanOrgForHierarchy } = await import("./org.js");

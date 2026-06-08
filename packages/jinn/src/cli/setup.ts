@@ -279,6 +279,23 @@ models:
       - { id: gemini-3-pro-preview, label: "Gemini 3 Pro", supportsEffort: false, effortLevels: [] }
 connectors: {}
 portal: {}
+
+# ── Optional blocks (uncomment to customize) ──────────────────────────────
+# MCP servers give employees browser, search, fetch, and messaging tools.
+# mcp:
+#   browser: { enabled: true, provider: playwright }
+#   search:  { enabled: false, provider: brave }   # set true + add BRAVE_API_KEY
+#   fetch:   { enabled: true }
+#   gateway: { enabled: true }                      # built-in gateway MCP server
+# Per-session safety limits (can be overridden per-employee in their YAML).
+# sessions:
+#   maxDurationMinutes: 30
+#   maxCostUsd: 10.00
+# Cron alerting — route failed scheduled jobs to a connector channel.
+# cron:
+#   alertConnector: slack
+#   alertChannel: "#alerts"
+
 logging:
   file: true
   stdout: true
@@ -385,7 +402,9 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
 
   if (ensureDir(JINN_HOME)) created.push(JINN_HOME);
 
-  // Copy or create config files
+  // Copy or create config files.
+  // DEFAULT_CONFIG (above) is the canonical default. `template/config.yaml` is an
+  // optional override the installer prefers if present (none ships by default).
   const templateConfig = path.join(TEMPLATE_DIR, "config.yaml");
   const templateClaude = path.join(TEMPLATE_DIR, "CLAUDE.md");
   const templateAgents = path.join(TEMPLATE_DIR, "AGENTS.md");
