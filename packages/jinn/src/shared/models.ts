@@ -26,7 +26,7 @@ import { discoverPiModels } from "./pi-models.js";
 
 /** Engines registered in this build (mirrors server.ts engine map). */
 const ENGINE_NAMES = ["claude", "codex", "antigravity", "pi"] as const;
-type EngineName = (typeof ENGINE_NAMES)[number];
+export type EngineName = (typeof ENGINE_NAMES)[number];
 
 /** Binary name probed for each engine's availability (override via engines.<name>.bin). */
 const ENGINE_BIN: Record<EngineName, string> = {
@@ -59,7 +59,7 @@ function engineBinOverride(config: JinnConfig, name: EngineName): string | undef
 }
 
 /** Whether an engine's binary is installed (gates UI visibility). */
-function engineAvailable(config: JinnConfig, name: EngineName): boolean {
+export function engineAvailable(config: JinnConfig, name: EngineName): boolean {
   return isInstalled(ENGINE_BIN[name], engineBinOverride(config, name));
 }
 

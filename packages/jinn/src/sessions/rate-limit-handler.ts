@@ -23,7 +23,7 @@ import type { Employee, Engine, EngineResult, JinnConfig, Session, StreamDelta }
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
-import { effortLevelsForModel } from "../shared/models.js";
+import { effortLevelsForModel, engineAvailable, type EngineName } from "../shared/models.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
 import { recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { getSession, getMessages, updateSession } from "./registry.js";
@@ -163,7 +163,7 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
   if (session.engine === "claude" && strategy === "fallback") {
     const fallbackName = config.sessions?.fallbackEngine ?? "codex";
     const fallbackEngine = engines.get(fallbackName);
-    if (fallbackEngine) {
+    if (fallbackEngine && engineAvailable(config, fallbackName as EngineName)) {
       const { resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
       const until = resumeAt ?? new Date(Date.now() + 6 * 60 * 60_000);
       const syncSince = new Date().toISOString();

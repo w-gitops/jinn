@@ -1,0 +1,122 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// ── Mocks (must be declared before importing the module under test) ──────────
+
+// engineAvailable is the guard under test — fully controllable per case.
+const engineAvailableMock = vi.fn<(...args: unknown[]) => boolean>();
+vi.mock("../../shared/models.js", () => ({
+  engineAvailable: (...args: unknown[]) => engineAvailableMock(...args),
+  effortLevelsForModel: vi.fn(() => ["low", "medium", "high"]),
+}));
+
+// Registry side effects — no real DB.
+const getSessionMock = vi.fn();
+vi.mock("../registry.js", () => ({
+  getSession: (...a: unknown[]) => getSessionMock(...a),
+  getMessages: vi.fn(() => []),
+  updateSession: vi.fn(),
+}));
+
+vi.mock("../../shared/usageAwareness.js", () => ({
+  recordClaudeRateLimit: vi.fn(),
+}));
+
+vi.mock("../../shared/effort.js", () => ({
+  resolveEffort: vi.fn(() => "medium"),
+}));
+
+vi.mock("../../shared/logger.js", () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+// rateLimit math: zero delay; deadline already in the past so the wait-and-retry
+// loop (Branch B) exits immediately without sleeping or calling engine.run.
+vi.mock("../../shared/rateLimit.js", () => ({
+  computeNextRetryDelayMs: vi.fn(() => ({ delayMs: 0, resumeAt: undefined })),
+  computeRateLimitDeadlineMs: vi.fn(() => Date.now() - 1),
+  detectRateLimit: vi.fn(() => ({ limited: false })),
+}));
+
+import { handleRateLimit, type RateLimitHandlerOpts } from "../rate-limit-handler.js";
+import type { Session, EngineResult } from "../../shared/types.js";
+
+function makeSession(overrides: Partial<Session> = {}): Session {
+  return {
+    id: "sess-1",
+    engine: "claude",
+    engineSessionId: "claude-thread-1",
+    source: "web",
+    sourceRef: "web:test",
+    connector: null,
+    sessionKey: "k",
+    replyContext: null,
+    messageId: null,
+    transportMeta: null,
+    employee: null,
+    model: "opus",
+    title: null,
+    parentSessionId: null,
+    status: "running",
+    effortLevel: null,
+    totalCost: 0,
+    totalTurns: 0,
+    createdAt: new Date().toISOString(),
+    lastActivity: new Date().toISOString(),
+    lastError: null,
+    ...overrides,
+  } as Session;
+}
+
+function makeOpts(fallbackRun: ReturnType<typeof vi.fn>): RateLimitHandlerOpts {
+  const session = makeSession();
+  const fallbackEngine = { run: fallbackRun } as unknown as RateLimitHandlerOpts["engine"];
+  const claudeEngine = { run: vi.fn() } as unknown as RateLimitHandlerOpts["engine"];
+  return {
+    session,
+    prompt: "hello",
+    engineConfig: { bin: "claude", model: "opus" },
+    config: {
+      sessions: { rateLimitStrategy: "fallback", fallbackEngine: "codex" },
+      engines: { codex: { bin: "codex", model: "gpt-5.3-codex" } },
+    } as unknown as RateLimitHandlerOpts["config"],
+    engines: new Map([["codex", fallbackEngine]]),
+    engine: claudeEngine,
+    rateLimit: { resetsAt: undefined },
+    originalResult: { result: "", sessionId: "claude-thread-1" } as EngineResult,
+    hooks: {},
+  };
+}
+
+describe("handleRateLimit — Codex fallback guard (#40)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // getSession is consulted inside both branches; return the live session.
+    getSessionMock.mockImplementation(() => makeSession());
+  });
+
+  it("falls through to wait-and-retry when the fallback engine is NOT installed", async () => {
+    engineAvailableMock.mockReturnValue(false);
+    const fallbackRun = vi.fn(async () => ({ result: "from-codex", sessionId: "codex-1" }) as EngineResult);
+
+    const outcome = await handleRateLimit(makeOpts(fallbackRun));
+
+    // Branch A skipped → no Codex spawn.
+    expect(fallbackRun).not.toHaveBeenCalled();
+    expect(outcome.kind).not.toBe("fallback");
+    // With a past deadline, Branch B exits straight to timeout.
+    expect(outcome.kind).toBe("timeout");
+  });
+
+  it("uses the Codex fallback when the fallback engine IS installed", async () => {
+    engineAvailableMock.mockReturnValue(true);
+    const fallbackRun = vi.fn(async () => ({ result: "from-codex", sessionId: "codex-1" }) as EngineResult);
+
+    const outcome = await handleRateLimit(makeOpts(fallbackRun));
+
+    expect(fallbackRun).toHaveBeenCalledTimes(1);
+    expect(outcome.kind).toBe("fallback");
+    if (outcome.kind === "fallback") {
+      expect(outcome.result.result).toBe("from-codex");
+    }
+  });
+});
