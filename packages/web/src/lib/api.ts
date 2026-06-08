@@ -28,6 +28,9 @@ export interface Employee {
   model: string;
   persona: string;
   emoji?: string;
+  effortLevel?: string;
+  cliFlags?: string[];
+  alwaysNotify?: boolean;
   reportsTo?: string | string[];
   parentName?: string | null;
   directReports?: string[];

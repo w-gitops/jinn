@@ -74,6 +74,16 @@ export default function OrgPage() {
     setSelected(emp);
   }, []);
 
+  // After an inline edit: reload the org (so the map re-parents / re-layouts on
+  // a reportsTo change) and refresh the open panel with the saved employee.
+  const handleEmployeeUpdated = useCallback(
+    (emp: Employee) => {
+      loadData();
+      setSelected(emp);
+    },
+    [loadData],
+  );
+
   if (error) {
     return (
       <PageLayout>
@@ -142,6 +152,7 @@ export default function OrgPage() {
                 <EmployeeDetail
                   name={selected.name}
                   prefetched={selected.rank === "executive" ? selected : undefined}
+                  onUpdated={handleEmployeeUpdated}
                 />
               </div>
             </div>
