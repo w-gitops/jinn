@@ -38,7 +38,9 @@ function ToolGroup({ msgs, isActive }: { msgs: Message[]; isActive: boolean }) {
     : `${msgs.length} tool${msgs.length !== 1 ? 's' : ''} used`
 
   return (
-    <div className="px-[var(--space-4)] mb-[var(--space-1)]">
+    // Share the assistant text gutter (.assistant-msg-row → space-3 / space-8 @lg)
+    // so the tool card's left edge lines up with the message text column.
+    <div className="assistant-msg-row mb-[var(--space-1)]">
       <button
         onClick={() => setExpanded((v) => !v)}
         className="flex items-center gap-[var(--space-2)] py-[5px] px-[var(--space-3)] rounded-full bg-[var(--fill-secondary)] border border-[var(--separator)] text-[length:var(--text-caption1)] text-[var(--text-secondary)] cursor-pointer transition-[background] duration-150 ease-in-out hover:bg-[var(--fill-tertiary)]"
