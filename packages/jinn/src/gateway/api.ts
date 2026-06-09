@@ -28,6 +28,7 @@ import {
   insertPartialMessage,
   updatePartialMessage,
   deletePartialMessages,
+  finalizePartialMessages,
   getMessages,
   enqueueQueueItem,
   cancelQueueItem,
@@ -2332,6 +2333,7 @@ async function runWebSession(
       // Stop any pending debounced text flush so it can't re-insert a partial row
       // after the turn-end cleanup below deletes them.
       if (partialFlushTimer) { clearTimeout(partialFlushTimer); partialFlushTimer = null; }
+      flushPartialText();
     });
 
     if (!getSession(currentSession.id)) {
@@ -2339,10 +2341,18 @@ async function runWebSession(
       return;
     }
 
-    // Turn settled — the live partial blocks are now superseded by the single
-    // consolidated message persisted below (success / rate-limit fallback / retry).
-    // Wipe them so the post-turn reload shows exactly the final message, as before.
-    deletePartialMessages(currentSession.id);
+    // Turn settled. Most engines replace live partials with a single final
+    // assistant message. Antigravity's transcript is already interleaved text +
+    // tool rows, so preserve those blocks when tool cards were streamed.
+    const streamedBlocks = getMessages(currentSession.id).filter((m) => m.partial);
+    const preserveStreamedBlocks =
+      currentSession.engine === "antigravity" && streamedBlocks.some((m) => !!m.toolCall);
+    const resultAlreadyPersisted =
+      preserveStreamedBlocks &&
+      !!result.result?.trim() &&
+      streamedBlocks.some((m) => !m.toolCall && m.content.trim() === result.result.trim());
+    if (preserveStreamedBlocks) finalizePartialMessages(currentSession.id);
+    else deletePartialMessages(currentSession.id);
 
     const wasInterrupted = result.error?.startsWith("Interrupted");
     const rateLimit = !wasInterrupted ? detectRateLimit(result) : { limited: false as const };
@@ -2504,7 +2514,7 @@ async function runWebSession(
     }
 
     // Persist the assistant response
-    if (result.result) {
+    if (result.result && !resultAlreadyPersisted) {
       insertMessage(currentSession.id, "assistant", result.result);
     }
 

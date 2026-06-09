@@ -643,7 +643,7 @@ export interface SessionMessage {
   timestamp: number;
   /** Parsed from the `media` JSON column; undefined when the message has no attachments. */
   media?: MessageMedia[];
-  /** True for a live mid-turn block (deleted + replaced by the final message at turn end). */
+  /** True for a live mid-turn block. Most engines replace these at turn end. */
   partial?: boolean;
   /** Tool name when this block is a tool call — lets a reloaded block render as a tool card. */
   toolCall?: string;
@@ -687,7 +687,7 @@ export function getMessages(sessionId: string): SessionMessage[] {
 /**
  * Insert a live mid-turn block (`partial=1`). `seq` orders blocks within the turn;
  * `toolCall` is set when the block is a tool call (renders as a tool card on reload).
- * These rows are wiped by `deletePartialMessages` at turn end.
+ * These rows are usually wiped by `deletePartialMessages` at turn end.
  */
 export function insertPartialMessage(sessionId: string, role: string, content: string, seq: number, toolCall?: string): string {
   const db = initDb();
@@ -708,6 +708,13 @@ export function updatePartialMessage(id: string, content: string): void {
 export function deletePartialMessages(sessionId: string): number {
   const db = initDb();
   return db.prepare('DELETE FROM messages WHERE session_id = ? AND partial = 1').run(sessionId).changes;
+}
+
+/** Keep streamed blocks as canonical history. Used by engines whose final
+ * answer is already represented as interleaved text + tool rows. */
+export function finalizePartialMessages(sessionId: string): number {
+  const db = initDb();
+  return db.prepare('UPDATE messages SET partial = NULL WHERE session_id = ? AND partial = 1').run(sessionId).changes;
 }
 
 /** Boot sweep: drop any partial blocks stranded by a mid-turn gateway restart. */

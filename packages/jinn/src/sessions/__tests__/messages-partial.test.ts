@@ -78,6 +78,18 @@ describe("messages partial (mid-turn streaming) blocks", () => {
     expect(msgs.map((m) => m.content)).toEqual(["hi", "a real prior answer"]);
   });
 
+  it("can finalize partial blocks into canonical history", () => {
+    newSession("p3b");
+    reg.insertPartialMessage("p3b", "assistant", "Using run_command", 0, "run_command");
+    reg.insertPartialMessage("p3b", "assistant", "Done", 1);
+
+    expect(reg.finalizePartialMessages("p3b")).toBe(2);
+    const msgs = reg.getMessages("p3b");
+    expect(msgs.map((m) => m.content)).toEqual(["Using run_command", "Done"]);
+    expect(msgs.some((m) => m.partial)).toBe(false);
+    expect(msgs[0].toolCall).toBe("run_command");
+  });
+
   it("clearAllPartialMessages sweeps strays across sessions (boot recovery)", () => {
     newSession("p4");
     newSession("p5");
