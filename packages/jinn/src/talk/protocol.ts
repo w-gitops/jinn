@@ -89,6 +89,7 @@ export const TALK_EVENTS = {
   task: "talk:task",
   focus: "talk:focus",
   threadLabel: "talk:thread:label",
+  engine: "talk:engine",
   turnDone: "talk:turn:done",
   ttsDownloadProgress: "talk:tts:download:progress",
   ttsDownloadComplete: "talk:tts:download:complete",
@@ -107,6 +108,18 @@ export interface TalkCardDismissEvent { sessionId: string; cardId: string }
 export interface TalkCardClearEvent { sessionId: string }
 export interface TalkTaskEvent { sessionId: string; task: TrackerTask }
 export interface TalkTurnDoneEvent { sessionId: string; ok: boolean; error?: string }
+/**
+ * The active orchestrator engine/model changed (POST /api/talk/engine). The model
+ * applies on the live session's next turn; the engine — new-chat-only, mirroring
+ * PATCH /api/sessions — applies when the talk session is next (re)created. Harmless
+ * if a client doesn't handle it.
+ */
+export interface TalkEngineEvent {
+  engine: string | null
+  model: string
+  /** True when the requested/configured engine was unavailable and we fell back. */
+  fallback: boolean
+}
 
 // ---------------------------------------------------------------------------
 // HTTP request/response shapes.

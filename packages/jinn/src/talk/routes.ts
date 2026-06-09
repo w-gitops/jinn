@@ -12,15 +12,66 @@
  * spoken reply is synthesized server-side (see talk/tts-stream.ts, driven from
  * the run loop in api.ts) and streamed as talk:audio over the WebSocket.
  */
+import fs from "node:fs";
+import yaml from "js-yaml";
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
 import type { ApiContext } from "../gateway/api.js";
-import { createSession, getSessionBySessionKey } from "../sessions/registry.js";
+import type { JinnConfig } from "../shared/types.js";
+import { CONFIG_PATH } from "../shared/paths.js";
+import { logger } from "../shared/logger.js";
+import { createSession, getSessionBySessionKey, updateSession } from "../sessions/registry.js";
+import { engineAvailable, isKnownEngine, type EngineName } from "../shared/models.js";
+import { resolveTalkEngine, type TalkEngineResolution } from "./engine-resolver.js";
 import { validateCard, validateCardPatch } from "./card-validate.js";
 import { TALK_EVENTS } from "./protocol.js";
 import { getTalkTts } from "./tts-stream.js";
 
 /** Stable session key for the single hands-free orchestrator surface. */
 const TALK_SESSION_KEY = "talk:main";
+
+/** Default orchestrator model when `talk.orchestratorModel` is unset (snappy). */
+const DEFAULT_TALK_MODEL = "haiku";
+
+/** The orchestrator model the talk session should run on. */
+function talkModel(config: JinnConfig): string {
+  return config.talk?.orchestratorModel ?? DEFAULT_TALK_MODEL;
+}
+
+/**
+ * Candidate engines in priority order: gateway default first, then every other
+ * configured+known engine. Used as the fallback search order by the resolver.
+ */
+function talkEngineCandidates(config: JinnConfig): string[] {
+  const def = config.engines.default;
+  const rest = Object.keys(config.engines).filter(
+    (k) => k !== "default" && k !== def && isKnownEngine(k),
+  );
+  return [def, ...rest];
+}
+
+/**
+ * Resolve which engine the voice orchestrator should use, with seamless fallback:
+ * talk.engine → engines.default → first available. Availability reuses resolve-bin
+ * (via engineAvailable) so an uninstalled CLI is never chosen. Returns the choice,
+ * whether a fallback occurred, and the available set (see engine-resolver.ts).
+ */
+function resolveActiveTalkEngine(config: JinnConfig): TalkEngineResolution {
+  return resolveTalkEngine({
+    configured: config.talk?.engine,
+    defaultEngine: config.engines.default,
+    candidates: talkEngineCandidates(config),
+    isAvailable: (e) => isKnownEngine(e) && engineAvailable(config, e as EngineName),
+  });
+}
+
+/** Actionable message when no engine binary is installed for the orchestrator. */
+function noEngineMessage(): string {
+  return (
+    "No engine is available for the voice orchestrator — no engine CLI was found " +
+    "on your PATH. Install one (e.g. npm install -g @anthropic-ai/claude-code) or " +
+    "set engines.<name>.bin in config.yaml, then retry."
+  );
+}
 
 /**
  * Dispatch any `/api/talk/*` request. Returns `true` if handled (caller should
@@ -47,39 +98,174 @@ export async function handleTalkApi(
       if (!parsed.ok) return true;
       const body = (parsed.body ?? {}) as { fresh?: boolean };
       const config = context.getConfig();
+      const resolved = resolveActiveTalkEngine(config);
+
+      // No engine installed → don't let createSession spawn a raw failure; surface
+      // an actionable message the UI can show.
+      if (!resolved.engine) {
+        json(res, { error: noEngineMessage() }, 503);
+        return true;
+      }
 
       if (!body.fresh) {
         const existing = getSessionBySessionKey(TALK_SESSION_KEY);
-        if (existing && existing.source === "talk") {
+        // Engine is new-chat-only (mirrors PATCH /api/sessions): only reuse the
+        // existing orchestrator if it already runs the resolved engine. If the
+        // engine changed (e.g. via POST /api/talk/engine), fall through and create
+        // a fresh session on the new engine — that's how an engine switch lands.
+        if (existing && existing.source === "talk" && existing.engine === resolved.engine) {
           json(res, { sessionId: existing.id, reused: true });
           return true;
         }
       }
 
       const session = createSession({
-        engine: "claude",
+        engine: resolved.engine,
         source: "talk",
         sourceRef: TALK_SESSION_KEY,
         connector: "web",
         sessionKey: TALK_SESSION_KEY,
         replyContext: { source: "talk" },
-        model: config.talk?.orchestratorModel ?? "haiku",
+        model: talkModel(config),
         title: "Talk",
         portalName: config.portal?.portalName,
       });
-      json(res, { sessionId: session.id, reused: false });
+      json(res, {
+        sessionId: session.id,
+        reused: false,
+        engine: resolved.engine,
+        model: talkModel(config),
+        fallback: resolved.fallback,
+      });
       return true;
     }
 
-    // GET /api/talk/status — TTS engine readiness.
+    // GET /api/talk/status — TTS engine readiness + active orchestrator engine.
     if (method === "GET" && pathname === "/api/talk/status") {
-      const s = getTalkTts(context.getConfig().talk?.kokoro).status();
+      const config = context.getConfig();
+      const s = getTalkTts(config.talk?.kokoro).status();
+      const resolved = resolveActiveTalkEngine(config);
       json(res, {
         ttsAvailable: s.available,
         ttsDownloading: s.downloading,
         progress: s.progress,
         voice: s.voice,
         ready: s.ready,
+        engine: resolved.engine,
+        model: talkModel(config),
+        engineFallback: resolved.fallback,
+        enginesAvailable: resolved.available,
+      });
+      return true;
+    }
+
+    // GET /api/talk/engine — the currently-active orchestrator engine + model, the
+    // available engine set, and the live session's engine (so the UI can show it).
+    if (method === "GET" && pathname === "/api/talk/engine") {
+      const config = context.getConfig();
+      const resolved = resolveActiveTalkEngine(config);
+      const existing = getSessionBySessionKey(TALK_SESSION_KEY);
+      json(res, {
+        engine: resolved.engine,
+        model: talkModel(config),
+        fallback: resolved.fallback,
+        reason: resolved.reason,
+        available: resolved.available,
+        configured: config.talk?.engine ?? null,
+        liveSessionEngine:
+          existing && existing.source === "talk" ? existing.engine : null,
+      });
+      return true;
+    }
+
+    // POST /api/talk/engine — switch the orchestrator engine/model on the fly.
+    // Body: { engine?: string; model?: string }. Persists to config.talk and:
+    //   • model — mutable mid-chat → applied to the live session immediately
+    //     (takes effect on its NEXT turn, like PATCH /api/sessions).
+    //   • engine — new-chat-only (a live PTY can't swap engine mid-turn). We persist
+    //     the desired engine; it lands when the talk session is next (re)created.
+    //     The POST /api/talk/session reuse guard refuses to reuse a session whose
+    //     engine differs from the resolved one, so the next bootstrap (page reload /
+    //     reconnect, or { fresh:true }) silently moves to the new engine. We do NOT
+    //     tear down an in-flight conversation here.
+    if (method === "POST" && pathname === "/api/talk/engine") {
+      const parsed = await readJsonBody(req, res, { allowEmpty: true });
+      if (!parsed.ok) return true;
+      const body = (parsed.body ?? {}) as { engine?: unknown; model?: unknown };
+
+      let engine: string | undefined;
+      if (body.engine !== undefined) {
+        if (typeof body.engine !== "string" || !body.engine.trim()) {
+          badRequest(res, "engine must be a non-empty string");
+          return true;
+        }
+        engine = body.engine.trim();
+        if (!isKnownEngine(engine)) {
+          badRequest(res, `Unknown engine "${engine}" — expected one of claude, codex, antigravity, pi.`);
+          return true;
+        }
+      }
+
+      let model: string | undefined;
+      if (body.model !== undefined) {
+        if (typeof body.model !== "string" || !body.model.trim()) {
+          badRequest(res, "model must be a non-empty string");
+          return true;
+        }
+        model = body.model.trim();
+      }
+
+      if (engine === undefined && model === undefined) {
+        badRequest(res, "provide engine and/or model to switch");
+        return true;
+      }
+
+      // Persist to config.yaml (config.talk.{engine,orchestratorModel}); reuse the
+      // read-modify-write pattern used by the STT config routes.
+      try {
+        const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
+        const cfg = yaml.load(raw) as Record<string, unknown>;
+        if (!cfg.talk || typeof cfg.talk !== "object") cfg.talk = {};
+        const talkCfg = cfg.talk as Record<string, unknown>;
+        if (engine !== undefined) talkCfg.engine = engine;
+        if (model !== undefined) talkCfg.orchestratorModel = model;
+        fs.writeFileSync(CONFIG_PATH, yaml.dump(cfg, { lineWidth: -1 }));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        json(res, { ok: false, error: `Failed to persist talk engine: ${msg}` }, 500);
+        return true;
+      }
+      context.reloadConfig?.(); // refresh in-memory config now (don't wait on the watcher)
+
+      const config = context.getConfig();
+      const resolved = resolveActiveTalkEngine(config);
+      const activeModel = talkModel(config);
+
+      // Apply the model switch to the live session right away (mid-chat mutable).
+      if (model !== undefined) {
+        const existing = getSessionBySessionKey(TALK_SESSION_KEY);
+        if (existing && existing.source === "talk") {
+          updateSession(existing.id, { model: activeModel });
+        }
+      }
+
+      logger.info(
+        `Talk engine switch → engine=${resolved.engine ?? "none"} model=${activeModel}` +
+          (resolved.fallback ? " (fallback)" : ""),
+      );
+      context.emit(TALK_EVENTS.engine, {
+        engine: resolved.engine,
+        model: activeModel,
+        fallback: resolved.fallback,
+      });
+
+      json(res, {
+        ok: true,
+        engine: resolved.engine,
+        model: activeModel,
+        fallback: resolved.fallback,
+        reason: resolved.reason,
+        available: resolved.available,
       });
       return true;
     }
