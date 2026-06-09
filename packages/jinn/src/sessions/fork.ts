@@ -152,9 +152,15 @@ async function forkClaudeSessionInteractive(
   return { engineSessionId: newSessionId };
 }
 
-/** Translate a cwd into the Claude project directory key (`/` → `-`). */
-function claudeProjectDir(cwd: string): string {
-  const key = cwd.replace(/\//g, "-");
+/**
+ * Translate a cwd into the Claude project directory key. Claude Code slugifies
+ * the cwd by replacing every "/" AND "." with "-" (so `~/.jinn` →
+ * `…--jinn`, double-dash). Must match `findTranscriptForSession` in
+ * claude-interactive.ts — otherwise the fork polls a non-existent directory and
+ * times out for any cwd containing a dot (every COO/.jinn session).
+ */
+export function claudeProjectDir(cwd: string): string {
+  const key = cwd.replace(/[/.]/g, "-");
   return path.join(os.homedir(), ".claude", "projects", key);
 }
 
