@@ -5,9 +5,10 @@ import type { GraphNode } from './graph-store'
 /**
  * Jinn Talk — engage-attachment banner (Mission Control).
  *
- * A slim strip at the top of the stream area, one row per LIVE engage
- * attachment: "⇄ attached to {label} — engage · Detach". Mounted by page.tsx
- * only when hasEngageAttachment(graph). Detach posts talkDelegate {detach:true};
+ * A slim strip rendered in the grid's banner row (.talk-banner-row owns the
+ * placement + padding), one row per LIVE engage attachment: "⇄ attached to
+ * {label} — engage · Detach". Mounted by page.tsx only when
+ * hasEngageAttachment(graph). Detach posts talkDelegate {detach:true};
  * the row disappears when the talk:graph "detached" delta drops the node.
  *
  * Observe attachments are intentionally NOT banner-worthy — they're passive.
@@ -24,7 +25,7 @@ export function AttachBanner({ graph, orchestratorId }: AttachBannerProps) {
   if (engaged.length === 0 || !orchestratorId) return null
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col items-center gap-1 px-4 pt-[calc(max(env(safe-area-inset-top),14px)+44px)]">
+    <div className="flex w-full flex-col items-center gap-1">
       {engaged.map((node) => (
         <AttachBannerRow key={node.id} node={node} orchestratorId={orchestratorId} />
       ))}
@@ -57,7 +58,7 @@ function AttachBannerRow({
   }, [busy, orchestratorId, node.id])
 
   return (
-    <div className="pointer-events-auto inline-flex max-w-full items-center gap-2 rounded-full border border-[var(--accent)] bg-[var(--accent-fill)] px-3 py-1 text-[length:var(--text-caption1)] text-[var(--accent)] backdrop-blur-md">
+    <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-[var(--accent)] bg-[var(--accent-fill)] px-3 py-1 text-[length:var(--text-caption1)] text-[var(--accent)] backdrop-blur-md">
       <span className="truncate">
         ⇄ attached to <span className="font-[var(--weight-semibold)]">{label}</span> — engage
       </span>

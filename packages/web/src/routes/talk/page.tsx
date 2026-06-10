@@ -25,6 +25,7 @@ import { TalkEnginePicker } from "./talk-engine-picker"
 import { TalkVoiceIndicator } from "./talk-voice-indicator"
 import { WhisperDownloadModal } from "@/components/stt/whisper-download-modal"
 import { useTalkContext } from "./talk-provider"
+import { useStageMode } from "./stage"
 import "./talk-tokens.css"
 import "./talk-layout.css"
 
@@ -45,6 +46,13 @@ export default function TalkPage() {
     () => selectPinnedCards(talk.cards, talk.resolvedCardIds),
     [talk.cards, talk.resolvedCardIds],
   )
+  // Stage mode — who owns the centre: orb (hero), transcript (conversing), or
+  // a blocking card (content). Drives the grid via data-stage + the orb dock.
+  const stage = useStageMode({
+    state: talk.state,
+    hasRows: talk.rows.length > 0,
+    pinnedCount: pinnedCards.length,
+  })
   // Which session's chat the peek popup is showing (null → closed).
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
   // Session-search sheet (opened from the top-bar search icon).
@@ -113,18 +121,16 @@ export default function TalkPage() {
   return (
     <div
       data-state={talk.state}
-      className="relative h-dvh w-full select-none overflow-hidden"
+      data-stage={stage}
+      className="talk-root relative select-none"
       style={{
         background:
           "radial-gradient(125% 125% at 50% 34%, var(--bg-tertiary) 0%, var(--bg) 60%, var(--bg) 100%)",
         color: "var(--text-primary)",
       }}
     >
-      {/* Top bar */}
-      <div
-        className="absolute inset-x-0 top-0 z-30 flex items-center justify-between px-4"
-        style={{ paddingTop: "max(env(safe-area-inset-top), 14px)" }}
-      >
+      {/* row 1: top bar */}
+      <div className="talk-topbar">
         <Link
           to="/"
           aria-label="Back to Jinn"
@@ -176,65 +182,60 @@ export default function TalkPage() {
         </div>
       </div>
 
-      {/* Engage-attachment banner(s) — one slim strip per live engage soft link,
-          just under the top bar. Mounts only when an engage attachment exists. */}
-      {showAttachBanner && (
-        <AttachBanner graph={talk.graph} orchestratorId={talk.orchestratorId} />
-      )}
+      {/* row 2: engage-attachment banner(s) — one slim strip per live engage
+          soft link. The row collapses to zero height when empty. */}
+      <div className="talk-banner-row">
+        {showAttachBanner && (
+          <AttachBanner graph={talk.graph} orchestratorId={talk.orchestratorId} />
+        )}
+      </div>
 
-      {/* Persistent conversation — user lines, AURA karaoke replies, delegation
-          chips. Replaces the old single-exchange transcript + hidden history rail.
-          Container is pointer-events:none; its scroll viewport + links/chips
-          re-enable pointer-events so the orb stays tappable through the margins. */}
-      <ConversationStream
-        rows={talk.rows}
-        state={talk.state}
-        onOpenThread={setChatSessionId}
-        inlineCards={inlineCards}
-        cardAnchorFor={talk.cardAnchorFor}
-        onCardAction={talk.cardAction}
-        className={typing ? "cstream--input-open" : undefined}
-      />
+      {/* row 3: orb dock — reserves the docked orb's space; anchor + whisper.
+          The orb itself is still the absolute CenteredOrb until Task 4. */}
+      <div className="talk-orbdock" data-active={stage !== "hero"}>
+        <div className="talk-orbdock__anchor" aria-hidden />
+        {stage !== "hero" && talk.state === "thinking" && talk.whisper && (
+          <p className="talk-whisper text-caption1 text-[var(--text-quaternary)]">{talk.whisper}</p>
+        )}
+      </div>
 
-      {/* The orchestrator orb sits centered, morphing toward the focused (most-
-          recent running) COO channel's hue. It compacts + lifts once a
-          conversation is underway (rows present or any non-idle state). */}
-      <CenteredOrb
-        state={talk.state}
-        level={talk.level}
-        channelHue={talk.focusHue}
-        whisper={talk.whisper}
-        conversing={talk.rows.length > 0 || talk.state !== "idle"}
-      />
+      {/* row 4: main — transcript stage + WorkDock rail */}
+      <div className="talk-main">
+        <div className="talk-stage">
+          {/* Persistent conversation — user lines, AURA karaoke replies,
+              delegation chips. Fills the stage cell; the wrapper is
+              pointer-events:none and the scroll viewport + links/chips
+              re-enable pointer-events. */}
+          <ConversationStream
+            rows={talk.rows}
+            state={talk.state}
+            onOpenThread={setChatSessionId}
+            inlineCards={inlineCards}
+            cardAnchorFor={talk.cardAnchorFor}
+            onCardAction={talk.cardAction}
+          />
+        </div>
+        <div className="talk-rail">
+          {/* WorkDock — the single graph-driven work rail: one chip per depth-1
+              node, mini-dots for employees, ⋯ menu for rename/dismiss/pin. */}
+          <WorkDock
+            graph={talk.graph}
+            sideState={talk.sideState}
+            targetThreadId={talk.targetThreadId}
+            onOpenThread={setChatSessionId}
+            onSelectTarget={talk.selectThread}
+            onRename={talk.renameThread}
+            onDismiss={talk.dismissThread}
+            idle={talk.state === "idle"}
+          />
+        </div>
+      </div>
 
-      {/* WorkDock — the single graph-driven work rail (right edge, centered).
-          Replaces the constellation satellites + the thread panel: one chip per
-          depth-1 node, mini-dots for employees, ⋯ menu for rename/dismiss/pin. */}
-      <WorkDock
-        graph={talk.graph}
-        sideState={talk.sideState}
-        targetThreadId={talk.targetThreadId}
-        onOpenThread={setChatSessionId}
-        onSelectTarget={talk.selectThread}
-        onRename={talk.renameThread}
-        onDismiss={talk.dismissThread}
-        idle={talk.state === "idle"}
-      />
-
-      {/* Pinned strip — the bottom actionable band, showing ONLY unresolved
-          approval/choice cards so a blocking decision is always reachable without
-          scrolling the transcript. All other cards render INLINE in the stream
-          (anchored to their turn). Sits below the orb centre and above the mic so
-          it never covers the avatar or the control on mobile. Deck is
-          pointer-events:none (buttons/links re-enable themselves). */}
+      {/* row 5: pinned blocking cards — ONLY unresolved approval/choice cards,
+          always reachable without scrolling the transcript. All other cards
+          render INLINE in the stream. Row collapses when empty. */}
       {pinnedCards.length > 0 && (
-        <div
-          className="pointer-events-none absolute inset-x-0 z-20 flex items-end justify-center overflow-hidden px-4"
-          style={{
-            bottom: `calc(max(env(safe-area-inset-bottom), 22px) + ${typing ? 148 : 96}px)`,
-            maxHeight: "46dvh",
-          }}
-        >
+        <div className="talk-pinned">
           {/* Fence the deck: a malformed card degrades to a small "card failed"
               note instead of unmounting the whole Talk app. Resets when the card
               set changes (orchestrator re-push / clear). */}
@@ -252,11 +253,8 @@ export default function TalkPage() {
         </div>
       )}
 
-      {/* Bottom control: a single big mic button + status hint */}
-      <div
-        className="absolute inset-x-0 bottom-0 z-30 flex flex-col items-center gap-3"
-        style={{ paddingBottom: "max(env(safe-area-inset-bottom), 22px)" }}
-      >
+      {/* row 6: bottom controls — a single big mic button + status hint */}
+      <div className="talk-controls">
         {talk.state === "speaking" && !talk.muted && (
           <button
             onClick={talk.stopSpeaking}
@@ -336,6 +334,17 @@ export default function TalkPage() {
           </button>
         </div>
       </div>
+
+      {/* The orchestrator orb — still the absolute overlay until Task 4 replaces
+          it with the morphing OrbLayer. Whisper is null here: the dock-row
+          whisper (row 3) replaces it in the thinking state. */}
+      <CenteredOrb
+        state={talk.state}
+        level={talk.level}
+        channelHue={talk.focusHue}
+        whisper={null}
+        conversing={talk.rows.length > 0 || talk.state !== "idle"}
+      />
 
       {/* Peek popup for a tapped session (chip, orb, or search row) — now with
           attach controls + engage composer. */}

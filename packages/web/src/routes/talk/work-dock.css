@@ -1,24 +1,18 @@
 /**
  * Jinn Talk — WorkDock styles.
  *
- * A vertical rail pinned to the right edge, vertically centered. Glassy,
- * Ledger-themed (light + dark via tokens). Per-chip accent is the channel hue,
+ * A vertical rail living in the grid's .talk-rail cell (talk-layout.css owns
+ * placement, padding, and the narrow-screen overlay mode). Glassy, Ledger-
+ * themed (light + dark via tokens). Per-chip accent is the channel hue,
  * supplied inline as --wd-hue so a chip's colour matches the main-orb morph and
- * the conversation delegation chips. The wrapper is pointer-events:none (taps
- * fall through to the orb); the rail re-enables pointer-events on itself.
+ * the conversation delegation chips.
  */
 
 .wd-wrap {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  right: 0;
-  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding-right: max(env(safe-area-inset-right), 10px);
-  pointer-events: none;
+  max-height: 100%;
 }
 
 .wd {

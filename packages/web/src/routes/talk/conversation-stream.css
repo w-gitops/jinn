@@ -9,24 +9,16 @@
 
 .cstream {
   position: absolute;
-  /* A centered vertical band between the top bar and the bottom controls. The
-     orb glows behind it; the mic (z-30) sits above the bottom edge. */
-  inset: calc(env(safe-area-inset-top, 0px) + 52px) 0 calc(env(safe-area-inset-bottom, 0px) + 150px);
-  z-index: 20;
+  /* Fills the .talk-stage cell exactly (the stage is position:relative inside
+     the grid's main row); the grid allocates the space, so banner/cards/input
+     growth reflows the stream instead of overlapping it. */
+  inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: flex-end;
   pointer-events: none;
   transition: opacity 480ms var(--ease-smooth, cubic-bezier(0.4, 0, 0.2, 1));
-}
-
-/* Input-open modifier: when the type-to-talk bar is visible the stream's scroll
-   viewport must reserve space equal to the bar height (h-10 = 40px) plus the
-   gap-3 gutter (12px) that the flex layout adds above it, so the last row
-   stays fully above the input instead of sliding behind it. */
-.cstream.cstream--input-open {
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 202px);
 }
 
 /* At idle the conversation recedes — the orb is the focus. */
@@ -39,7 +31,7 @@
      chips/links tapped, while the wrapper margins keep falling through. */
   pointer-events: auto;
   width: 100%;
-  max-width: 720px;
+  max-width: 640px;
   max-height: 100%;
   overflow-y: auto;
   overscroll-behavior: contain;
