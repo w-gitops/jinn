@@ -42,6 +42,10 @@ export const MAX_ROWS = 200
 
 export type ConversationAction =
   | { type: "user"; id: string; text: string; pending?: boolean }
+  /** Live-update a (pending) user row's text without clearing `pending`. */
+  | { type: "updateUser"; id: string; text: string }
+  /** Drop a user row entirely (pending row removed on cancel/abort/error). */
+  | { type: "removeUser"; id: string }
   | { type: "finalizeUser"; id: string; text?: string }
   /** `text` is the FULL accumulated, markdown-stripped reply text for the turn. */
   | { type: "assistant"; id: string; text: string }
@@ -87,6 +91,22 @@ export function conversationReducer(
   switch (action.type) {
     case "user":
       return cap([...rows, { kind: "user", id: action.id, text: action.text, ...(action.pending ? { pending: true } : {}) }])
+
+    case "updateUser": {
+      const i = rows.findIndex((r) => r.id === action.id && r.kind === "user")
+      if (i === -1) return rows
+      const prev = rows[i] as Extract<StreamRow, { kind: "user" }>
+      if (prev.text === action.text) return rows
+      const next = rows.slice()
+      next[i] = { ...prev, text: action.text }
+      return next
+    }
+
+    case "removeUser": {
+      const i = rows.findIndex((r) => r.id === action.id && r.kind === "user")
+      if (i === -1) return rows
+      return [...rows.slice(0, i), ...rows.slice(i + 1)]
+    }
 
     case "finalizeUser": {
       const i = rows.findIndex((r) => r.id === action.id && r.kind === "user")
@@ -244,6 +264,10 @@ export interface UseConversationReturn {
   rows: StreamRow[]
   /** Add a user line (typed/STT). `pending` keeps it editable until finalized. */
   appendUser: (id: string, text: string, pending?: boolean) => void
+  /** Live-update a pending user line's text (e.g. STT interim partials). */
+  updatePendingUser: (id: string, text: string) => void
+  /** Remove a pending user line (STT cancel/abort/error). */
+  removePendingUser: (id: string) => void
   /** Finalize a pending user line (optionally replacing its text). */
   finalizeUser: (id: string, text?: string) => void
   /** Stream assistant text: pass the FULL accumulated, stripped reply text. */
@@ -289,6 +313,14 @@ export function useConversation(): UseConversationReturn {
 
   const appendUser = useCallback(
     (id: string, text: string, pending?: boolean) => dispatch({ type: "user", id, text, pending }),
+    [],
+  )
+  const updatePendingUser = useCallback(
+    (id: string, text: string) => dispatch({ type: "updateUser", id, text }),
+    [],
+  )
+  const removePendingUser = useCallback(
+    (id: string) => dispatch({ type: "removeUser", id }),
     [],
   )
   const finalizeUser = useCallback(
@@ -338,6 +370,8 @@ export function useConversation(): UseConversationReturn {
     () => ({
       rows,
       appendUser,
+      updatePendingUser,
+      removePendingUser,
       finalizeUser,
       appendAssistant,
       markSpoken,
@@ -351,6 +385,6 @@ export function useConversation(): UseConversationReturn {
       pruneAnchors,
       cardAnchorFor,
     }),
-    [rows, appendUser, finalizeUser, appendAssistant, markSpoken, finalizeAssistant, addSystem, rehydrate, reset, anchors, anchorCard, unanchorCard, pruneAnchors, cardAnchorFor],
+    [rows, appendUser, updatePendingUser, removePendingUser, finalizeUser, appendAssistant, markSpoken, finalizeAssistant, addSystem, rehydrate, reset, anchors, anchorCard, unanchorCard, pruneAnchors, cardAnchorFor],
   )
 }

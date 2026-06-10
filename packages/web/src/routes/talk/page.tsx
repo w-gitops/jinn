@@ -194,8 +194,15 @@ export default function TalkPage() {
       />
 
       {/* The orchestrator orb sits centered, morphing toward the focused (most-
-          recent running) COO channel's hue. */}
-      <CenteredOrb state={talk.state} level={talk.level} channelHue={talk.focusHue} />
+          recent running) COO channel's hue. It compacts + lifts once a
+          conversation is underway (rows present or any non-idle state). */}
+      <CenteredOrb
+        state={talk.state}
+        level={talk.level}
+        channelHue={talk.focusHue}
+        whisper={talk.whisper}
+        conversing={talk.rows.length > 0 || talk.state !== "idle"}
+      />
 
       {/* WorkDock — the single graph-driven work rail (right edge, centered).
           Replaces the constellation satellites + the thread panel: one chip per
@@ -359,15 +366,24 @@ export default function TalkPage() {
  * own container is pointer-events:none so taps fall through to the controls; the
  * orb morphs toward `channelHue` (the focused COO channel) and eases back to
  * AURA's amber when nothing is running.
+ *
+ * Choreography (Task 13): idle = large + centered; `conversing` = compact +
+ * lifted (the shell eases up and the orb is sized smaller) so the conversation
+ * stream and dock have room. While `thinking`, a short muted whisper of the
+ * orchestrator's current tool_use sits just under the orb.
  */
 function CenteredOrb({
   state,
   level,
   channelHue,
+  whisper,
+  conversing,
 }: {
   state: ReturnType<typeof useTalkContext>["state"]
   level: number | undefined
   channelHue: number | undefined
+  whisper: string | null
+  conversing: boolean
 }) {
   const ref = useRef<HTMLDivElement | null>(null)
   const [size, setSize] = useState(280)
@@ -377,19 +393,33 @@ function CenteredOrb({
     const measure = () => {
       const w = el.clientWidth
       const h = el.clientHeight
-      setSize(Math.max(160, Math.min(Math.min(w, h || w) * 0.6, 360)))
+      const base = Math.min(w, h || w)
+      // Compact while conversing so the orb reads as a calm presence behind the
+      // stream rather than dominating; large + central when idle.
+      const size = conversing
+        ? Math.max(120, Math.min(base * 0.4, 210))
+        : Math.max(160, Math.min(base * 0.6, 360))
+      setSize(size)
     }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [])
+  }, [conversing])
   return (
     <div
       ref={ref}
-      className="pointer-events-none absolute inset-0 z-0 grid place-items-center"
+      className={cn(
+        "talk-orb-shell pointer-events-none absolute inset-0 z-0 grid place-items-center",
+        conversing && "talk-orb-shell--conversing",
+      )}
     >
-      <AuraAvatar state={state} level={level} size={Math.round(size)} channelHue={channelHue} />
+      <div className="flex flex-col items-center gap-2">
+        <AuraAvatar state={state} level={level} size={Math.round(size)} channelHue={channelHue} />
+        {state === "thinking" && whisper && (
+          <p className="talk-whisper text-caption1 text-[var(--text-quaternary)]">{whisper}</p>
+        )}
+      </div>
     </div>
   )
 }

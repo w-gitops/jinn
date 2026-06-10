@@ -3,12 +3,11 @@
  *
  * Mirrors packages/jinn/src/talk/protocol.ts. The WS event names + payloads are
  * the contract between the gateway and the real-loop hook (use-talk.ts). Card is
- * reused verbatim from ./types (the renderer's input). The wire task uses
- * `label` (backend set_task); we map it to the renderer's `TrackerTask.title`.
+ * reused verbatim from ./types (the renderer's input).
  */
-import type { Card, TrackerTask, AvatarState } from "./types"
+import type { Card, AvatarState } from "./types"
 
-export type { Card, TrackerTask }
+export type { Card }
 export type TalkState = AvatarState // idle | listening | thinking | speaking
 
 export const TALK_EVENTS = {
@@ -20,7 +19,6 @@ export const TALK_EVENTS = {
   cardUpdate: "talk:card:update",
   cardDismiss: "talk:card:dismiss",
   cardClear: "talk:card:clear",
-  task: "talk:task",
   focus: "talk:focus",
   threadLabel: "talk:thread:label",
   turnDone: "talk:turn:done",
@@ -31,21 +29,6 @@ export const TALK_EVENTS = {
   graph: "talk:graph",
 } as const
 
-/** Task as it arrives on the wire (backend uses `label`). */
-export interface WireTask {
-  id: string
-  label: string
-  owner: string
-  status: "queued" | "running" | "done" | "error"
-  progress?: number
-  result?: string
-}
-
-/** Map a wire task to the renderer's TrackerTask (label → title). */
-export function wireTaskToTracker(t: WireTask): TrackerTask {
-  return { id: t.id, title: t.label, owner: t.owner, status: t.status, progress: t.progress, result: t.result }
-}
-
 export interface TalkStateEvent { sessionId: string; state: TalkState }
 export interface TalkTranscriptEvent { sessionId: string; role: "user"; text: string }
 export interface TalkSayEvent { sessionId: string; text: string; final?: boolean }
@@ -54,7 +37,6 @@ export interface TalkCardEvent { sessionId: string; card: Card }
 export interface TalkCardUpdateEvent { sessionId: string; cardId: string; patch: Partial<Card> }
 export interface TalkCardDismissEvent { sessionId: string; cardId: string }
 export interface TalkCardClearEvent { sessionId: string }
-export interface TalkTaskEvent { sessionId: string; task: WireTask }
 export interface TalkTurnDoneEvent { sessionId: string; ok: boolean; error?: string }
 /** Which COO child the orchestrator is delegating to / narrating (Path 1). */
 export interface TalkFocusEvent { cooId: string; label: string; parentId: string }

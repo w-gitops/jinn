@@ -176,18 +176,6 @@ export interface AgentActivity {
   progress?: number
 }
 
-export interface TrackerTask {
-  id: string
-  title: string
-  /** Who owns it, e.g. "content-lead". */
-  owner: string
-  status: JobStatus
-  /** 0..1 */
-  progress?: number
-  /** Short result line shown when done. */
-  result?: string
-}
-
 // ============================================================================
 // Talk transcript — finalized conversation entries + system notifications.
 // Consumed by ConversationStream (Task 9) and the rehydrate transforms.

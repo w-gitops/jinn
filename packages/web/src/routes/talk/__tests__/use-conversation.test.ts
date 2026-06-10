@@ -41,6 +41,43 @@ describe("conversationReducer — user rows", () => {
     rows = conversationReducer(rows, { type: "finalizeUser", id: "u1" })
     expect(rows).toEqual([{ kind: "user", id: "u1", text: "draft" }])
   })
+
+  it("updateUser live-updates a pending row's text WITHOUT clearing pending", () => {
+    let rows = conversationReducer([], { type: "user", id: "u1", text: "…", pending: true })
+    rows = conversationReducer(rows, { type: "updateUser", id: "u1", text: "hello wor" })
+    expect(rows[0]).toEqual({ kind: "user", id: "u1", text: "hello wor", pending: true })
+    rows = conversationReducer(rows, { type: "updateUser", id: "u1", text: "hello world" })
+    expect(rows[0]).toEqual({ kind: "user", id: "u1", text: "hello world", pending: true })
+  })
+
+  it("updateUser returns the same reference when text is unchanged (stable for React)", () => {
+    const rows = conversationReducer([], { type: "user", id: "u1", text: "x", pending: true })
+    expect(conversationReducer(rows, { type: "updateUser", id: "u1", text: "x" })).toBe(rows)
+  })
+
+  it("updateUser on an unknown id is a no-op", () => {
+    const rows: StreamRow[] = [{ kind: "user", id: "u1", text: "x" }]
+    expect(conversationReducer(rows, { type: "updateUser", id: "ghost", text: "y" })).toBe(rows)
+  })
+
+  it("removeUser drops a pending row (cancel/abort/error)", () => {
+    let rows = conversationReducer([], { type: "user", id: "u1", text: "keep" })
+    rows = conversationReducer(rows, { type: "user", id: "u2", text: "…", pending: true })
+    rows = conversationReducer(rows, { type: "removeUser", id: "u2" })
+    expect(rows).toEqual([{ kind: "user", id: "u1", text: "keep" }])
+  })
+
+  it("removeUser on an unknown id is a no-op (same reference)", () => {
+    const rows: StreamRow[] = [{ kind: "user", id: "u1", text: "x" }]
+    expect(conversationReducer(rows, { type: "removeUser", id: "ghost" })).toBe(rows)
+  })
+
+  it("pending lifecycle: add → live-update → finalize replaces the placeholder", () => {
+    let rows = conversationReducer([], { type: "user", id: "u1", text: "…", pending: true })
+    rows = conversationReducer(rows, { type: "updateUser", id: "u1", text: "partial" })
+    rows = conversationReducer(rows, { type: "finalizeUser", id: "u1", text: "the final words" })
+    expect(rows).toEqual([{ kind: "user", id: "u1", text: "the final words" }])
+  })
 })
 
 describe("conversationReducer — assistant streaming", () => {

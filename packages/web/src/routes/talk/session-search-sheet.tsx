@@ -29,6 +29,9 @@ export function SessionSearchSheet({ open, onClose, onPeek }: SessionSearchSheet
   const [loading, setLoading] = useState(false)
   const [searchErr, setSearchErr] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  // The element focused when the sheet opened (the top-bar search button), so
+  // closing returns focus there instead of dropping it to <body> (a11y).
+  const restoreFocusRef = useRef<HTMLElement | null>(null)
 
   // Rows recompute whenever the raw response OR the live graph changes, so an
   // attach/detach delta flips a row's controls with no re-fetch.
@@ -36,6 +39,17 @@ export function SessionSearchSheet({ open, onClose, onPeek }: SessionSearchSheet
     () => mapSearchResults(resp, graph),
     [resp, graph],
   )
+
+  // Capture the trigger on open and restore focus to it on close (the component
+  // stays mounted rendering null, so this fires on the open→false transition).
+  useEffect(() => {
+    if (open) {
+      restoreFocusRef.current = document.activeElement as HTMLElement | null
+      return
+    }
+    restoreFocusRef.current?.focus?.()
+    restoreFocusRef.current = null
+  }, [open])
 
   // Autofocus the input each time the sheet opens; reset transient state.
   useEffect(() => {

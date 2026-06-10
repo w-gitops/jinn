@@ -58,3 +58,41 @@
     transform: none !important;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Orb choreography (Task 13). The shell wraps the centered orb; idle keeps it
+   centered, `--conversing` eases it upward so the conversation stream + dock
+   have room (the orb is also sized smaller in JS). The transient thinking
+   whisper sits just under the orb.
+   --------------------------------------------------------------------------- */
+.talk-orb-shell {
+  transform: translateY(0);
+  transition: transform 480ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.talk-orb-shell--conversing {
+  transform: translateY(-14vh);
+}
+
+/* Short muted hint of the orchestrator's current tool_use while it thinks. */
+.talk-whisper {
+  margin-top: 0.25rem;
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+  animation: talk-whisper-in 220ms ease-out;
+}
+
+@keyframes talk-whisper-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 0.85; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .talk-orb-shell {
+    transition: none;
+  }
+  .talk-whisper {
+    animation: none;
+  }
+}

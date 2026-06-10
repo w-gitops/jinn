@@ -38,6 +38,7 @@ import {
 import { graphReducer, type GraphNode, type GraphAction } from "./graph-store"
 import type { AvatarState, Card } from "./types"
 import { useConversation, type StreamRow } from "./use-conversation"
+import { whisperFor } from "./talk-whisper"
 import { channelHue } from "./channel-identity"
 import { focusNode, deriveLabel, type DockSideMap, type DockSideState } from "./work-dock-layout"
 import { messagesToEntries } from "./rehydrate"
@@ -98,6 +99,9 @@ export interface TalkEngineInfo {
 
 export interface UseTalkReturn {
   state: AvatarState
+  /** Short under-orb hint of the orchestrator's latest tool_use while thinking
+   *  (routing… / searching… / preparing a card… / working…). Null when not thinking. */
+  whisper: string | null
   /** This talk session's id (orchestratorId) — the `sessionId` for talkDelegate
    *  calls. Null until the orchestrator session is bootstrapped. */
   orchestratorId: string | null
@@ -188,11 +192,17 @@ export function useTalk(): UseTalkReturn {
   const gateway = useGateway()
 
   const [state, setState] = useState<AvatarState>("idle")
+  // Short under-orb hint reflecting the orchestrator's latest tool_use while it
+  // thinks (routing… / searching… / preparing a card… / working…). Rendered only
+  // during `thinking`; cleared the moment the turn leaves that state (effect below).
+  const [whisper, setWhisper] = useState<string | null>(null)
   // The persistent conversation lives in the ConversationStream reducer; these
   // stable action creators replace the old single-exchange `entries` state.
   const {
     rows,
     appendUser,
+    finalizeUser,
+    removePendingUser,
     appendAssistant: appendAssistantRow,
     markSpoken,
     finalizeAssistant,
@@ -287,6 +297,24 @@ export function useTalk(): UseTalkReturn {
   rowsRef.current = rows
   const targetThreadIdRef = useRef<string | null>(targetThreadId)
   targetThreadIdRef.current = targetThreadId
+
+  // Id of the live "pending" user row inserted on startListening (the "…" the
+  // conversation shows while we capture/transcribe). Finalized to the STT text on
+  // a successful turn, removed on cancel/abort/empty/error. Null when none.
+  const pendingUserIdRef = useRef<string | null>(null)
+  const clearPendingUser = useCallback(() => {
+    const id = pendingUserIdRef.current
+    if (id) {
+      removePendingUser(id)
+      pendingUserIdRef.current = null
+    }
+  }, [removePendingUser])
+
+  // Drop the under-orb whisper the instant the turn stops thinking — speaking,
+  // idle, or listening should never carry a stale "routing…" hint.
+  useEffect(() => {
+    if (state !== "thinking") setWhisper(null)
+  }, [state])
 
   // Pass the gateway's `stt:*` event stream so the whisper-model download
   // progress/completion lands here too (same source ChatInput's useStt uses).
@@ -629,6 +657,9 @@ export function useTalk(): UseTalkReturn {
             if (ev.type === "text" && typeof ev.content === "string" && ev.content) {
               appendAssistantText(ev.content)
               setState((st) => (st === "speaking" ? st : "thinking"))
+            } else if (ev.type === "tool_use") {
+              // Surface what the orchestrator is doing as a short under-orb whisper.
+              setWhisper(whisperFor({ toolName: ev.toolName, content: ev.content }))
             }
           } else if (isChild && s) {
             dispatchGraph({ type: "setStatus", id: s, status: "running" }) // keep working
@@ -818,16 +849,18 @@ export function useTalk(): UseTalkReturn {
   // cleanly. dismiss returns to idle; startDownload streams progress over WS.
   useEffect(() => {
     if (stt.state === "no-model") {
+      clearPendingUser()
       setState((s) => (s === "listening" ? "idle" : s))
       stopLevelLoop()
     }
-  }, [stt.state, stopLevelLoop])
+  }, [stt.state, stopLevelLoop, clearPendingUser])
 
   const dismissSttDownload = useCallback(() => {
     sttRef.current.dismissDownload()
+    clearPendingUser()
     setState((s) => (s === "listening" ? "idle" : s))
     stopLevelLoop()
-  }, [stopLevelLoop])
+  }, [stopLevelLoop, clearPendingUser])
 
   // ---- Mic control (plain tap-to-talk) -------------------------------------
   const startListening = useCallback(() => {
@@ -835,10 +868,18 @@ export function useTalk(): UseTalkReturn {
     // Unlock browser TTS within the user gesture (iOS Safari requires this, or
     // the post-network reply is silently blocked).
     try { speakRef.current.prime() } catch { /* noop */ }
+    // Insert a pending user row so the conversation shows we're capturing the
+    // turn. STT here is record-then-transcribe (no interim partials), so it stays
+    // an "…" placeholder until stop() finalizes it to the transcript text. Clear
+    // any stale pending row first (defensive — normal flow already finalized it).
+    clearPendingUser()
+    const id = `u${Date.now()}`
+    pendingUserIdRef.current = id
+    appendUser(id, "…", true)
     setState("listening")
     startLevelLoop("mic")
     void sttRef.current.handleMicClick()
-  }, [startLevelLoop])
+  }, [startLevelLoop, appendUser, clearPendingUser])
 
   // ---- Shared send path (voice + typed) ------------------------------------
   // The single way a user message reaches the orchestrator: shows the clean text
@@ -848,7 +889,16 @@ export function useTalk(): UseTalkReturn {
     const orch = orchestratorIdRef.current
     const text = rawText.trim()
     if (!orch || !text) return
-    appendUser(`u${Date.now()}`, stripMarkdown(text))
+    const clean = stripMarkdown(text)
+    // A voice turn already has a pending "…" row (from startListening) — finalize
+    // it in place to the transcript text. A typed turn has none → append fresh.
+    const pendingId = pendingUserIdRef.current
+    if (pendingId) {
+      finalizeUser(pendingId, clean)
+      pendingUserIdRef.current = null
+    } else {
+      appendUser(`u${Date.now()}`, clean)
+    }
     // Switch override: if a thread is selected, prepend a machine route hint so
     // the orchestrator CONTINUES that COO session instead of spawning a new one.
     // The transcript keeps the clean text; only the engine sees the hint. The
@@ -865,7 +915,7 @@ export function useTalk(): UseTalkReturn {
     api.sendMessage(orch, { message: outbound }).catch(() => {
       setState("idle"); stopLevelLoop()
     })
-  }, [stopLevelLoop, appendUser])
+  }, [stopLevelLoop, appendUser, finalizeUser])
 
   /** Type-to-talk: send a typed message exactly like a transcribed voice turn.
    *  Works even when STT is unavailable — the graceful fallback for the mic. */
@@ -902,15 +952,17 @@ export function useTalk(): UseTalkReturn {
       if (text && text.trim()) {
         sendToOrchestrator(text)
       } else {
-        // Empty/failed transcription — return to idle and wait for the next tap.
+        // Empty/failed transcription — drop the pending row and wait for the next tap.
+        clearPendingUser()
         setState("idle"); stopLevelLoop()
       }
     } else {
       s.cancelRecording()
       playerRef.current?.reset()
+      clearPendingUser()
       setState("idle"); stopLevelLoop()
     }
-  }, [stopLevelLoop, sendToOrchestrator])
+  }, [stopLevelLoop, sendToOrchestrator, clearPendingUser])
 
   // ---- Interrupt playback (Stop button while speaking) ---------------------
   // Cancels the in-flight Web-Speech sentence chain (and its caption timers) and
@@ -945,7 +997,7 @@ export function useTalk(): UseTalkReturn {
 
   return useMemo(
     () => ({
-      state, orchestratorId, rows, graph, sideState, focusHue, targetThreadId, cards, level,
+      state, whisper, orchestratorId, rows, graph, sideState, focusHue, targetThreadId, cards, level,
       resolvedCardIds, cardAnchorFor,
       connected: gateway.connected,
       listening,
@@ -964,6 +1016,6 @@ export function useTalk(): UseTalkReturn {
       activate, cardAction,
       startListening, stop, stopSpeaking,
     }),
-    [state, orchestratorId, rows, graph, sideState, focusHue, targetThreadId, cards, level, resolvedCardIds, cardAnchorFor, gateway.connected, listening, stt.available, stt.error, stt.state, stt.downloadProgress, stt.startDownload, ttsStatus, voiceMode, muted, toggleMute, sendText, dismissSttDownload, engineInfo, switchEngine, switchModel, selectThread, renameThread, dismissThread, activate, cardAction, startListening, stop, stopSpeaking],
+    [state, whisper, orchestratorId, rows, graph, sideState, focusHue, targetThreadId, cards, level, resolvedCardIds, cardAnchorFor, gateway.connected, listening, stt.available, stt.error, stt.state, stt.downloadProgress, stt.startDownload, ttsStatus, voiceMode, muted, toggleMute, sendText, dismissSttDownload, engineInfo, switchEngine, switchModel, selectThread, renameThread, dismissThread, activate, cardAction, startListening, stop, stopSpeaking],
   )
 }

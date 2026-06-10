@@ -60,6 +60,12 @@ describe("parseSnippet", () => {
   it("treats a lone closing marker as plain text", () => {
     expect(parseSnippet("refunds» done")).toEqual([{ text: "refunds done", hit: false }])
   })
+
+  it("merges plain text across an empty highlight into a single segment", () => {
+    // An empty «» pair contributes no hit span; the surrounding plain text must
+    // collapse into ONE segment rather than two adjacent plain spans.
+    expect(parseSnippet("a«»b")).toEqual([{ text: "ab", hit: false }])
+  })
 })
 
 describe("hasEngageAttachment", () => {
