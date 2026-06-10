@@ -146,19 +146,25 @@ export function InlineCards({
  * Pinned strip — the bottom band showing ONLY unresolved approval/choice cards.
  * Sits where the old full card stack used to live. Returns null when there is
  * nothing blocking, so the band collapses.
+ *
+ * Accepts the already-computed pinned cards array from the caller (no internal
+ * selectPinnedCards call — single source of truth). The strip wrapper carries
+ * a11y role/live attributes so screen readers announce new blocking decisions.
  */
 export function PinnedCards({
   cards,
-  resolvedIds,
   onAction,
 }: {
+  /** Pre-filtered array of unresolved blocking cards (approval/choice only). */
   cards: Card[]
-  resolvedIds: ReadonlySet<string>
   onAction?: (message: string) => void
 }): JSX.Element | null {
-  const pinned = selectPinnedCards(cards, resolvedIds)
-  if (pinned.length === 0) return null
-  return <CardStack cards={pinned} onAction={onAction} className="jt-deck--pinned" />
+  if (cards.length === 0) return null
+  return (
+    <div role="region" aria-label="Pending decisions" aria-live="assertive">
+      <CardStack cards={cards} onAction={onAction} className="jt-deck--pinned" />
+    </div>
+  )
 }
 
 export function CardStack({

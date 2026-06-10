@@ -187,13 +187,20 @@ describe("inline vs pinned partition (Task 11)", () => {
     ])
   })
 
-  it("PinnedCards renders only unresolved blockers and nothing when empty", () => {
-    const { rerender, container } = render(
-      <PinnedCards cards={cards} resolvedIds={new Set()} />,
-    )
+  it("PinnedCards renders pre-filtered cards and collapses when empty", () => {
+    const blockers = selectPinnedCards(cards, new Set())
+    const { rerender, container } = render(<PinnedCards cards={blockers} />)
     expect(screen.getByText("Refund €40?")).toBeTruthy()
-    // resolve both blockers → strip collapses to null
-    rerender(<PinnedCards cards={cards} resolvedIds={new Set(["approve-spend", "pick-channel"])} />)
+    // when no pinned cards remain, strip collapses to null
+    rerender(<PinnedCards cards={[]} />)
     expect(container.querySelectorAll(".jt-card").length).toBe(0)
+  })
+
+  it("PinnedCards strip exposes a11y region with live announcement", () => {
+    const blockers = selectPinnedCards(cards, new Set())
+    render(<PinnedCards cards={blockers} />)
+    const region = screen.getByRole("region", { name: "Pending decisions" })
+    expect(region).toBeTruthy()
+    expect(region.getAttribute("aria-live")).toBe("assertive")
   })
 })

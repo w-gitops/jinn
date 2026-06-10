@@ -216,7 +216,7 @@ export default function TalkPage() {
               </div>
             }
           >
-            <PinnedCards cards={talk.cards} resolvedIds={talk.resolvedCardIds} onAction={talk.cardAction} />
+            <PinnedCards cards={pinnedCards} onAction={talk.cardAction} />
           </ErrorBoundary>
         </div>
       )}
