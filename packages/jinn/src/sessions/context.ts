@@ -36,6 +36,31 @@ interface Section {
   summary: string; // compact fallback when budget is tight
 }
 
+export interface TalkThreadSummary {
+  id: string;
+  label: string;
+  status: string;
+  lastActivity: string;
+}
+
+/**
+ * Compact live roster of the talk session's COO threads, rebuilt every turn so
+ * the orchestrator's reuse-vs-spawn decision is grounded in real state instead
+ * of conversation memory. Null when there are no threads (section omitted).
+ */
+export function buildTalkThreadsSection(threads?: TalkThreadSummary[]): string | null {
+  if (!threads || threads.length === 0) return null;
+  const lines = [`## Your open COO threads`];
+  for (const t of threads) {
+    lines.push(`- \`${t.id}\` — "${t.label}" (${t.status}, last activity ${t.lastActivity})`);
+  }
+  lines.push(
+    ``,
+    `Continue one: POST /api/talk/delegate with {"sessionId":"<your-id>","thread":"<id above>","brief":"..."} — new topic: {"thread":"new","label":"<short topic>","brief":"..."}. Never call /api/sessions directly.`,
+  );
+  return lines.join("\n");
+}
+
 /**
  * Build a rich system prompt for engine sessions.
  * This is what makes Jinn "smart" — the engine sees all of this context
@@ -62,6 +87,12 @@ export function buildContext(opts: {
    * voice layer above the COO. Empty/undefined for all normal sessions.
    */
   voicePersona?: string;
+  /**
+   * Live roster of the orchestrator's COO child threads (source:"talk" only).
+   * Rebuilt every turn so reuse-vs-spawn decisions are grounded in real state.
+   * Undefined/empty for all normal sessions — section is omitted.
+   */
+  talkThreads?: TalkThreadSummary[];
 }): string {
   const maxChars = opts.config?.context?.maxChars ?? DEFAULT_MAX_CONTEXT_CHARS;
   const sections: Section[] = [];
@@ -108,6 +139,17 @@ export function buildContext(opts: {
       tier: Tier.ESSENTIAL,
       marker: "# Voice mode",
       content: opts.voicePersona,
+      summary: "", // always included, never trimmed
+    });
+  }
+
+  // ── ESSENTIAL: Live COO thread roster (source:"talk" only) ──
+  const rosterSection = buildTalkThreadsSection(opts.talkThreads);
+  if (rosterSection) {
+    sections.push({
+      tier: Tier.ESSENTIAL,
+      marker: "## Your open COO threads",
+      content: rosterSection,
       summary: "", // always included, never trimmed
     });
   }

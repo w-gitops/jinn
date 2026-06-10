@@ -2133,6 +2133,15 @@ async function runWebSession(
       // Hands-free voice orchestrator: layer the AURA persona on top of the
       // base identity so it behaves as the thin voice layer above the COO.
       voicePersona: currentSession.source === "talk" ? getOrchestratorPersona() : undefined,
+      talkThreads:
+        currentSession.source === "talk"
+          ? listChildSessions(currentSession.id).slice(0, 12).map((c) => ({
+              id: c.id,
+              label: c.title || "(untitled)",
+              status: c.status,
+              lastActivity: c.lastActivity,
+            }))
+          : undefined,
     });
 
     // Per-engine config is keyed by engine name; unconfigured optional engines
