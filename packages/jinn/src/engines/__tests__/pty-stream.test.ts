@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PtyStreamManager, createPtyHandle, setCapped, SCROLLBACK_CAP_BYTES } from "../pty-stream.js";
+import { PtyStreamManager, createPtyHandle, setCapped, SCROLLBACK_CAP_BYTES, STREAM_MAP_CAP } from "../pty-stream.js";
 
 /** Minimal fake IPty: lets the test drive onData and inspect handlers. */
 function makeFakePty() {
@@ -124,6 +124,32 @@ describe("PtyStreamManager", () => {
     warm = false; // PTY reaped while the WS was still attached
     unsub();
     expect(m.getScrollback("s1").length).toBe(0); // entry gone
+  });
+
+  it("caps the streams map at STREAM_MAP_CAP (evicts the longest-idle session's scrollback)", () => {
+    const m = makeManager();
+    for (let i = 0; i < STREAM_MAP_CAP + 2; i++) {
+      const proc = makeFakePty();
+      m.attach(`s${i}`, proc);
+      proc.emitData(`data-${i}`);
+    }
+    // The two oldest entries were evicted; the newest survive with scrollback intact.
+    expect(m.getScrollback("s0").length).toBe(0);
+    expect(m.getScrollback("s1").length).toBe(0);
+    expect(m.getScrollback("s2").toString("utf-8")).toBe("data-2");
+    expect(m.getScrollback(`s${STREAM_MAP_CAP + 1}`).toString("utf-8")).toBe(`data-${STREAM_MAP_CAP + 1}`);
+  });
+
+  it("attach/subscribe refresh recency so recently-touched sessions are not evicted", () => {
+    const m = makeManager();
+    const p0 = makeFakePty();
+    m.attach("keep", p0);
+    p0.emitData("kept");
+    for (let i = 0; i < STREAM_MAP_CAP - 1; i++) m.attach(`s${i}`, makeFakePty());
+    m.subscribe("keep", () => {}); // touch → "keep" is now most recent
+    m.attach("overflow", makeFakePty()); // evicts s0, not "keep"
+    expect(m.getScrollback("keep").toString("utf-8")).toBe("kept");
+    expect(m.getScrollback("s0").length).toBe(0);
   });
 
   it("absorbs node-pty socket errors without throwing", () => {

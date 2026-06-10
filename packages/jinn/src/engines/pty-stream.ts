@@ -10,6 +10,13 @@ export const SCROLLBACK_CAP_BYTES = 262144;
  *  (e.g. last-known terminal geometry). Bounds growth in a long-running daemon. */
 export const SESSION_MAP_CAP = 512;
 
+/** Cap for the per-session stream-entry map. Each entry can hold up to
+ *  SCROLLBACK_CAP_BYTES of scrollback, so this map gets its own (much smaller)
+ *  cap: scrollback replay is only useful for the most recent sessions, and 128
+ *  is far above maxLivePtys — live sessions are recently-touched (attach/
+ *  subscribe refresh recency) and therefore never the eviction victim. */
+export const STREAM_MAP_CAP = 128;
+
 /** Set a value in an insertion-ordered per-session map, evicting the oldest-touched
  *  entries beyond `cap` so the map can't grow forever in a long-running daemon.
  *  Re-setting an existing key refreshes its recency (delete + re-insert). */
@@ -154,13 +161,18 @@ export class PtyStreamManager {
     };
   }
 
-  /** Lazily create (or fetch) the output stream entry for a Jinn session id. */
+  /** Lazily create (or fetch) the output stream entry for a Jinn session id.
+   *  The map is LRU-capped at STREAM_MAP_CAP: entries that escape the explicit
+   *  cleanup paths (e.g. a release that kills the PTY after the lifecycle entry
+   *  is gone, so onExit's identity gate skips onPtyExit) are eventually evicted
+   *  rather than pinning 256KB of scrollback forever. Every attach/subscribe
+   *  refreshes recency, so only long-idle sessions lose their scrollback. */
   private streamFor(sessionId: string): StreamEntry {
     let stream = this.streams.get(sessionId);
     if (!stream) {
       stream = { chunks: [], totalBytes: 0, subscribers: new Set(), hasSeenPty: false };
-      this.streams.set(sessionId, stream);
     }
+    setCapped(this.streams, sessionId, stream, STREAM_MAP_CAP);
     return stream;
   }
 }

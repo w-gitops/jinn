@@ -152,6 +152,17 @@ export async function downloadModel(
       });
     });
 
+    // Integrity sanity check before renaming into place: exact sizes drift
+    // upstream, so accept anything >= 90% of the expected size, but reject a
+    // truncated/empty download hard — a bad rename here would poison
+    // getModelPath() into reporting the model as available forever.
+    const actualSize = fs.statSync(tmpPath, { throwIfNoEntry: false } as fs.StatSyncOptions & { throwIfNoEntry: false })?.size ?? 0;
+    if (actualSize < expectedSize * 0.9) {
+      throw new Error(
+        `Downloaded model '${model}' looks truncated (${actualSize} bytes, expected ~${expectedSize}) — deleted; try again`,
+      );
+    }
+
     // Rename temp file to final path
     fs.renameSync(tmpPath, destPath);
 

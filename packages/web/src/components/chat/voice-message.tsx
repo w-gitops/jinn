@@ -18,21 +18,30 @@ export function VoiceMessage({ src, duration, waveform, isUser }: VoiceMessagePr
     const audio = new Audio(src)
     audioRef.current = audio
 
-    audio.addEventListener('timeupdate', () => {
+    const onTimeUpdate = () => {
       if (audio.duration && isFinite(audio.duration)) {
         setProgress(audio.currentTime / audio.duration)
         setCurrentTime(audio.currentTime)
       }
-    })
-    audio.addEventListener('ended', () => {
+    }
+    const onEnded = () => {
       setPlaying(false)
       setProgress(0)
       setCurrentTime(0)
-    })
-    audio.addEventListener('pause', () => setPlaying(false))
-    audio.addEventListener('play', () => setPlaying(true))
+    }
+    const onPause = () => setPlaying(false)
+    const onPlay = () => setPlaying(true)
+
+    audio.addEventListener('timeupdate', onTimeUpdate)
+    audio.addEventListener('ended', onEnded)
+    audio.addEventListener('pause', onPause)
+    audio.addEventListener('play', onPlay)
 
     return () => {
+      audio.removeEventListener('timeupdate', onTimeUpdate)
+      audio.removeEventListener('ended', onEnded)
+      audio.removeEventListener('pause', onPause)
+      audio.removeEventListener('play', onPlay)
       audio.pause()
       audio.src = ''
     }

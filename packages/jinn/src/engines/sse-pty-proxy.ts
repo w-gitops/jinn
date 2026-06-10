@@ -200,7 +200,14 @@ export class SsePtyProxy {
         let sseBuf = "";
         uRes.on("data", (chunk: Buffer) => {
           // Forward UNCHANGED to the client first (never let parsing affect the stream).
-          try { res.write(chunk); } catch { /* client gone */ }
+          // Standard backpressure: if the client's write buffer is full, pause the
+          // upstream until 'drain' so a slow client can't balloon memory.
+          try {
+            if (!res.write(chunk)) {
+              uRes.pause();
+              res.once("drain", () => uRes.resume());
+            }
+          } catch { /* client gone */ }
           if (isSSE && tee) sseBuf = this.parseSse(sseBuf + chunk.toString("utf-8"));
         });
         uRes.on("end", () => { try { res.end(); } catch { /* already ended */ } });

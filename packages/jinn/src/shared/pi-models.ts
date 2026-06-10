@@ -110,20 +110,33 @@ export async function discoverPiModels(bin: string): Promise<ModelInfo[]> {
       // Pi prints the model table to stderr; capture both streams to be safe.
       proc.stdout.on("data", (d: Buffer) => (out += d.toString()));
       proc.stderr.on("data", (d: Buffer) => (out += d.toString()));
+      // Graceful timeout: SIGTERM first so pi can exit cleanly, SIGKILL ~1s later
+      // if it's still alive. finish() is idempotent, so resolving at SIGTERM time
+      // is safe even though 'close' fires again after the kill.
+      let killTimer: NodeJS.Timeout | undefined;
       const timer = setTimeout(() => {
         try {
-          proc.kill("SIGKILL");
+          proc.kill("SIGTERM");
         } catch {
           /* ignore */
         }
+        killTimer = setTimeout(() => {
+          try {
+            proc.kill("SIGKILL");
+          } catch {
+            /* ignore */
+          }
+        }, 1000);
         finish(out);
-      }, 15000);
+      }, 14000);
       proc.on("close", () => {
         clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
         finish(out);
       });
       proc.on("error", (e) => {
         clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
         logger.warn(`pi --list-models failed: ${e.message}`);
         finish("");
       });

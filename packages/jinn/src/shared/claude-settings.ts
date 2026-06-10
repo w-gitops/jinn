@@ -63,6 +63,12 @@ export function seedTrust(claudeJsonPath: string, projectDir: string): void {
   data.projects ??= {};
   const proj = (data.projects[realDir] ??= {});
   if (proj.hasTrustDialogAccepted === true && proj.hasCompletedProjectOnboarding === true) return;
+  // About to modify the user's real ~/.claude.json — keep a one-time backup of the
+  // pre-Jinn original (no timestamped proliferation; first write wins).
+  const backupPath = `${claudeJsonPath}.jinn-backup`;
+  if (fs.existsSync(claudeJsonPath) && !fs.existsSync(backupPath)) {
+    try { fs.copyFileSync(claudeJsonPath, backupPath, fs.constants.COPYFILE_EXCL); } catch { /* best effort */ }
+  }
   proj.hasTrustDialogAccepted = true;
   proj.hasCompletedProjectOnboarding = true;
   proj.allowedTools ??= [];
