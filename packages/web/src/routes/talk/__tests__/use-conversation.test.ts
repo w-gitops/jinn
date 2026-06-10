@@ -114,6 +114,13 @@ describe("conversationReducer — system chips", () => {
     expect(rows[2].id).toBe("a1")
   })
 
+  it("deduplicates chips with the same id (second dispatch is a no-op)", () => {
+    const chip = { type: "system" as const, id: "s1", event: "delegated" as const, label: "content-lead", ts: 1 }
+    let rows = conversationReducer([], chip)
+    rows = conversationReducer(rows, chip)
+    expect(rows.filter((r) => r.id === "s1")).toHaveLength(1)
+  })
+
   it("appends the chip after a FINALIZED aura row (not in progress)", () => {
     let rows = conversationReducer([], { type: "assistant", id: "a1", text: "Done." })
     rows = conversationReducer(rows, { type: "finalizeAssistant", id: "a1" })

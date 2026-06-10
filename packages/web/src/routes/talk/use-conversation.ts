@@ -129,6 +129,7 @@ export function conversationReducer(
     }
 
     case "system": {
+      if (rows.some((r) => r.id === action.id)) return rows
       const chip: StreamRow = {
         kind: "system",
         id: action.id,
@@ -179,7 +180,7 @@ export interface UseConversationReturn {
   }) => void
   /** Seed the stream from a server snapshot (replaces current rows). */
   rehydrate: (entries: Array<TranscriptEntry | SystemEntry>) => void
-  /** Clear everything (e.g. an engine re-bootstrap → fresh session). */
+  /** Available for future use — engine switch currently preserves the conversation intentionally, matching the old entries behavior. */
   reset: () => void
 }
 
