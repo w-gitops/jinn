@@ -137,6 +137,17 @@ interface UploadedFile {
   mimetype: string | null
 }
 
+/**
+ * Background work still running after a session's turn officially ended
+ * (subagents / background tasks making API calls). Present on session rows
+ * (list + detail) and pushed live via the `session:background` WS event.
+ * null/absent = no background work.
+ */
+export interface BackgroundActivity {
+  activeStreams: number
+  lastActivityAt: string
+}
+
 export interface SessionsResponse {
   /** Top-N most-recent sessions per group (employee / direct / cron). */
   sessions: Record<string, unknown>[]

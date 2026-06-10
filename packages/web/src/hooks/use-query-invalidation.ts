@@ -3,7 +3,8 @@ import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useGateway } from '@/hooks/use-gateway'
 import { queryKeys } from '@/lib/query-keys'
-import { removeFromSessionsCache } from '@/hooks/use-sessions'
+import { patchSessionBackgroundActivity, removeFromSessionsCache } from '@/hooks/use-sessions'
+import type { BackgroundActivity } from '@/lib/api'
 
 /**
  * Subscribes to WebSocket events and invalidates React Query caches.
@@ -38,6 +39,17 @@ export function useQueryInvalidation() {
             qc.invalidateQueries({ queryKey: queryKeys.sessions.detail(p.sessionId as string) })
           }
           break
+        case 'session:background':
+          // Surgical cache patch only — no invalidation/refetch storm. These
+          // fire on every background-activity change (including cleared=null).
+          if (p?.sessionId) {
+            patchSessionBackgroundActivity(
+              qc,
+              p.sessionId as string,
+              (p.backgroundActivity as BackgroundActivity | null) ?? null,
+            )
+          }
+          return
         case 'session:completed':
         case 'session:error':
           pendingRef.current.add('sessions')

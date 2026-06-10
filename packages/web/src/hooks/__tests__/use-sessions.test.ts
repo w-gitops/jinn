@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { mergeSessionsResponse } from '../use-sessions'
+import { QueryClient } from '@tanstack/react-query'
+import { mergeSessionsResponse, patchSessionBackgroundActivity } from '../use-sessions'
+import { queryKeys } from '@/lib/query-keys'
 import type { SessionsResponse } from '@/lib/api'
 
 const session = (id: string, extra: Record<string, unknown> = {}) => ({ id, ...extra })
@@ -53,5 +55,49 @@ describe('mergeSessionsResponse', () => {
     const fresh = resp([session('a'), session('b')])
     const merged = mergeSessionsResponse(old, fresh)
     expect(merged.sessions.map((s) => s.id)).toEqual(['a', 'b'])
+  })
+})
+
+describe('patchSessionBackgroundActivity', () => {
+  const activity = { activeStreams: 2, lastActivityAt: '2026-06-10T00:00:00Z' }
+
+  it('patches only the targeted row, in place, without a refetch', () => {
+    const qc = new QueryClient()
+    qc.setQueryData(queryKeys.sessions.all, resp([session('a'), session('b')]))
+
+    patchSessionBackgroundActivity(qc, 'a', activity)
+
+    const data = qc.getQueryData<SessionsResponse>(queryKeys.sessions.all)!
+    expect(data.sessions.find((s) => s.id === 'a')?.backgroundActivity).toEqual(activity)
+    expect(data.sessions.find((s) => s.id === 'b')?.backgroundActivity).toBeUndefined()
+  })
+
+  it('clears the row on the null (cleared) event', () => {
+    const qc = new QueryClient()
+    qc.setQueryData(
+      queryKeys.sessions.all,
+      resp([session('a', { backgroundActivity: activity })]),
+    )
+
+    patchSessionBackgroundActivity(qc, 'a', null)
+
+    const data = qc.getQueryData<SessionsResponse>(queryKeys.sessions.all)!
+    expect(data.sessions.find((s) => s.id === 'a')?.backgroundActivity).toBeNull()
+  })
+
+  it('is a no-op (same object) when the session is not in the cache', () => {
+    const qc = new QueryClient()
+    const initial = resp([session('a')])
+    qc.setQueryData(queryKeys.sessions.all, initial)
+
+    patchSessionBackgroundActivity(qc, 'missing', activity)
+
+    expect(qc.getQueryData<SessionsResponse>(queryKeys.sessions.all)).toBe(initial)
+  })
+
+  it('does nothing when the cache is empty', () => {
+    const qc = new QueryClient()
+    patchSessionBackgroundActivity(qc, 'a', activity)
+    expect(qc.getQueryData(queryKeys.sessions.all)).toBeUndefined()
   })
 })

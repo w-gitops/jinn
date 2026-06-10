@@ -21,6 +21,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
+import type { BackgroundActivity } from '@/lib/api'
 import type { Message, MediaAttachment } from '@/lib/conversations'
 import {
   clearIntermediateMessages,
@@ -81,6 +82,10 @@ export interface UseLiveSessionResult {
    *  "Loading…" state forever). Cleared at the start of each load attempt. */
   error: Error | null
   liveContextTokens: number | null
+  /** Background work (subagents/background tasks) still running while the
+   *  session is officially idle. null = none. Seeded from the session fetch,
+   *  kept live via the session:background WS event. */
+  backgroundActivity: BackgroundActivity | null
   /** Re-load (reconcile) a session from the server. */
   reload: (id: string) => Promise<void>
   // --- write API (editable pane only) ---
@@ -113,6 +118,7 @@ export function useLiveSession(
   const streamingTextRef = useRef('')
   const [streamingText, setStreamingText] = useState('')
   const [liveContextTokens, setLiveContextTokens] = useState<number | null>(null)
+  const [backgroundActivity, setBackgroundActivity] = useState<BackgroundActivity | null>(null)
   const intermediateStartRef = useRef<number>(-1)
   const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(null)
   const [loadError, setLoadError] = useState<Error | null>(null)
@@ -312,6 +318,18 @@ export function useLiveSession(
         }
         onRefreshRef.current?.()
       }
+
+      if (event === 'session:background') {
+        // Fired on every change, including the cleared case (null).
+        setBackgroundActivity((p.backgroundActivity as BackgroundActivity | null) ?? null)
+      }
+
+      if (event === 'session:external-turn') {
+        // The gateway persisted messages that did NOT come from a normal web
+        // turn (e.g. the user typed in the CLI view). Reconcile from the
+        // server via the same load path the completion watchdog uses.
+        loadSession(sid)
+      }
     })
   }, [subscribe])
 
@@ -325,6 +343,9 @@ export function useLiveSession(
         return
       }
       setCurrentSession(session)
+      // Seed background-activity from the authoritative fetch (absent → null);
+      // session:background WS events keep it live from here.
+      setBackgroundActivity((session.backgroundActivity as BackgroundActivity | null) ?? null)
       const meta = {
         engine: session.engine ? String(session.engine) : undefined,
         engineSessionId: session.engineSessionId ? String(session.engineSessionId) : undefined,
@@ -430,11 +451,15 @@ export function useLiveSession(
       setLoading(false)
       setCurrentSession(null)
       setLoadError(null)
+      setBackgroundActivity(null)
       streamingTextRef.current = ''
       setStreamingText('')
       intermediateStartRef.current = -1
       return
     }
+    // Don't carry the previous session's background indicator across a switch;
+    // loadSession re-seeds it from the fresh fetch.
+    setBackgroundActivity(null)
     // Clear streaming state immediately to avoid stale content flash
     streamingTextRef.current = ''
     setStreamingText('')
@@ -563,6 +588,7 @@ export function useLiveSession(
     setMessages([])
     setLoading(false)
     setCurrentSession(null)
+    setBackgroundActivity(null)
     streamingTextRef.current = ''
     setStreamingText('')
     intermediateStartRef.current = -1
@@ -575,6 +601,7 @@ export function useLiveSession(
     session: currentSession,
     error: loadError,
     liveContextTokens,
+    backgroundActivity,
     reload: loadSession,
     beginSend,
     failSend,

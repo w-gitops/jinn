@@ -7,6 +7,7 @@ import { ChatInput } from '@/components/chat/chat-input'
 import { CliKeybar } from '@/components/chat/cli-keybar'
 import { ChatEmployeePicker } from '@/components/chat/chat-employee-picker'
 import { QueuePanel } from '@/components/chat/queue-panel'
+import { BackgroundActivityPill } from '@/components/chat/background-activity-pill'
 import { ModelSelectorRow, type SelectorValue } from '@/components/chat/model-selector-row'
 import { useLiveSession } from '@/hooks/use-live-session'
 
@@ -125,16 +126,31 @@ export function ChatPane({
     loading,
     session: currentSession,
     liveContextTokens,
+    backgroundActivity,
     beginSend,
     failSend,
     appendLocal,
     reset: resetPane,
+    reload: reloadSession,
   } = live
 
   // Kept local for handleSelectorChange so it stays a stable ([]) callback that
   // reads the current session id at call time (mirrors the previous behaviour).
   const sessionIdRef = useRef(sessionId)
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
+
+  // CLI → chat view switch: turns typed directly into the xterm may never have
+  // reached the chat transcript (or a session:external-turn WS frame was
+  // missed while the chat view was unmounted), so run a cheap one-shot
+  // reconcile through the same load path session:external-turn uses.
+  const prevViewModeRef = useRef(viewMode)
+  useEffect(() => {
+    const prev = prevViewModeRef.current
+    prevViewModeRef.current = viewMode
+    if (prev === 'cli' && viewMode === 'chat' && sessionId) {
+      reloadSession(sessionId)
+    }
+  }, [viewMode, sessionId, reloadSession])
 
   // Employee picker state for new chat. Seeded from initialEmployee so a
   // "contact this employee" click / ?employee= deep-link opens the new chat
@@ -431,6 +447,13 @@ export function ChatPane({
           events={events}
           paused={currentSession?.paused as boolean ?? false}
         />
+      )}
+
+      {/* Background-work indicator — the session is officially idle but subagents /
+          background tasks are still running. Informational only (input stays live);
+          hidden while a foreground turn is streaming and in the CLI view. */}
+      {!(viewMode === 'cli' && sessionId) && !loading && (
+        <BackgroundActivityPill activity={backgroundActivity} />
       )}
 
       {/* Input — chat-style composer for every view, including CLI (the PTY engine

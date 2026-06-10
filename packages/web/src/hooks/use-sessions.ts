@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { queryKeys } from '@/lib/query-keys'
-import { api, type SessionsResponse } from '@/lib/api'
+import { api, type BackgroundActivity, type SessionsResponse } from '@/lib/api'
 
 // The query cache holds the full SessionsResponse; both hooks below select from
 // the same cached object so there is only ever one network request. Sidebar
@@ -37,6 +37,27 @@ function fetchAndMergeSessions(qc: QueryClient) {
     const old = qc.getQueryData<SessionsResponse>(queryKeys.sessions.all)
     return mergeSessionsResponse(old, fresh)
   }
+}
+
+/** Surgically patch one cached row's backgroundActivity on a session:background
+ *  WS event — no refetch, no invalidation (these can fire frequently while
+ *  background agents work). Rows not in the cache are ignored; the next merge
+ *  refetch will carry the field. */
+export function patchSessionBackgroundActivity(
+  qc: QueryClient,
+  id: string,
+  backgroundActivity: BackgroundActivity | null,
+) {
+  qc.setQueryData<SessionsResponse>(queryKeys.sessions.all, (old) => {
+    if (!old) return old
+    let changed = false
+    const sessions = old.sessions.map((s) => {
+      if (sessionId(s) !== id) return s
+      changed = true
+      return { ...s, backgroundActivity }
+    })
+    return changed ? { ...old, sessions } : old
+  })
 }
 
 /** Drop sessions from the cached list immediately (deletes must beat the merge). */

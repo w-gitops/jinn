@@ -179,6 +179,112 @@ describe("useLiveSession (editable write path)", () => {
     expect(result.current.messages.map((m) => m.content)).toEqual(["do it", "Done."])
   })
 
+  it("seeds backgroundActivity from the session fetch and clears it on session switch", async () => {
+    getSession.mockResolvedValue({
+      status: "idle",
+      messages: [],
+      backgroundActivity: { activeStreams: 2, lastActivityAt: "2026-06-10T00:00:00Z" },
+    })
+    const { subscribe } = makeBus()
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string | null }) => useLiveSession(id, { subscribe }),
+      { initialProps: { id: "s1" as string | null } },
+    )
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.backgroundActivity).toEqual({
+      activeStreams: 2,
+      lastActivityAt: "2026-06-10T00:00:00Z",
+    })
+
+    // Switching away must not leak the previous session's indicator.
+    getSession.mockResolvedValue({ status: "idle", messages: [] })
+    rerender({ id: "s2" })
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.backgroundActivity).toBeNull()
+  })
+
+  it("updates backgroundActivity on session:background and clears on null", async () => {
+    getSession.mockResolvedValue({ status: "idle", messages: [] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s1", { subscribe }))
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.backgroundActivity).toBeNull()
+
+    act(() => {
+      emit("session:background", {
+        sessionId: "s1",
+        backgroundActivity: { activeStreams: 3, lastActivityAt: "2026-06-10T01:00:00Z" },
+      })
+    })
+    expect(result.current.backgroundActivity?.activeStreams).toBe(3)
+
+    // The cleared case is an explicit event with backgroundActivity: null.
+    act(() => {
+      emit("session:background", { sessionId: "s1", backgroundActivity: null })
+    })
+    expect(result.current.backgroundActivity).toBeNull()
+  })
+
+  it("ignores session:background for a different session", async () => {
+    getSession.mockResolvedValue({ status: "idle", messages: [] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s1", { subscribe }))
+    await act(async () => { await Promise.resolve() })
+
+    act(() => {
+      emit("session:background", {
+        sessionId: "OTHER",
+        backgroundActivity: { activeStreams: 9, lastActivityAt: "2026-06-10T01:00:00Z" },
+      })
+    })
+    expect(result.current.backgroundActivity).toBeNull()
+  })
+
+  it("reconciles messages from the server on session:external-turn", async () => {
+    getSession.mockResolvedValue({
+      status: "idle",
+      messages: [{ id: "m1", role: "user", content: "hi" }],
+    })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s1", { subscribe }))
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.messages.map((m) => m.content)).toEqual(["hi"])
+
+    // The gateway persisted a CLI-typed turn — the event must trigger a refetch.
+    getSession.mockResolvedValue({
+      status: "idle",
+      messages: [
+        { id: "m1", role: "user", content: "hi" },
+        { id: "m2", role: "user", content: "typed in CLI" },
+        { id: "m3", role: "assistant", content: "answered in CLI" },
+      ],
+    })
+    await act(async () => {
+      emit("session:external-turn", { sessionId: "s1" })
+      await Promise.resolve()
+    })
+    expect(getSession).toHaveBeenCalledTimes(2)
+    expect(result.current.messages.map((m) => m.content)).toEqual([
+      "hi",
+      "typed in CLI",
+      "answered in CLI",
+    ])
+  })
+
+  it("ignores session:external-turn for a different session", async () => {
+    getSession.mockResolvedValue({ status: "idle", messages: [] })
+    const { subscribe, emit } = makeBus()
+    renderHook(() => useLiveSession("s1", { subscribe }))
+    await act(async () => { await Promise.resolve() })
+    expect(getSession).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      emit("session:external-turn", { sessionId: "OTHER" })
+      await Promise.resolve()
+    })
+    expect(getSession).toHaveBeenCalledTimes(1)
+  })
+
   it("failSend clears loading and appends the error bubble", async () => {
     getSession.mockResolvedValue({ status: "idle", messages: [] })
     const { subscribe } = makeBus()

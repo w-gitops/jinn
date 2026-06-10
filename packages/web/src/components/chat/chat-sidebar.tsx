@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef, useCallback, useMemo, startTransiti
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useQueryClient } from "@tanstack/react-query"
 import { ChevronDown, Clock3, Copy, EllipsisVertical, Pencil, Pin, Plus, Search, Trash2, X } from "lucide-react"
-import { api, type Employee, type SessionsResponse } from "@/lib/api"
+import { api, type BackgroundActivity, type Employee, type SessionsResponse } from "@/lib/api"
 import { useOrg } from "@/hooks/use-employees"
 import { EmployeeAvatar } from "@/components/ui/employee-avatar"
 import { useSettings } from "@/routes/settings-provider"
@@ -49,6 +49,10 @@ interface Session {
   queueDepth?: number
   lastActivity?: string
   createdAt?: string
+  /** Background work (subagents/background tasks) still running while the
+   *  session is officially idle. null/absent = none. Kept live via the
+   *  session:background WS event (cache patch in useQueryInvalidation). */
+  backgroundActivity?: BackgroundActivity | null
   [key: string]: unknown
 }
 
@@ -214,9 +218,20 @@ function sortSessionsByActivity(sessions: Session[]): Session[] {
   return [...sessions].sort((a, b) => getSessionActivity(b).localeCompare(getSessionActivity(a)))
 }
 
+/** Idle-but-busy: the session's turn ended but subagents/background tasks are
+ *  still making API calls. Running/error status always wins over this. */
+function hasBackgroundActivity(session: Session): boolean {
+  return (
+    session.status !== "running" &&
+    session.status !== "error" &&
+    (session.backgroundActivity?.activeStreams ?? 0) > 0
+  )
+}
+
 function getStatusDotColor(session: Session, readSet: Set<string>): string {
   if (session.status === "running") return "var(--system-blue)"
   if (session.status === "error") return "var(--system-red)"
+  if (hasBackgroundActivity(session)) return "var(--system-orange)"
   if (readSet.has(session.id)) return "var(--text-quaternary)"
   return "var(--system-green)"
 }
@@ -225,14 +240,17 @@ function StatusDot({
   color,
   pulse = false,
   className,
+  title,
 }: {
   color: string
   pulse?: boolean
   className?: string
+  title?: string
 }) {
   return (
     <span
       className={cn("shrink-0 rounded-full", className)}
+      title={title}
       style={{
         background: color,
         animation: pulse ? "sidebar-pulse 2s ease-in-out infinite" : "none",
@@ -304,6 +322,7 @@ const SessionRow = React.memo(function SessionRow({
   const sessionIsActive = session.id === selectedId
   const sessionDotColor = getStatusDotColor(session, readSessions)
   const sessionIsRunning = session.status === "running"
+  const sessionHasBackground = hasBackgroundActivity(session)
   const sessionTitle = fixTitle(session.title, session.employee)
   const displayTitle = cleanPreview(sessionTitle) || sessionTitle
   const sessionTime = formatTime(getSessionActivity(session))
@@ -329,7 +348,12 @@ const SessionRow = React.memo(function SessionRow({
               : "border-l-transparent hover:bg-accent"
           )}
         >
-          <StatusDot color={sessionDotColor} pulse={sessionIsRunning} className="size-1.5" />
+          <StatusDot
+            color={sessionDotColor}
+            pulse={sessionIsRunning || sessionHasBackground}
+            title={sessionHasBackground ? "background work running" : undefined}
+            className="size-1.5"
+          />
           {isRenaming ? (
             <input
               autoFocus
@@ -473,7 +497,8 @@ const EmployeeRow = React.memo(function EmployeeRow({
   const department = empInfo?.department || ""
   const timeLabel = formatTime(getSessionActivity(latestSession))
   const dotColor = getStatusDotColor(latestSession, readSessions)
-  const pulse = latestSession.status === "running"
+  const latestHasBackground = hasBackgroundActivity(latestSession)
+  const pulse = latestSession.status === "running" || latestHasBackground
   const isActive = empSessions.some((s) => s.id === selectedId)
   const isPinned = pinnedSessions.has(item.pinKey)
   const loadedCount = empSessions.length
@@ -520,6 +545,7 @@ const EmployeeRow = React.memo(function EmployeeRow({
               <StatusDot
                 color={dotColor}
                 pulse={pulse}
+                title={latestHasBackground ? "background work running" : undefined}
                 className="absolute -bottom-0.5 -right-0 size-2.5 border-2 border-[var(--sidebar-bg)]"
               />
             </div>
