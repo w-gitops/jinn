@@ -46,4 +46,10 @@ describe("claudeProjectDir", () => {
       path.join(base, "-Users-x--config--app"),
     );
   });
+
+  it("replaces every non-alphanumeric char (spaces, underscores, unicode)", () => {
+    expect(claudeProjectDir("/Users/x/My Projects/app_v2 (béta)")).toBe(
+      path.join(base, "-Users-x-My-Projects-app-v2--b-ta-"),
+    );
+  });
 });

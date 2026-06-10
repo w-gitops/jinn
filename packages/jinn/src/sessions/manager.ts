@@ -84,7 +84,7 @@ function maybeRevertEngineOverride(session: Session): Session {
   }) ?? session;
 }
 
-function mergeTransportMeta(
+export function mergeTransportMeta(
   existing: Session["transportMeta"],
   incoming: IncomingMessage["transportMeta"],
 ): Session["transportMeta"] {
@@ -575,7 +575,7 @@ export class SessionManager {
                 status: retryResult.error ? "error" : "idle",
                 replyContext: msg.replyContext,
                 messageId: msg.messageId ?? null,
-                transportMeta: msg.transportMeta ?? null,
+                transportMeta: mergeTransportMeta(getSessionBySessionKey(msg.sessionKey)?.transportMeta ?? session.transportMeta, msg.transportMeta),
                 lastActivity: new Date().toISOString(),
                 lastError: retryResult.error ?? null,
               });

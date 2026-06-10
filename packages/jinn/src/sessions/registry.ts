@@ -229,8 +229,10 @@ export interface CreateSessionOpts {
 
 function getNextSessionNumber(): number {
   const db = initDb();
-  const row = db.prepare('SELECT COUNT(*) as count FROM sessions').get() as { count: number };
-  return row.count + 1;
+  // MAX(rowid) is an O(1) b-tree seek (COUNT(*) walks the whole table) and keeps
+  // numbers monotonic even after deletions.
+  const row = db.prepare('SELECT MAX(rowid) as maxRowid FROM sessions').get() as { maxRowid: number | null };
+  return (row.maxRowid ?? 0) + 1;
 }
 
 function generateTitle(prompt?: string): string {
@@ -611,6 +613,7 @@ export function duplicateSession(sourceId: string, newTitle?: string): { session
 export function deleteSession(id: string): boolean {
   const db = initDb();
   db.prepare('DELETE FROM messages WHERE session_id = ?').run(id);
+  db.prepare('DELETE FROM queue_items WHERE session_id = ?').run(id);
   const result = db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
   return result.changes > 0;
 }
@@ -621,6 +624,7 @@ export function deleteSessions(ids: string[]): number {
   const placeholders = ids.map(() => '?').join(',');
   const txn = db.transaction(() => {
     db.prepare(`DELETE FROM messages WHERE session_id IN (${placeholders})`).run(...ids);
+    db.prepare(`DELETE FROM queue_items WHERE session_id IN (${placeholders})`).run(...ids);
     const result = db.prepare(`DELETE FROM sessions WHERE id IN (${placeholders})`).run(...ids);
     return result.changes;
   });
