@@ -24,6 +24,7 @@ import { writeGatewayInfo, readGatewayInfo, updateGatewayPtyPids } from "./gatew
 import { seedTrust, cleanupSessionSettings } from "../shared/claude-settings.js";
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, JINN_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
 import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
+import { startStatusReconciler } from "./status-reconciler.js";
 import { pickEncoding, isCompressibleExt, compressStream } from "./compress.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
 import { startWsHeartbeat, trackHeartbeat } from "./ws-heartbeat.js";
@@ -790,6 +791,10 @@ export async function startGateway(
   // Replay any pending web queue items (e.g. gateway restart mid-run)
   resumePendingWebQueueItems(apiContext);
 
+  // Unstick sessions whose completion event was lost (status:"running" with no
+  // live turn). 15s sweep; logs one line per fix.
+  const stopStatusReconciler = startStatusReconciler({ engines, emit });
+
   // Resolve web UI directory — bundled into dist/web/ by postbuild script
   // At runtime __dirname is dist/src/gateway/, so ../../web resolves to dist/web/
   const webDir = path.resolve(__dirname, "..", "..", "web");
@@ -997,6 +1002,10 @@ export async function startGateway(
   // Return cleanup function
   return async () => {
     logger.info("Gateway cleanup starting...");
+
+    // Stop the status reconciler sweep before we start marking sessions
+    // interrupted below — a mid-shutdown sweep must not race the teardown.
+    stopStatusReconciler();
 
     // Stop caffeinate
     if (caffeinate && caffeinate.exitCode === null) {
