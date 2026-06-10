@@ -126,14 +126,13 @@
 }
 
 /* ---- the persistent orb layer (Task 4) ---- */
+/* Size and transform are set inline by the OrbLayer component (Task 4). */
 .talk-orb-layer {
   position: fixed;
   left: 0;
   top: 0;
   z-index: var(--z-stage);
   pointer-events: none;
-  display: grid;
-  place-items: center;
 }
 
 /* ---- content stage: the pinned card is the focal point ---- */

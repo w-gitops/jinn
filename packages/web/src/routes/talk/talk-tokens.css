@@ -4,15 +4,20 @@
  * Single source for z-index layering, spacing, and motion durations/easings on
  * the /talk surface. Components must reference these instead of literals so the
  * stage choreography stays coherent (one mover, everything else fades).
+ *
+ * Tokens live on `.talk-root`, deliberately NOT `:root`, because globals.css
+ * defines a different `--space-*` scale (Tailwind-style px/4 steps: 20/24/32px
+ * for --space-5/6/8). Since /talk is lazy-loaded, hoisting to :root would
+ * permanently override global spacing for all other routes.
  */
-:root {
+.talk-root {
   /* ---- z-index scale ---- */
   --z-stage: 10;   /* stage content + orb layer */
   --z-rail: 20;    /* WorkDock rail (narrow-screen overlay mode) */
   --z-chrome: 30;  /* top bar, bottom controls */
   --z-overlay: 40; /* search sheet, session peek, modals */
 
-  /* ---- spacing scale ---- */
+  /* ---- spacing scale (talk-local, sequential 1–8; differs from global Tailwind-style px/4 scale) ---- */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -29,5 +34,5 @@
   --motion-hero: 500ms var(--ease-emphasized);   /* the one mover (orb/dock) */
   --motion-enter: 300ms var(--ease-decel);       /* incoming content */
   --motion-exit: 200ms var(--ease-accel);        /* outgoing content */
-  --motion-ambient: 900ms ease-in-out;           /* working pulses */
+  --motion-ambient: 900ms ease-in-out;           /* looping background pulses only — never for content that enters/exits */
 }
