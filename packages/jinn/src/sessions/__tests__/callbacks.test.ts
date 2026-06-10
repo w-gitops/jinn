@@ -261,6 +261,80 @@ describe("notifyParentSession — talk parent (voice-friendly message)", () => {
       `to follow up: POST /api/sessions/${childId}/message`;
     expect(body.message).toBe(expectedMessage);
   });
+
+  // --- error path tests for talk parents ---
+
+  it("talk parent + error → label-based error message, no UUID", async () => {
+    const child = makeSession({ title: "Research task" });
+    notifyParentSession(child, { error: "Something broke" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.message).toContain('"Research task"');
+    expect(body.message).toContain("Something broke");
+    expect(body.message).toContain("⚠️");
+    expect(body.message).not.toContain("child-001");
+    expect(body.message).not.toContain("/api/sessions");
+  });
+
+  it("talk parent error falls back to employee name when title is null", async () => {
+    const child = makeSession({ title: null, employee: "research-bot" });
+    notifyParentSession(child, { error: "Something broke" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.message).toContain('"research-bot"');
+    expect(body.message).not.toContain("child-001");
+  });
+
+  it('talk parent error falls back to "a thread" when title and employee are both absent', async () => {
+    const child = makeSession({ title: null, employee: null });
+    notifyParentSession(child, { error: "Something broke" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.message).toContain('"a thread"');
+    expect(body.message).not.toContain("child-001");
+  });
+
+  it("talk parent error message matches exact template shape", async () => {
+    const child = makeSession({ title: "Deploy fix" });
+    const errorText = "Rate limit exceeded";
+    notifyParentSession(child, { error: errorText });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    const expected =
+      `⚠️ Thread "Deploy fix" hit an error.\n\n` +
+      `${errorText}\n\n` +
+      `Tell the operator plainly in one short sentence — no IDs, no URLs — and offer a next step.`;
+    expect(body.message).toBe(expected);
+  });
+
+  it("talk parent error displayMessage: label + clean preview, no API noise", async () => {
+    const child = makeSession({ title: "Deploy fix" });
+    const errorText = "Rate limit exceeded";
+    notifyParentSession(child, { error: errorText });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.displayMessage).toBe(`⚠️ Thread "Deploy fix" hit an error\n${errorText}`);
+    expect(body.displayMessage).not.toContain("GET /api/sessions");
+  });
+
+  it("non-talk parent error keeps byte-identical message format (regression)", async () => {
+    vi.mocked(getSession).mockReturnValue(
+      makeSession({ id: "parent-001", parentSessionId: null, status: "idle", source: "api" }),
+    );
+    const child = makeSession({ employee: "test-employee" });
+    notifyParentSession(child, { error: "Something broke" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    const expectedMessage = `⚠️ Employee "test-employee" (child session child-001) hit an error and could not finish: Something broke`;
+    expect(body.message).toBe(expectedMessage);
+    expect(body.displayMessage).toBe(`⚠️ test-employee couldn't finish`);
+  });
 });
 
 describe("notifyParentSession — alwaysNotify suppression", () => {

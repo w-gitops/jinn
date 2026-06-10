@@ -78,20 +78,30 @@ async function _sendNotification(
 
   let message: string;
   let displayMessage: string;
-  if (result.error) {
+  if (isTalkParent) {
+    const label = childSession.title || childSession.employee || "a thread";
+    if (result.error) {
+      const raw = result.error.trim();
+      const errPreview = raw.length > 500 ? raw.slice(0, 500) + "…" : raw;
+      message =
+        `⚠️ Thread "${label}" hit an error.\n\n` +
+        `${errPreview}\n\n` +
+        `Tell the operator plainly in one short sentence — no IDs, no URLs — and offer a next step.`;
+      displayMessage = `⚠️ Thread "${label}" hit an error\n${_clean(raw, 220)}`;
+    } else {
+      const raw = (result.result || "").trim() || "(no output)";
+      const llmPreview = raw.length > 500 ? raw.slice(0, 500) + "…" : raw;
+      message =
+        `📩 Thread "${label}" reported back.\n\n` +
+        `Reply preview:\n${llmPreview}\n\n` +
+        `Narrate the outcome aloud in 1–2 short sentences — no IDs, no URLs, no markdown. ` +
+        `If there is a link or detail worth seeing, push a card. ` +
+        `To follow up, delegate to this thread via /api/talk/delegate (its id is in your roster).`;
+      displayMessage = `📩 Thread "${label}" reported back\n${_clean(raw, 220)}`;
+    }
+  } else if (result.error) {
     message = `⚠️ Employee "${employeeName}" (child session ${childId}) hit an error and could not finish: ${result.error}`;
     displayMessage = `⚠️ ${employeeName} couldn't finish`;
-  } else if (isTalkParent) {
-    const label = childSession.title || childSession.employee || "a thread";
-    const raw = (result.result || "").trim() || "(no output)";
-    const llmPreview = raw.length > 500 ? raw.slice(0, 500) + "…" : raw;
-    message =
-      `📩 Thread "${label}" reported back.\n\n` +
-      `Reply preview:\n${llmPreview}\n\n` +
-      `Narrate the outcome aloud in 1–2 short sentences — no IDs, no URLs, no markdown. ` +
-      `If there is a link or detail worth seeing, push a card. ` +
-      `To follow up, delegate to this thread via /api/talk/delegate (its id is in your roster).`;
-    displayMessage = `📩 Thread "${label}" reported back\n${_clean(raw, 220)}`;
   } else {
     const raw = (result.result || "").trim() || "(no output)";
     const llmPreview = raw.length > 500 ? raw.slice(0, 500) + "…" : raw;
