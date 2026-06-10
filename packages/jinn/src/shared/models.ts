@@ -49,7 +49,7 @@ export const CODEX_DEFAULT_MODEL = "gpt-5.5";
 const SYNTH_DEFAULTS: Record<EngineName, { supportsEffort: boolean; effortLevels: string[]; fallbackModel: string }> = {
   claude: { supportsEffort: true, effortLevels: ["low", "medium", "high"], fallbackModel: "opus" },
   codex: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: CODEX_DEFAULT_MODEL },
-  antigravity: { supportsEffort: false, effortLevels: [], fallbackModel: "gemini-3-flash-preview" },
+  antigravity: { supportsEffort: false, effortLevels: [], fallbackModel: "Gemini 3.5 Flash (Medium)" },
   // Placeholder shown only in the brief window before pi discovery completes; the
   // provider/id form keeps it well-typed for the engine's split.
   pi: { supportsEffort: false, effortLevels: [], fallbackModel: "ollama/gemma4:12b" },

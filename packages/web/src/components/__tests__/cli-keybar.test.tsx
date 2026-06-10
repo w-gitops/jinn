@@ -1,0 +1,68 @@
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
+import { CliKeybar, CLI_KEYS } from '../chat/cli-keybar'
+
+// Mirror of the backend allowlist in packages/jinn/src/gateway/pty-ws.ts
+// (RAW_KEY_INPUTS). Kept here as a parity guard: every sequence the keybar can
+// emit MUST be one the backend will accept, otherwise the keypress is silently
+// dropped at the WS boundary.
+const BACKEND_ALLOWLIST = new Set(['\r', '\x1b', '\t', '\x03', '\x1b[A', '\x1b[B', '\x1b[C', '\x1b[D'])
+
+describe('CliKeybar', () => {
+  it('renders a button for every defined key', () => {
+    render(<CliKeybar onKey={vi.fn()} />)
+    for (const k of CLI_KEYS) {
+      expect(screen.getByRole('button', { name: k.aria })).toBeTruthy()
+    }
+  })
+
+  it('every emitted sequence is in the backend allowlist (parity guard)', () => {
+    for (const k of CLI_KEYS) {
+      expect(BACKEND_ALLOWLIST.has(k.data)).toBe(true)
+    }
+  })
+
+  it('emits Enter as \\r', () => {
+    const onKey = vi.fn()
+    render(<CliKeybar onKey={onKey} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Enter' }))
+    expect(onKey).toHaveBeenCalledWith('\r')
+  })
+
+  it('emits Escape as \\x1b', () => {
+    const onKey = vi.fn()
+    render(<CliKeybar onKey={onKey} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Escape' }))
+    expect(onKey).toHaveBeenCalledWith('\x1b')
+  })
+
+  it('emits Tab as \\t', () => {
+    const onKey = vi.fn()
+    render(<CliKeybar onKey={onKey} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Tab' }))
+    expect(onKey).toHaveBeenCalledWith('\t')
+  })
+
+  it('emits Ctrl-C as \\x03', () => {
+    const onKey = vi.fn()
+    render(<CliKeybar onKey={onKey} />)
+    fireEvent.click(screen.getByRole('button', { name: /Ctrl-C/ }))
+    expect(onKey).toHaveBeenCalledWith('\x03')
+  })
+
+  it('emits the four arrow escape sequences', () => {
+    const onKey = vi.fn()
+    render(<CliKeybar onKey={onKey} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Arrow up' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Arrow down' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Arrow left' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Arrow right' }))
+    expect(onKey.mock.calls.map((c) => c[0])).toEqual(['\x1b[A', '\x1b[B', '\x1b[D', '\x1b[C'])
+  })
+
+  it('exposes a labelled toolbar for assistive tech', () => {
+    render(<CliKeybar onKey={vi.fn()} />)
+    const toolbar = screen.getByRole('toolbar', { name: 'Terminal keys' })
+    expect(toolbar).toBeTruthy()
+  })
+})

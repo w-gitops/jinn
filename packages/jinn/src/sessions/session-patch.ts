@@ -10,8 +10,8 @@ import { logger } from "../shared/logger.js";
  * (fixed) engine. The change applies from the NEXT turn — the SessionManager
  * reads session.model / session.effortLevel fresh on every turn and passes them
  * (with resumeSessionId) to the engine, which our spike confirmed honors a
- * changed --model in place (no fork needed). Antigravity ignores model/effort
- * flags today, so the values are persisted but are a runtime no-op there.
+ * changed --model in place (no fork needed). Antigravity supports --model; if
+ * its CLI is already warm, the new model applies on the next cold spawn/resume.
  */
 
 export interface SessionPatchResult {

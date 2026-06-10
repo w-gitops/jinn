@@ -10,6 +10,8 @@ import type { PtyControlEvent, PtyViewEngine, PtyIdleSpawnOpts } from "./pty-vie
 import {
   transcriptPathFor,
   transcriptLineToDeltas,
+  isTerminalAnswerLine,
+  newToolCardState,
   estimateContextTokens,
   ensureWorkspaceTrusted,
   listConvDirs,
@@ -34,11 +36,10 @@ import { neutralizeForPaste } from "../shared/skill-commands.js";
  */
 
 const SCROLLBACK_CAP_BYTES = 262144;
-/** agy ignores model selection flags today (no `--model` / settings effect), so this
- *  is informational/forward-looking; selection is deferred to /model injection. */
-export const ANTIGRAVITY_DEFAULT_MODEL = "gemini-3-flash-preview";
+export const ANTIGRAVITY_DEFAULT_MODEL = "Gemini 3.5 Flash (Medium)";
 const TURN_TIMEOUT_MS = 5 * 60 * 1000; // matches agy's --print-timeout default
-const TURN_QUIET_DONE_MS = 6000;       // wait for transcript quiet after the latest DONE
+const TURN_FINAL_QUIET_MS = 1200;      // terminal text/no-tool row: finish promptly
+const TURN_QUIET_DONE_MS = 6000;       // fallback: wait longer around tool/ambiguous rows
 const CONV_DISCOVER_TIMEOUT_MS = 30 * 1000;
 const CONV_POLL_MS = 150;
 /** Accepted by agy without a startup error (verified); harmless in chat mode,
@@ -68,7 +69,7 @@ function tailTranscript(
   filePath: string,
   startOffset: number,
   onDelta: (d: StreamDelta) => void,
-  onDone: (content: string) => void,
+  onDone: (content: string, delayMs: number) => void,
   onActivity?: () => void,
 ): TranscriptTailer {
   let offset = startOffset;
@@ -77,13 +78,16 @@ function tailTranscript(
   let fh: fsp.FileHandle | undefined;
   let reading = false;
   let pending = false;
+  // One tool-card state per tail so DONE-only tool rows synthesize their card
+  // (and RUNNING/planner-opened cards close without duplicating).
+  const toolState = newToolCardState();
 
   const processLine = (line: string) => {
-    const deltas = transcriptLineToDeltas(line);
+    const deltas = transcriptLineToDeltas(line, toolState);
     if (deltas.length) onActivity?.();
     for (const d of deltas) onDelta(d);
-    // A model-DONE line yields exactly one text delta; treat that as turn output.
-    if (deltas.length && deltas[0].type === "text") onDone(deltas[0].content);
+    const terminal = isTerminalAnswerLine(line);
+    if (terminal.terminal && terminal.content) onDone(terminal.content, TURN_FINAL_QUIET_MS);
   };
 
   const readNew = async (): Promise<void> => {
@@ -210,17 +214,17 @@ export class AntigravityEngine implements InterruptibleEngine, PtyViewEngine {
     turn.interrupt = (reason: string) =>
       finish({ sessionId: convId ?? opts.resumeSessionId ?? "", result: latestAnswer ?? "", error: reason });
 
-    const scheduleDone = () => {
+    const scheduleDone = (delayMs = TURN_QUIET_DONE_MS) => {
       if (!latestAnswer) return;
       if (turn.doneTimer) clearTimeout(turn.doneTimer);
       turn.doneTimer = setTimeout(
         () => finish({ sessionId: convId ?? "", result: latestAnswer ?? "", numTurns: 1, contextTokens: lastContextEstimate || undefined }),
-        TURN_QUIET_DONE_MS,
+        delayMs,
       );
       turn.doneTimer.unref?.();
     };
 
-    const onDone = (content: string) => {
+    const onDone = (content: string, delayMs: number) => {
       latestAnswer = content;
       // agy exposes NO token usage anywhere in its transcript, so an exact context
       // meter isn't possible. Emit an ESTIMATE from the running conversation size
@@ -233,7 +237,7 @@ export class AntigravityEngine implements InterruptibleEngine, PtyViewEngine {
           opts.onStream?.({ type: "context", content: String(est) });
         }
       }
-      scheduleDone();
+      scheduleDone(delayMs);
     };
 
     const attachTail = (cid: string, fromBeginning = false) => {
@@ -313,16 +317,17 @@ export class AntigravityEngine implements InterruptibleEngine, PtyViewEngine {
     return env;
   }
 
-  private buildArgs(resumeConvId: string | undefined): string[] {
+  private buildArgs(resumeConvId: string | undefined, model?: string): string[] {
     const args: string[] = [];
     if (resumeConvId) args.push("--conversation", resumeConvId);
+    if (model) args.push("--model", model);
     args.push(SKIP_PERMISSIONS_FLAG);
     return args;
   }
 
   private spawn(jinnSessionId: string, opts: EngineRunOpts, cwd: string, resumeConvId: string | undefined): PtyHandle {
     const bin = resolveBin("agy", opts.bin);
-    const args = this.buildArgs(resumeConvId);
+    const args = this.buildArgs(resumeConvId, opts.model);
     const geom = this.lastGeom.get(jinnSessionId);
     logger.info(`AntigravityEngine spawning ${bin} (resume: ${resumeConvId || "none"}, geom: ${geom ? `${geom.cols}×${geom.rows}` : "default"})`);
     const proc = pty.spawn(bin, args, {
@@ -463,7 +468,7 @@ export class AntigravityEngine implements InterruptibleEngine, PtyViewEngine {
     if (this.lifecycle.getWarm(jinnSessionId)) return;
     if (this.active.has(jinnSessionId)) return; // a turn is starting — let run() spawn
     const bin = resolveBin("agy", opts.bin);
-    const args = this.buildArgs(opts.engineSessionId);
+    const args = this.buildArgs(opts.engineSessionId, opts.model);
     const cols = opts.cols ?? this.lastGeom.get(jinnSessionId)?.cols ?? 120;
     const rows = opts.rows ?? this.lastGeom.get(jinnSessionId)?.rows ?? 40;
     if (opts.cols && opts.rows) this.lastGeom.set(jinnSessionId, { cols: opts.cols, rows: opts.rows });
@@ -506,6 +511,11 @@ export class AntigravityEngine implements InterruptibleEngine, PtyViewEngine {
     const proc = handle ? ((handle as any)._proc as pty.IPty | undefined) : undefined;
     if (!proc) return;
     pasteAndSubmit(proc, text);
+  }
+
+  writeRaw(sessionId: string, data: string): void {
+    const proc = (this.lifecycle.getWarm(sessionId) as any)?._proc as pty.IPty | undefined;
+    if (proc) proc.write(data);
   }
 
   resizePty(sessionId: string, cols: number, rows: number): void {

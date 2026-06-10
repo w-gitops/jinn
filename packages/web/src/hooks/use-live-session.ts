@@ -502,6 +502,34 @@ export function useLiveSession(
     return () => clearTimeout(timer)
   }, [connectionSeq]) // loadSession is stable; refs read at fire time
 
+  // Poll while the UI thinks a turn is running. This covers the case where the
+  // single terminal WS frame is dropped but the socket itself never reconnects,
+  // so the reconnect-only watchdog above never gets a chance to reconcile.
+  useEffect(() => {
+    if (!loading) return
+    const id = sessionIdRef.current
+    if (!id) return
+    const interval = setInterval(async () => {
+      if (!loadingRef.current) return
+      const currentId = sessionIdRef.current
+      if (!currentId) return
+      try {
+        const session = (await api.getSession(currentId)) as Record<string, unknown>
+        if (session.status !== 'running') {
+          setLoading(false)
+          streamingTextRef.current = ''
+          setStreamingText('')
+          setLiveContextTokens(null)
+          intermediateStartRef.current = -1
+          await loadSession(currentId)
+        }
+      } catch {
+        // best-effort; normal WS/reconnect paths can still recover later
+      }
+    }, 10_000)
+    return () => clearInterval(interval)
+  }, [loading, loadSession])
+
   // --- write API (editable pane) ---
   const beginSend = useCallback((userMsg: Message) => {
     setMessages((prev) => {

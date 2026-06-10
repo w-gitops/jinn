@@ -585,9 +585,6 @@ export async function handleApiRequest(
       if (Object.keys(updates).length === 0) return badRequest(res, "no valid fields to update");
       const updated = updateSession(params.id, updates);
       if (!updated) return notFound(res);
-      if (updates.model !== undefined && session.engine === "antigravity") {
-        logger.info(`Session ${params.id}: model set to "${updates.model}" but antigravity ignores model flags today — runtime no-op.`);
-      }
       context.emit("session:updated", { sessionId: params.id });
       return json(res, serializeSession(updated, context));
     }

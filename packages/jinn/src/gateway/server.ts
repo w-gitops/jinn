@@ -926,23 +926,40 @@ export async function startGateway(
     },
   });
 
-  // Start listening (port/host resolved earlier at boot)
+  // Start listening (port/host resolved earlier at boot). During `jinn restart`
+  // the replacement daemon can race the old process' graceful shutdown; retry
+  // EADDRINUSE briefly instead of exiting and leaving the gateway stopped.
   await new Promise<void>((resolve, reject) => {
-    server.on("error", (err: NodeJS.ErrnoException) => {
-      if (err.code === "EADDRINUSE") {
-        const msg = `Port ${port} is already in use.`;
-        logger.error(msg);
-        console.error(`\nError: ${msg}`);
-        console.error(`\nTry: jinn start -p ${port + 1}`);
-        console.error(`Or update the port in config.yaml\n`);
-        process.exit(1);
-      }
-      reject(err);
-    });
-    server.listen(port, host, () => {
-      logger.info(`${gatewayName} gateway listening on http://${host}:${port} (boot ${bootId})`);
-      resolve();
-    });
+    const startedAt = Date.now();
+    const retryForMs = 15_000;
+    const retryDelayMs = 250;
+    const listen = () => {
+      const onError = (err: NodeJS.ErrnoException) => {
+        server.off("listening", onListening);
+        if (err.code === "EADDRINUSE" && Date.now() - startedAt < retryForMs) {
+          setTimeout(listen, retryDelayMs).unref?.();
+          return;
+        }
+        if (err.code === "EADDRINUSE") {
+          const msg = `Port ${port} is already in use.`;
+          logger.error(msg);
+          console.error(`\nError: ${msg}`);
+          console.error(`\nTry: jinn start -p ${port + 1}`);
+          console.error(`Or update the port in config.yaml\n`);
+          process.exit(1);
+        }
+        reject(err);
+      };
+      const onListening = () => {
+        server.off("error", onError);
+        logger.info(`${gatewayName} gateway listening on http://${host}:${port} (boot ${bootId})`);
+        resolve();
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(port, host);
+    };
+    listen();
   });
 
   // Notify connected WebSocket clients about interrupted sessions available for resume
@@ -1047,11 +1064,15 @@ export async function startGateway(
     // Stop the WS heartbeat sweep before tearing down the WS servers.
     stopWsHeartbeat();
 
-    // Close WebSocket connections
+    // Close WebSocket connections. Use terminate() during shutdown so lingering
+    // PTY/SSE clients cannot hold server.close() open until the force-exit timer.
     for (const client of wsClients) {
-      client.close(1001, "Server shutting down");
+      client.terminate();
     }
     wsClients.clear();
+    for (const client of ptyWss.clients) {
+      client.terminate();
+    }
 
     // Close WebSocket servers
     await new Promise<void>((resolve) => wss.close(() => resolve()));
@@ -1059,6 +1080,8 @@ export async function startGateway(
 
     // Close HTTP server
     await new Promise<void>((resolve, reject) => {
+      server.closeAllConnections?.();
+      server.closeIdleConnections?.();
       server.close((err) => (err ? reject(err) : resolve()));
     });
 

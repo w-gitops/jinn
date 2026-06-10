@@ -10,7 +10,7 @@ import { resolveBin } from "../shared/resolve-bin.js";
 import { neutralizeForPaste } from "../shared/skill-commands.js";
 import { PtyLifecycleManager, type PtyHandle } from "./pty-lifecycle.js";
 import type { PtyControlEvent, PtyIdleSpawnOpts, PtyViewEngine } from "./pty-view-engine.js";
-import { extractCodexContextTokens } from "./codex.js";
+import { codexCliFlags, extractCodexContextTokens } from "./codex.js";
 
 const SCROLLBACK_CAP_BYTES = 262144;
 const CODEX_SESSIONS_DIR = path.join(os.homedir(), ".codex", "sessions");
@@ -84,7 +84,13 @@ export function codexTranscriptLineToDeltas(line: string): { deltas: StreamDelta
   }
 
   if (msg.type === "event_msg" && msg?.payload?.type === "token_count") {
-    const ctx = extractCodexContextTokens(msg.payload.info?.last_token_usage ?? msg.payload.info?.total_token_usage);
+    // Context-meter fill = the LAST turn's input tokens (≈ the whole conversation
+    // fed back to the model). NEVER fall back to total_token_usage: that's the
+    // cumulative tokens billed across every turn, so on a long session it climbs
+    // far past the window and renders impossible meter values like 9282k/272k.
+    // When last_token_usage is absent we simply omit the update rather than show
+    // a cumulative figure.
+    const ctx = extractCodexContextTokens(msg.payload.info?.last_token_usage);
     return ctx ? { deltas: [{ type: "context", content: String(ctx) }], contextTokens: ctx } : { deltas: [] };
   }
 
@@ -186,6 +192,7 @@ export class CodexInteractiveEngine implements InterruptibleEngine, PtyViewEngin
   private active = new Map<string, ActiveTurn>();
   private streams = new Map<string, StreamEntry>();
   private lastGeom = new Map<string, { cols: number; rows: number }>();
+  private spawnParams = new Map<string, { model?: string; effortLevel?: string }>();
 
   constructor(private lifecycle: PtyLifecycleManager) {}
 
@@ -260,7 +267,12 @@ export class CodexInteractiveEngine implements InterruptibleEngine, PtyViewEngin
     }, TURN_TIMEOUT_MS);
     turn.hardTimeout.unref?.();
 
-    const warm = this.lifecycle.getWarm(jinnSessionId);
+    let warm = this.lifecycle.getWarm(jinnSessionId);
+    if (warm && this.spawnParamsChanged(jinnSessionId, opts)) {
+      this.lifecycle.releaseSession(jinnSessionId);
+      this.spawnParams.delete(jinnSessionId);
+      warm = undefined;
+    }
     if (codexSessionId) {
       const file = this.findTranscriptById(codexSessionId);
       if (file) attachTail(file);
@@ -323,10 +335,17 @@ export class CodexInteractiveEngine implements InterruptibleEngine, PtyViewEngin
     if (opts.model) args.push("--model", opts.model);
     if (opts.effortLevel && opts.effortLevel !== "default") args.push("-c", `model_reasoning_effort="${opts.effortLevel}"`);
     if (opts.cwd) args.push("-C", opts.cwd);
-    if (opts.cliFlags?.length) args.push(...opts.cliFlags);
+    args.push(...codexCliFlags(opts.cliFlags));
     if (resumeSessionId) args.push(resumeSessionId);
     if (prompt) args.push(prompt);
     return args;
+  }
+
+  private spawnParamsChanged(jinnSessionId: string, opts: EngineRunOpts): boolean {
+    const prev = this.spawnParams.get(jinnSessionId);
+    if (!prev) return false;
+    const norm = (v: string | undefined) => v && v !== "default" ? v : undefined;
+    return norm(prev.model) !== norm(opts.model) || norm(prev.effortLevel) !== norm(opts.effortLevel);
   }
 
   private spawn(jinnSessionId: string, opts: EngineRunOpts, prompt: string | undefined, resumeSessionId: string | undefined): PtyHandle {
@@ -341,6 +360,7 @@ export class CodexInteractiveEngine implements InterruptibleEngine, PtyViewEngin
       cwd: opts.cwd || JINN_HOME,
       env: this.buildEnv(),
     });
+    this.spawnParams.set(jinnSessionId, { model: opts.model, effortLevel: opts.effortLevel });
     return this.wireProcToStream(jinnSessionId, proc);
   }
 
@@ -394,6 +414,7 @@ export class CodexInteractiveEngine implements InterruptibleEngine, PtyViewEngin
           if (s.subscribers.size === 0) this.streams.delete(jinnSessionId);
         }
         this.lifecycle.releaseSession(jinnSessionId);
+        this.spawnParams.delete(jinnSessionId);
       }
       const e = this.active.get(jinnSessionId);
       if (e && e.boundProc === proc) e.interrupt("Interrupted: codex process exited");
@@ -403,15 +424,22 @@ export class CodexInteractiveEngine implements InterruptibleEngine, PtyViewEngin
   }
 
   ensureIdleSpawn(jinnSessionId: string, opts: PtyIdleSpawnOpts): void {
-    if (this.lifecycle.getWarm(jinnSessionId) || this.active.has(jinnSessionId)) return;
+    if (this.active.has(jinnSessionId)) return;
     if (opts.cols && opts.rows) this.lastGeom.set(jinnSessionId, { cols: opts.cols, rows: opts.rows });
-    const handle = this.spawn(jinnSessionId, {
+    const warm = this.lifecycle.getWarm(jinnSessionId);
+    const nextOpts: EngineRunOpts = {
       prompt: "",
       sessionId: jinnSessionId,
       resumeSessionId: opts.engineSessionId,
       cwd: opts.cwd || JINN_HOME,
       model: opts.model,
+      effortLevel: opts.effortLevel,
       bin: opts.bin,
+    };
+    if (warm && !this.spawnParamsChanged(jinnSessionId, nextOpts)) return;
+    if (warm) this.lifecycle.releaseSession(jinnSessionId);
+    const handle = this.spawn(jinnSessionId, {
+      ...nextOpts,
     }, undefined, opts.engineSessionId);
     this.lifecycle.adopt(jinnSessionId, handle);
   }
@@ -435,6 +463,11 @@ export class CodexInteractiveEngine implements InterruptibleEngine, PtyViewEngin
   writeStdin(sessionId: string, text: string): void {
     const proc = (this.lifecycle.getWarm(sessionId) as any)?._proc as pty.IPty | undefined;
     if (proc) pasteAndSubmit(proc, text);
+  }
+
+  writeRaw(sessionId: string, data: string): void {
+    const proc = (this.lifecycle.getWarm(sessionId) as any)?._proc as pty.IPty | undefined;
+    if (proc) proc.write(data);
   }
 
   resizePty(sessionId: string, cols: number, rows: number): void {

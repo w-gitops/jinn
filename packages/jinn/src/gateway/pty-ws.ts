@@ -3,6 +3,8 @@ import type { PtyViewEngine } from "../engines/pty-view-engine.js";
 import { getSession } from "../sessions/registry.js";
 import { JINN_HOME } from "../shared/paths.js";
 
+const RAW_KEY_INPUTS = new Set(["\r", "\x1b", "\t", "\x03", "\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"]);
+
 /**
  * Attach a /ws/pty/:sessionId WebSocket to a session's interactive PTY stream.
  *
@@ -26,6 +28,7 @@ export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: Pty
     engine.ensureIdleSpawn(sessionId, {
       engineSessionId: session?.engineSessionId ?? undefined,
       model: session?.model ?? undefined,
+      effortLevel: session?.effortLevel ?? undefined,
       cwd: JINN_HOME,
       cols,
       rows,
@@ -89,6 +92,8 @@ export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: Pty
     try { msg = JSON.parse(raw.toString()); } catch { return; }
     if (msg?.type === "stdin" && typeof msg.data === "string") {
       engine.writeStdin(sessionId, msg.data);
+    } else if (msg?.type === "key" && typeof msg.data === "string") {
+      if (RAW_KEY_INPUTS.has(msg.data)) engine.writeRaw(sessionId, msg.data);
     } else if (msg?.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
       // First resize spawns the PTY at the real client geometry; subsequent
       // resizes just forward SIGWINCH to claude.

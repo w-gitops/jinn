@@ -24,7 +24,7 @@ describe("synthesizeFromEngineConfig (backward-compat fallback)", () => {
     expect(reg.claude.models[0].id).toBe("opus");
     expect(reg.claude.defaultModel).toBe("opus");
     expect(reg.codex.models[0].id).toBe("gpt-5.5");
-    expect(reg.antigravity.models[0].id).toBe("gemini-3-flash-preview");
+    expect(reg.antigravity.models[0].id).toBe("Gemini 3.5 Flash (Medium)");
   });
 
   it("uses per-engine effort semantics: claude flag (low/med/high), codex config (incl xhigh), antigravity none", () => {

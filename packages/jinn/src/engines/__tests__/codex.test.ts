@@ -265,6 +265,24 @@ describe("CodexEngine — systemPrompt / developer_instructions injection", () =
     expect(finalArg).toContain("- /tmp/a.png");
     expect(finalArg).toContain("- /tmp/b.txt");
   });
+
+  it("drops Claude-only --chrome cliFlags before spawning codex exec", async () => {
+    const { call } = await runWith(
+      { cliFlags: ["--chrome", "--some-codex-flag"] },
+      [threadStarted("t1"), agentMessage("ok")],
+    );
+    expect(call.args).not.toContain("--chrome");
+    expect(call.args).toContain("--some-codex-flag");
+  });
+
+  it("drops Claude-only --chrome cliFlags on resume too", async () => {
+    const { call } = await runWith(
+      { resumeSessionId: "prev-thread", cliFlags: ["--chrome"] },
+      [threadStarted("t1"), agentMessage("ok")],
+    );
+    expect(call.args).not.toContain("--chrome");
+    expect(call.args).toContain("prev-thread");
+  });
 });
 
 describe("CodexEngine — usage / context-token extraction", () => {

@@ -872,6 +872,11 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     pasteAndSubmit(proc, text);
   }
 
+  writeRaw(sessionId: string, data: string): void {
+    const proc = (this.lifecycle.getWarm(sessionId) as any)?._proc as pty.IPty | undefined;
+    if (proc) proc.write(data);
+  }
+
   /** Resize the warm PTY + remember the geometry for the next cold spawn. */
   resizePty(sessionId: string, cols: number, rows: number): void {
     this.lastGeom.set(sessionId, { cols, rows });

@@ -13,6 +13,7 @@ export interface PtyIdleSpawnOpts {
   engineSessionId?: string;
   cwd?: string;
   model?: string;
+  effortLevel?: string;
   bin?: string;
   cols?: number;
   rows?: number;
@@ -29,5 +30,6 @@ export interface PtyViewEngine {
   getScrollback(sessionId: string): Buffer;
   setViewing(sessionId: string, viewing: boolean): void;
   writeStdin(sessionId: string, text: string): void;
+  writeRaw(sessionId: string, data: string): void;
   resizePty(sessionId: string, cols: number, rows: number): void;
 }

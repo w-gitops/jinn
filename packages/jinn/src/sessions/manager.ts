@@ -743,7 +743,7 @@ export class SessionManager {
         `Default engine: ${this.config.engines.default}`,
         `Claude: ${this.config.engines.claude.model}`,
         `Codex: ${this.config.engines.codex.model}`,
-        ...(this.config.engines.antigravity ? [`Antigravity: ${this.config.engines.antigravity.model ?? "gemini-3-flash-preview (default)"}`] : []),
+        ...(this.config.engines.antigravity ? [`Antigravity: ${this.config.engines.antigravity.model ?? "Gemini 3.5 Flash (Medium)"}`] : []),
         "Connectors:",
         ...connectorLines,
       ].join("\n");

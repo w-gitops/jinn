@@ -4,12 +4,14 @@ import { api } from '@/lib/api'
 import { useOrg } from '@/hooks/use-employees'
 import { ChatMessages } from '@/components/chat/chat-messages'
 import { ChatInput } from '@/components/chat/chat-input'
+import { CliKeybar } from '@/components/chat/cli-keybar'
 import { ChatEmployeePicker } from '@/components/chat/chat-employee-picker'
 import { QueuePanel } from '@/components/chat/queue-panel'
 import { ModelSelectorRow, type SelectorValue } from '@/components/chat/model-selector-row'
 import { useLiveSession } from '@/hooks/use-live-session'
 
 const CliTerminal = lazy(() => import('@/components/cli-terminal').then(m => ({ default: m.CliTerminal })))
+import type { CliTerminalHandle } from '@/components/cli-terminal'
 import { buildNewSessionParams } from '@/components/chat/new-chat-helpers'
 import type { Employee } from '@/lib/api'
 import type { Message, MediaAttachment } from '@/lib/conversations'
@@ -156,6 +158,7 @@ export function ChatPane({
   // chat only; model + effort are editable in existing chats too.
   const [selector, setSelector] = useState<SelectorValue>(() => readNewSessionSelector())
   const [effortPendingNote, setEffortPendingNote] = useState(false)
+  const cliTerminalRef = useRef<CliTerminalHandle | null>(null)
 
   // Pre-fill for a NEW chat. Explicit employee selection uses employee config;
   // direct/COO chats reuse the operator's last composer choice.
@@ -415,7 +418,7 @@ export function ChatPane({
         // Reserve flex space during lazy-chunk load so the ChatInput below stays
         // pinned to the bottom instead of flashing to the top for a frame.
         <Suspense fallback={<div style={{ flex: 1, minHeight: 0, background: 'var(--bg)' }} />}>
-          <CliTerminal sessionId={sessionId} />
+          <CliTerminal ref={cliTerminalRef} sessionId={sessionId} />
         </Suspense>
       ) : (sessionId || messages.length > 0) ? (
         <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
@@ -428,6 +431,10 @@ export function ChatPane({
           events={events}
           paused={currentSession?.paused as boolean ?? false}
         />
+      )}
+
+      {viewMode === 'cli' && sessionId && (
+        <CliKeybar onKey={(data) => cliTerminalRef.current?.sendKey(data)} />
       )}
 
       {/* Input — chat-style composer for every view, including CLI (the PTY engine

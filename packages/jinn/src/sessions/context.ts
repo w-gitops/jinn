@@ -374,7 +374,7 @@ function buildConfigContext(config: JinnConfig, gatewayUrl: string): string {
     lines.push(`- Codex model: ${config.engines.codex.model}`);
   }
   if (config.engines.antigravity) {
-    lines.push(`- Antigravity model: ${config.engines.antigravity.model ?? "gemini-3-flash-preview (default)"}`);
+    lines.push(`- Antigravity model: ${config.engines.antigravity.model ?? "Gemini 3.5 Flash (Medium)"}`);
   }
   if (config.logging) {
     lines.push(`- Log level: ${config.logging.level || "info"}`);

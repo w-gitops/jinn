@@ -8,6 +8,12 @@ interface LiveProcess {
   terminationReason: string | null;
 }
 
+export function codexCliFlags(flags: string[] | undefined): string[] {
+  // `--chrome` is a Claude Code flag. Older shared employee/config paths can
+  // still provide it via cliFlags; Codex rejects it before a session starts.
+  return (flags ?? []).filter((flag) => flag !== "--chrome");
+}
+
 /**
  * Most-recent-turn input-context size from a codex `turn.completed` usage object.
  * codex's `cached_input_tokens` is a SUBSET of `input_tokens` (OpenAI semantics),
@@ -248,7 +254,7 @@ export class CodexEngine implements InterruptibleEngine {
     if (opts.effortLevel && opts.effortLevel !== "default") args.push("-c", `model_reasoning_effort="${opts.effortLevel}"`);
     args.push("--json", "--color", "never", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check");
     if (opts.cwd) args.push("-C", opts.cwd);
-    if (opts.cliFlags?.length) args.push(...opts.cliFlags);
+    args.push(...codexCliFlags(opts.cliFlags));
     args.push(prompt);
     return args;
   }
@@ -258,7 +264,7 @@ export class CodexEngine implements InterruptibleEngine {
     if (opts.model) args.push("--model", opts.model);
     if (opts.effortLevel && opts.effortLevel !== "default") args.push("-c", `model_reasoning_effort="${opts.effortLevel}"`);
     args.push("--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check");
-    if (opts.cliFlags?.length) args.push(...opts.cliFlags);
+    args.push(...codexCliFlags(opts.cliFlags));
     args.push(opts.resumeSessionId!);
     args.push(prompt);
     return args;

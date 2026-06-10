@@ -18,7 +18,8 @@ const DEFAULT_EFFORT = "medium";
  *   3. employee.effortLevel — employee YAML default
  *   4. config.engines.<engine>.effortLevel — engine fallback
  *
- * For non-child sessions (COO's own), use engine effortLevel directly.
+ * For non-child sessions (COO's own), session.effortLevel wins when the user
+ * selected it in the composer, then engine effortLevel is the fallback.
  *
  * When the engine/model has no effort concept (validLevels empty, e.g.
  * Antigravity), returns the default without warnings — effort is just ignored.
@@ -49,6 +50,12 @@ export function resolveEffort(
     if (empDefault) {
       if (isValid(empDefault)) return empDefault;
       logger.warn(`Invalid effortLevel "${empDefault}" on employee (valid: ${validLevels.join(", ")}), skipping`);
+    }
+  } else {
+    const requested = session.effortLevel;
+    if (requested) {
+      if (isValid(requested)) return requested;
+      logger.warn(`Invalid effortLevel "${requested}" on session (valid: ${validLevels.join(", ")}), skipping`);
     }
   }
 

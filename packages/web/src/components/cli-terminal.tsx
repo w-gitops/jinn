@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -113,7 +113,11 @@ function getPtyWsUrl(sessionId: string): string {
  * to the tab after a sleep/background also recovers a half-open socket (see the visibility
  * effect). Only a sessionId change (or unmount) tears the Terminal down.
  */
-export function CliTerminal({ sessionId }: { sessionId: string }) {
+export interface CliTerminalHandle {
+  sendKey(data: string): void;
+}
+
+export const CliTerminal = forwardRef<CliTerminalHandle, { sessionId: string }>(function CliTerminal({ sessionId }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   // Lets the visibility effect (a separate effect) recover a dead socket without
@@ -130,6 +134,14 @@ export function CliTerminal({ sessionId }: { sessionId: string }) {
     hasOutputRef.current = value;
     setHasOutput(value);
   };
+
+  useImperativeHandle(ref, () => ({
+    sendKey(data: string) {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "key", data }));
+    },
+  }), []);
 
   useEffect(() => {
     // Defensive guard — parent already gates rendering on sessionId, but if a falsy
@@ -500,9 +512,9 @@ export function CliTerminal({ sessionId }: { sessionId: string }) {
             textAlign: "center",
           }}
         >
-          Waiting for the interactive claude PTY… send a message below to spawn it.
+          Waiting for the interactive PTY… send a message below to spawn it.
         </div>
       )}
     </div>
   );
-}
+});

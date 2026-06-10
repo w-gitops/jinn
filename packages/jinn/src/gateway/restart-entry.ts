@@ -8,7 +8,7 @@
  * The returning gateway resumes any sessions it marked "interrupted" on shutdown.
  */
 import { loadConfig } from "../shared/config.js";
-import { stop, startDaemon, waitForPortFree } from "./lifecycle.js";
+import { stop, startDaemon, waitForPortFree, waitForPortListening } from "./lifecycle.js";
 import { logger } from "../shared/logger.js";
 
 // stdio is ignored in detached mode — surface crashes to the log file instead of
@@ -35,6 +35,13 @@ async function main(): Promise<void> {
 
   logger.info("restart-entry: starting fresh daemon…");
   startDaemon(config);
+  const connectHost = !config.gateway?.host || config.gateway.host === "0.0.0.0" ? "127.0.0.1" : config.gateway.host;
+  const listening = await waitForPortListening(port, connectHost);
+  if (!listening) {
+    logger.error(`restart-entry: fresh daemon did not bind port ${port} before timeout`);
+    process.exitCode = 1;
+    return;
+  }
   logger.info("restart-entry: done");
 }
 

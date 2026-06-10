@@ -1,5 +1,6 @@
-import { execSync, fork } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PID_FILE, JINN_HOME } from "../shared/paths.js";
@@ -45,8 +46,7 @@ export function startDaemon(config: JinnConfig): void {
   ];
   const entryScript = candidateEntryScripts.find((p) => fs.existsSync(p)) ?? candidateEntryScripts[0];
 
-  // Fork a child process that will run the gateway
-  const child = fork(entryScript, [], {
+  const child = spawn(process.execPath, [entryScript], {
     detached: true,
     stdio: "ignore",
     env: { ...process.env, JINN_HOME },
@@ -58,7 +58,6 @@ export function startDaemon(config: JinnConfig): void {
     logger.info(`Gateway daemon started with PID ${child.pid}`);
   }
 
-  child.disconnect();
   child.unref();
 }
 
@@ -68,8 +67,8 @@ export function startDaemon(config: JinnConfig): void {
  * The whole point: a `jinn stop && jinn start` run from *inside* a gateway
  * session fails because `stop` kills the gateway, whose shutdown kills all PTYs
  * — including the very session running the command — so `start` never executes.
- * This forks a helper (restart-entry.js) that is detached + unref'd + disconnected,
- * so it is reparented to launchd/init and SURVIVES the gateway's killAll(). The
+ * This spawns a helper (restart-entry.js) detached + unref'd with no IPC, so it
+ * is reparented to launchd/init and SURVIVES the gateway's killAll(). The
  * helper does stop → waitForPortFree → startDaemon out of band. The returning
  * gateway then resumes the interrupted session.
  */
@@ -81,7 +80,7 @@ export function restartDetached(): void {
   ];
   const entryScript = candidateEntryScripts.find((p) => fs.existsSync(p)) ?? candidateEntryScripts[0];
 
-  const child = fork(entryScript, [], {
+  const child = spawn(process.execPath, [entryScript], {
     detached: true,
     stdio: "ignore",
     env: { ...process.env, JINN_HOME },
@@ -91,7 +90,6 @@ export function restartDetached(): void {
     logger.info(`Gateway restart helper started with PID ${child.pid}`);
   }
 
-  child.disconnect();
   child.unref();
 }
 
@@ -185,6 +183,30 @@ export async function waitForPortFree(port: number, timeoutMs = 10_000): Promise
   while (Date.now() < deadline) {
     if (findPidOnPort(port) === null) return true;
     await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return false;
+}
+
+export async function waitForPortListening(port: number, host = "127.0.0.1", timeoutMs = 20_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const ok = await new Promise<boolean>((resolve) => {
+      const socket = net.createConnection({ port, host });
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once("error", () => {
+        socket.destroy();
+        resolve(false);
+      });
+      socket.setTimeout(500, () => {
+        socket.destroy();
+        resolve(false);
+      });
+    });
+    if (ok) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return false;
 }
