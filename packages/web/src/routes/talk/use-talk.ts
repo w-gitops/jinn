@@ -116,6 +116,11 @@ export interface UseTalkReturn {
   targetThreadId: string | null
   /** Detail cards the orchestrator pushed for the current answer(s). */
   cards: Card[]
+  /** Blocking cards (approval/choice) the user has acted on — un-pinned from the
+   *  bottom strip optimistically before the orchestrator dismisses them. */
+  resolvedCardIds: ReadonlySet<string>
+  /** Resolve a card's inline anchor to a stream row id (null → render at end). */
+  cardAnchorFor: (cardId: string) => string | null
   /** 0..1 while listening/speaking (server audio), undefined → orb self-animates. */
   level: number | undefined
   connected: boolean
@@ -190,6 +195,10 @@ export function useTalk(): UseTalkReturn {
     finalizeAssistant,
     addSystem,
     rehydrate: rehydrateRows,
+    anchorCard,
+    unanchorCard,
+    pruneAnchors,
+    cardAnchorFor,
   } = useConversation()
   // Dock side-state (rename overrides + dismiss tombstones), lazy-init from the
   // existing talk-storage localStorage so renames/dismissals survive a reload.
@@ -197,6 +206,10 @@ export function useTalk(): UseTalkReturn {
   // Lazy-init from localStorage so a routed-thread selection survives a reload.
   const [targetThreadId, setTargetThreadId] = useState<string | null>(() => loadTargetThread())
   const [cards, setCards] = useState<Card[]>([])
+  // Blocking cards (approval/choice) the user has acted on this session. Used to
+  // un-pin them optimistically the instant the action fires, before the
+  // orchestrator dismisses the card. Pruned to the live card set below.
+  const [resolvedCardIds, setResolvedCardIds] = useState<ReadonlySet<string>>(() => new Set())
   const [level, setLevel] = useState<number | undefined>(undefined)
   const [ttsStatus, setTtsStatus] = useState<TtsStatus>({ kind: "idle" })
   const [voiceMode, setVoiceMode] = useState<VoiceMode>(null)
@@ -393,7 +406,11 @@ export function useTalk(): UseTalkReturn {
       const next = [...prev, card]
       return next.length > MAX_CARDS ? next.slice(next.length - MAX_CARDS) : next
     })
-  }, [])
+    // Anchor the card to the turn that pushed it (the current live edge). A
+    // re-push (same id) is a no-op in the anchor reducer, so the original anchor
+    // is preserved. Eviction cleanup happens in the prune effect below.
+    anchorCard(card.id)
+  }, [anchorCard])
 
   const patchCard = useCallback((id: string, patch: Partial<Card>) => {
     setCards((prev) => prev.map((c) => (c.id === id ? ({ ...c, ...patch } as Card) : c)))
@@ -401,9 +418,30 @@ export function useTalk(): UseTalkReturn {
 
   const dismissCard = useCallback((id: string) => {
     setCards((prev) => prev.filter((c) => c.id !== id))
-  }, [])
+    unanchorCard(id)
+  }, [unanchorCard])
 
   const clearCards = useCallback(() => setCards([]), [])
+
+  // Keep anchors and resolved-markers in lockstep with the live card set: any
+  // card removed (dismiss / clear / MAX_CARDS eviction) drops its anchor and its
+  // resolved marker. Reducers/setters return the same reference when nothing
+  // changes, so this never loops.
+  useEffect(() => {
+    const liveIds = cards.map((c) => c.id)
+    pruneAnchors(liveIds)
+    setResolvedCardIds((prev) => {
+      if (prev.size === 0) return prev
+      const live = new Set(liveIds)
+      let changed = false
+      const next = new Set<string>()
+      for (const id of prev) {
+        if (live.has(id)) next.add(id)
+        else changed = true
+      }
+      return changed ? next : prev
+    })
+  }, [cards, pruneAnchors])
 
   // ---- Action channel (decision-card buttons) ------------------------------
   // A card button sends a SYNTHETIC user message back to the orchestrator —
@@ -413,6 +451,18 @@ export function useTalk(): UseTalkReturn {
     const orch = orchestratorIdRef.current
     const msg = message.trim()
     if (!orch || !msg) return
+    // Resolve the acted-on card: parse `card=<id>` from the machine tag and mark
+    // it resolved so the pinned strip releases it immediately (optimistic), even
+    // before the orchestrator dismisses it.
+    const cardId = msg.match(/^\[card-action\s+card=([^\s\]]+)/)?.[1]
+    if (cardId) {
+      setResolvedCardIds((prev) => {
+        if (prev.has(cardId)) return prev
+        const next = new Set(prev)
+        next.add(cardId)
+        return next
+      })
+    }
     const display = stripMarkdown(msg.replace(/^\[card-action[^\]]*\]\s*/, "")).trim()
     if (display) {
       appendUser(`u${Date.now()}`, display)
@@ -893,6 +943,7 @@ export function useTalk(): UseTalkReturn {
   return useMemo(
     () => ({
       state, rows, graph, sideState, focusHue, targetThreadId, cards, level,
+      resolvedCardIds, cardAnchorFor,
       connected: gateway.connected,
       listening,
       sttAvailable: stt.available,
@@ -910,6 +961,6 @@ export function useTalk(): UseTalkReturn {
       activate, cardAction,
       startListening, stop, stopSpeaking,
     }),
-    [state, rows, graph, sideState, focusHue, targetThreadId, cards, level, gateway.connected, listening, stt.available, stt.error, stt.state, stt.downloadProgress, stt.startDownload, ttsStatus, voiceMode, muted, toggleMute, sendText, dismissSttDownload, engineInfo, switchEngine, switchModel, selectThread, renameThread, dismissThread, activate, cardAction, startListening, stop, stopSpeaking],
+    [state, rows, graph, sideState, focusHue, targetThreadId, cards, level, resolvedCardIds, cardAnchorFor, gateway.connected, listening, stt.available, stt.error, stt.state, stt.downloadProgress, stt.startDownload, ttsStatus, voiceMode, muted, toggleMute, sendText, dismissSttDownload, engineInfo, switchEngine, switchModel, selectThread, renameThread, dismissThread, activate, cardAction, startListening, stop, stopSpeaking],
   )
 }

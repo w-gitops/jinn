@@ -23,6 +23,22 @@
   pointer-events: none;
 }
 
+/* Inline deck — cards anchored to a turn, in the conversation scroll flow.
+   Left-aligned and stacked so they read as part of that turn's history. */
+.jt-deck--inline {
+  justify-content: flex-start;
+  align-items: stretch;
+  margin: 8px 0 4px;
+}
+.jt-deck--inline .jt-card {
+  width: min(340px, 100%);
+}
+
+/* Pinned strip — the actionable bottom band (centered, like the old stack). */
+.jt-deck--pinned {
+  justify-content: center;
+}
+
 /* ===========================================================================
    Card shell — the glass primitive.
    =========================================================================== */

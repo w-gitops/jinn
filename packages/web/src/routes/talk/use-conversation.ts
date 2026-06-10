@@ -18,7 +18,7 @@
  * Sentence splitting reuses `splitSentences` (use-speak) verbatim so the stream
  * segments text exactly like the spoken pass — one source of truth.
  */
-import { useCallback, useMemo, useReducer } from "react"
+import { useCallback, useMemo, useReducer, useRef } from "react"
 import { splitSentences } from "./use-speak"
 import type { TranscriptEntry, SystemEntry } from "./types"
 
@@ -157,6 +157,89 @@ export function conversationReducer(
   }
 }
 
+// ============================================================================
+// Card anchoring (Task 11).
+//
+// Inline cards live in the conversation stream anchored to the turn that pushed
+// them. We DON'T change StreamRow's shape — instead a side map `CardAnchors`
+// records cardId → rowId. The map is the single source of truth for "which row
+// does this card hang under"; the component looks it up at render time.
+//
+// Anchor target = the most recent aura/system row AT PUSH TIME. Trailing user
+// rows are skipped so a card always belongs to the in-progress (or just-ended)
+// assistant turn — even a partial aura row. An empty/user-only stream yields no
+// anchor, which renders the card at the end of the stream.
+// ============================================================================
+
+/** cardId → the stream row id the card is anchored under. */
+export type CardAnchors = Record<string, string>
+
+export type AnchorAction =
+  /** Anchor a freshly-pushed card to the latest aura/system row in `rows`. */
+  | { type: "anchorCard"; cardId: string; rows: StreamRow[] }
+  /** Drop one card's anchor (the card was dismissed). */
+  | { type: "unanchorCard"; cardId: string }
+  /** Keep only anchors whose card is still live (eviction/clear cleanup). */
+  | { type: "pruneAnchors"; liveCardIds: string[] }
+
+/**
+ * The row a freshly-pushed card anchors to: the most recent aura OR system row,
+ * scanning from the live edge. Returns null when there is none (empty or
+ * user-only stream) → the card renders at the end of the stream.
+ */
+export function anchorRowId(rows: StreamRow[]): string | null {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i]
+    if (r.kind === "aura" || r.kind === "system") return r.id
+  }
+  return null
+}
+
+/** Pure transitions on the cardId → rowId anchor map. */
+export function anchorsReducer(anchors: CardAnchors, action: AnchorAction): CardAnchors {
+  switch (action.type) {
+    case "anchorCard": {
+      // An update (same id re-pushed) keeps its ORIGINAL anchor.
+      if (anchors[action.cardId] != null) return anchors
+      const rowId = anchorRowId(action.rows)
+      if (rowId == null) return anchors // no anchor → render at end
+      return { ...anchors, [action.cardId]: rowId }
+    }
+    case "unanchorCard": {
+      if (anchors[action.cardId] == null) return anchors
+      const { [action.cardId]: _drop, ...rest } = anchors
+      return rest
+    }
+    case "pruneAnchors": {
+      const live = new Set(action.liveCardIds)
+      const next: CardAnchors = {}
+      let changed = false
+      for (const [cid, rid] of Object.entries(anchors)) {
+        if (live.has(cid)) next[cid] = rid
+        else changed = true
+      }
+      return changed ? next : anchors
+    }
+  }
+}
+
+/**
+ * Resolve a card's anchor against the CURRENT rows. Returns the anchored row id
+ * only if that row still exists; otherwise null. Null means "render at end" —
+ * either the card was never anchored, or its anchor row aged out of the stream
+ * (the 200-row cap). We fall back to end-render rather than dropping the card,
+ * since cards carry their own MAX_CARDS lifecycle.
+ */
+export function resolveCardAnchor(
+  anchors: CardAnchors,
+  rows: StreamRow[],
+  cardId: string,
+): string | null {
+  const rowId = anchors[cardId]
+  if (rowId == null) return null
+  return rows.some((r) => r.id === rowId) ? rowId : null
+}
+
 export interface UseConversationReturn {
   rows: StreamRow[]
   /** Add a user line (typed/STT). `pending` keeps it editable until finalized. */
@@ -182,10 +265,27 @@ export interface UseConversationReturn {
   rehydrate: (entries: Array<TranscriptEntry | SystemEntry>) => void
   /** Available for future use — engine switch currently preserves the conversation intentionally, matching the old entries behavior. */
   reset: () => void
+  // ---- Card anchoring (Task 11) -------------------------------------------
+  /** The live cardId → rowId anchor map. */
+  anchors: CardAnchors
+  /** Anchor a freshly-pushed card to the current live edge (no-op on re-push). */
+  anchorCard: (cardId: string) => void
+  /** Drop a dismissed card's anchor. */
+  unanchorCard: (cardId: string) => void
+  /** Keep only anchors whose card is still in the live set (eviction/clear). */
+  pruneAnchors: (liveCardIds: string[]) => void
+  /** Resolve a card's anchor against the current rows (null → render at end). */
+  cardAnchorFor: (cardId: string) => string | null
 }
 
 export function useConversation(): UseConversationReturn {
   const [rows, dispatch] = useReducer(conversationReducer, [])
+  const [anchors, dispatchAnchor] = useReducer(anchorsReducer, {} as CardAnchors)
+
+  // Live mirror of rows so anchorCard captures the stream at the exact moment a
+  // talk:card event fires (push time), independent of render timing.
+  const rowsRef = useRef<StreamRow[]>(rows)
+  rowsRef.current = rows
 
   const appendUser = useCallback(
     (id: string, text: string, pending?: boolean) => dispatch({ type: "user", id, text, pending }),
@@ -217,6 +317,23 @@ export function useConversation(): UseConversationReturn {
   )
   const reset = useCallback(() => dispatch({ type: "reset" }), [])
 
+  const anchorCard = useCallback(
+    (cardId: string) => dispatchAnchor({ type: "anchorCard", cardId, rows: rowsRef.current }),
+    [],
+  )
+  const unanchorCard = useCallback(
+    (cardId: string) => dispatchAnchor({ type: "unanchorCard", cardId }),
+    [],
+  )
+  const pruneAnchors = useCallback(
+    (liveCardIds: string[]) => dispatchAnchor({ type: "pruneAnchors", liveCardIds }),
+    [],
+  )
+  const cardAnchorFor = useCallback(
+    (cardId: string) => resolveCardAnchor(anchors, rowsRef.current, cardId),
+    [anchors],
+  )
+
   return useMemo(
     () => ({
       rows,
@@ -228,7 +345,12 @@ export function useConversation(): UseConversationReturn {
       addSystem,
       rehydrate,
       reset,
+      anchors,
+      anchorCard,
+      unanchorCard,
+      pruneAnchors,
+      cardAnchorFor,
     }),
-    [rows, appendUser, finalizeUser, appendAssistant, markSpoken, finalizeAssistant, addSystem, rehydrate, reset],
+    [rows, appendUser, finalizeUser, appendAssistant, markSpoken, finalizeAssistant, addSystem, rehydrate, reset, anchors, anchorCard, unanchorCard, pruneAnchors, cardAnchorFor],
   )
 }

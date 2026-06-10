@@ -6,7 +6,15 @@
  * Pure (no React/DOM) so every contract bullet is unit-tested here.
  */
 import { describe, it, expect } from "vitest"
-import { conversationReducer, MAX_ROWS, type StreamRow } from "../use-conversation"
+import {
+  conversationReducer,
+  MAX_ROWS,
+  anchorRowId,
+  anchorsReducer,
+  resolveCardAnchor,
+  type StreamRow,
+  type CardAnchors,
+} from "../use-conversation"
 import type { TranscriptEntry, SystemEntry } from "../types"
 
 function auraRow(rows: StreamRow[], id: string) {
@@ -191,5 +199,103 @@ describe("conversationReducer — reset", () => {
   it("clears the stream", () => {
     const rows = conversationReducer([{ kind: "user", id: "u1", text: "hi" }], { type: "reset" })
     expect(rows).toEqual([])
+  })
+})
+
+// ============================================================================
+// Task 11 — card anchoring. A pushed card anchors to the most recent aura/system
+// row at push time (the in-progress turn). Updates keep the anchor; dismiss and
+// eviction drop it; a card whose anchor row aged out of the stream falls back to
+// end-render (resolveCardAnchor → null).
+// ============================================================================
+
+const aura = (id: string, partial = false): StreamRow => ({
+  kind: "aura",
+  id,
+  sentences: ["x."],
+  liveIdx: null,
+  partial,
+})
+const user = (id: string): StreamRow => ({ kind: "user", id, text: "hi" })
+const sys = (id: string): StreamRow => ({
+  kind: "system",
+  id,
+  event: "delegated",
+  label: "content-lead",
+  ts: 0,
+})
+
+describe("anchorRowId — anchor target selection", () => {
+  it("anchors to the latest aura row (partial preferred — belongs to the in-progress turn)", () => {
+    expect(anchorRowId([user("u1"), aura("a1", true)])).toBe("a1")
+    // Trailing user rows are skipped: the in-progress aura still owns the card.
+    expect(anchorRowId([aura("a1", true), user("u2")])).toBe("a1")
+  })
+
+  it("anchors to the most recent aura even when finalized", () => {
+    expect(anchorRowId([aura("a1"), user("u2")])).toBe("a1")
+  })
+
+  it("anchors to a system row when it is the latest aura/system row", () => {
+    expect(anchorRowId([aura("a1"), sys("s1")])).toBe("s1")
+  })
+
+  it("returns null for an empty stream or a user-only stream (render at end)", () => {
+    expect(anchorRowId([])).toBeNull()
+    expect(anchorRowId([user("u1"), user("u2")])).toBeNull()
+  })
+})
+
+describe("anchorsReducer — anchor map transitions", () => {
+  it("anchorCard records cardId → latest aura/system row id", () => {
+    const a = anchorsReducer({}, { type: "anchorCard", cardId: "c1", rows: [user("u1"), aura("a1", true)] })
+    expect(a).toEqual({ c1: "a1" })
+  })
+
+  it("anchorCard on an empty/user-only stream records no anchor (renders at end)", () => {
+    const a = anchorsReducer({}, { type: "anchorCard", cardId: "c1", rows: [user("u1")] })
+    expect(a).toEqual({})
+  })
+
+  it("a re-pushed (updated) card keeps its ORIGINAL anchor", () => {
+    let a = anchorsReducer({}, { type: "anchorCard", cardId: "c1", rows: [aura("a1")] })
+    expect(a).toEqual({ c1: "a1" })
+    // The turn moved on (a2 is now latest), but the card update must not re-anchor.
+    a = anchorsReducer(a, { type: "anchorCard", cardId: "c1", rows: [aura("a1"), aura("a2", true)] })
+    expect(a).toEqual({ c1: "a1" })
+  })
+
+  it("unanchorCard (dismiss) removes the anchor", () => {
+    const a = anchorsReducer({ c1: "a1", c2: "a2" }, { type: "unanchorCard", cardId: "c1" })
+    expect(a).toEqual({ c2: "a2" })
+  })
+
+  it("pruneAnchors (eviction/clear) drops anchors for cards no longer live", () => {
+    const a = anchorsReducer({ c1: "a1", c2: "a2", c3: "a3" }, { type: "pruneAnchors", liveCardIds: ["c2"] })
+    expect(a).toEqual({ c2: "a2" })
+  })
+
+  it("pruneAnchors with no live cards clears everything", () => {
+    expect(anchorsReducer({ c1: "a1" }, { type: "pruneAnchors", liveCardIds: [] })).toEqual({})
+  })
+
+  it("returns the same reference when nothing changes (stable for React)", () => {
+    const a: CardAnchors = { c1: "a1" }
+    expect(anchorsReducer(a, { type: "unanchorCard", cardId: "ghost" })).toBe(a)
+    expect(anchorsReducer(a, { type: "pruneAnchors", liveCardIds: ["c1"] })).toBe(a)
+  })
+})
+
+describe("resolveCardAnchor — lookup against live rows", () => {
+  it("resolves to the anchored row id when that row is still present", () => {
+    expect(resolveCardAnchor({ c1: "a1" }, [user("u1"), aura("a1")], "c1")).toBe("a1")
+  })
+
+  it("falls back to end-render (null) when the anchored row has aged out of the stream", () => {
+    expect(resolveCardAnchor({ c1: "a1" }, [user("u2"), aura("a2")], "c1")).toBeNull()
+  })
+
+  it("returns null for an unanchored card", () => {
+    expect(resolveCardAnchor({}, [aura("a1")], "c1")).toBeNull()
   })
 })

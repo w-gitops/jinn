@@ -9,7 +9,13 @@
  */
 import { describe, it, expect, vi } from "vitest"
 import { render, screen, fireEvent } from "@testing-library/react"
-import { CardStack } from "../card-stack"
+import {
+  CardStack,
+  PinnedCards,
+  isBlockingCard,
+  selectPinnedCards,
+  selectInlineCards,
+} from "../card-stack"
 import type { Card } from "../../types"
 
 const CARDS: Card[] = [
@@ -142,5 +148,52 @@ describe("CardStack", () => {
     fireEvent.click(screen.getByText("Hold"))
     expect(onAction).toHaveBeenNthCalledWith(1, "[card-action card=send-it action=approve] Send it")
     expect(onAction).toHaveBeenNthCalledWith(2, "[card-action card=send-it action=reject] Hold")
+  })
+})
+
+describe("inline vs pinned partition (Task 11)", () => {
+  const cards: Card[] = [
+    { id: "summary", type: "text", body: "All done." },
+    { id: "approve-spend", type: "approval", summary: "Refund €40?" },
+    { id: "pick-channel", type: "choice", options: [{ id: "a", label: "A" }] },
+    { id: "mrr", type: "stat", value: "€3.4K", label: "MRR" },
+  ]
+
+  it("isBlockingCard flags approval + choice only", () => {
+    expect(isBlockingCard(cards[0])).toBe(false) // text
+    expect(isBlockingCard(cards[1])).toBe(true) // approval
+    expect(isBlockingCard(cards[2])).toBe(true) // choice
+    expect(isBlockingCard(cards[3])).toBe(false) // stat
+  })
+
+  it("selectPinnedCards = UNRESOLVED approval/choice only", () => {
+    const pinned = selectPinnedCards(cards, new Set())
+    expect(pinned.map((c) => c.id)).toEqual(["approve-spend", "pick-channel"])
+  })
+
+  it("a resolved blocking card leaves the pinned set", () => {
+    const pinned = selectPinnedCards(cards, new Set(["approve-spend"]))
+    expect(pinned.map((c) => c.id)).toEqual(["pick-channel"])
+  })
+
+  it("selectInlineCards = everything NOT currently pinned (incl. resolved blockers)", () => {
+    // unresolved: blockers are pinned, so inline excludes them
+    expect(selectInlineCards(cards, new Set()).map((c) => c.id)).toEqual(["summary", "mrr"])
+    // once approve-spend resolves it reads inline at its anchor as history
+    expect(selectInlineCards(cards, new Set(["approve-spend"])).map((c) => c.id)).toEqual([
+      "summary",
+      "approve-spend",
+      "mrr",
+    ])
+  })
+
+  it("PinnedCards renders only unresolved blockers and nothing when empty", () => {
+    const { rerender, container } = render(
+      <PinnedCards cards={cards} resolvedIds={new Set()} />,
+    )
+    expect(screen.getByText("Refund €40?")).toBeTruthy()
+    // resolve both blockers → strip collapses to null
+    rerender(<PinnedCards cards={cards} resolvedIds={new Set(["approve-spend", "pick-channel"])} />)
+    expect(container.querySelectorAll(".jt-card").length).toBe(0)
   })
 })

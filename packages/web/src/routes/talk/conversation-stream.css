@@ -53,6 +53,14 @@
   border-radius: 999px;
 }
 
+/* ---- groups: a row + the inline cards anchored to it --------------------- */
+.cstream__group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 100%;
+}
+
 /* ---- rows ---------------------------------------------------------------- */
 .cstream__row {
   display: flex;

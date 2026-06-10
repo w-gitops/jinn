@@ -99,6 +99,68 @@ function CardShell({
   )
 }
 
+// ============================================================================
+// Inline vs pinned partition (Task 11).
+//
+// UX CHOICE: blocking cards (approval/choice) render ONLY in the pinned bottom
+// strip while unresolved — they're always reachable/actionable without scrolling
+// the transcript. Everything else renders INLINE, anchored to the turn that
+// pushed it (its place in the conversation history). Once a blocking card is
+// resolved (the user acted on it, or it was dismissed) it leaves the pinned
+// strip; if it is still in the live `cards` array it then reads inline at its
+// anchor as history. This avoids rendering the same actionable card twice.
+// ============================================================================
+
+/** Blocking = needs a human decision before the flow continues. */
+export function isBlockingCard(card: Card): boolean {
+  return card.type === "approval" || card.type === "choice"
+}
+
+/** Unresolved approval/choice cards — these pin to the bottom strip. */
+export function selectPinnedCards(cards: Card[], resolvedIds: ReadonlySet<string>): Card[] {
+  return cards.filter((c) => isBlockingCard(c) && !resolvedIds.has(c.id))
+}
+
+/** Everything that is NOT a currently-pinned (unresolved blocking) card. */
+export function selectInlineCards(cards: Card[], resolvedIds: ReadonlySet<string>): Card[] {
+  return cards.filter((c) => !(isBlockingCard(c) && !resolvedIds.has(c.id)))
+}
+
+/**
+ * Inline card deck — rendered inside a stream row (or the end bucket), anchored
+ * to the turn that pushed the cards. Left-aligned, in the scroll flow. Reuses
+ * the same animated deck so entrance/exit stays consistent with the pinned strip.
+ */
+export function InlineCards({
+  cards,
+  onAction,
+}: {
+  cards: Card[]
+  onAction?: (message: string) => void
+}): JSX.Element | null {
+  if (cards.length === 0) return null
+  return <CardStack cards={cards} onAction={onAction} className="jt-deck--inline" />
+}
+
+/**
+ * Pinned strip — the bottom band showing ONLY unresolved approval/choice cards.
+ * Sits where the old full card stack used to live. Returns null when there is
+ * nothing blocking, so the band collapses.
+ */
+export function PinnedCards({
+  cards,
+  resolvedIds,
+  onAction,
+}: {
+  cards: Card[]
+  resolvedIds: ReadonlySet<string>
+  onAction?: (message: string) => void
+}): JSX.Element | null {
+  const pinned = selectPinnedCards(cards, resolvedIds)
+  if (pinned.length === 0) return null
+  return <CardStack cards={pinned} onAction={onAction} className="jt-deck--pinned" />
+}
+
 export function CardStack({
   cards,
   className,

@@ -6,7 +6,7 @@
  * button drives the loop (tap to talk, tap to send). TTS is browser
  * SpeechSynthesis by default, so it speaks aloud on the phone with no server deps.
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import { ArrowLeft, Mic, Square, Sun, Moon, Keyboard, Volume2, VolumeX, Send } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -14,7 +14,7 @@ import { mainButtonMode } from "./main-button"
 import { useTheme } from "@/routes/providers"
 import { AuraAvatar } from "./aura-avatar"
 import { ConversationStream } from "./conversation-stream"
-import { CardStack } from "./cards/card-stack"
+import { PinnedCards, selectInlineCards, selectPinnedCards } from "./cards/card-stack"
 import { ErrorBoundary } from "@/components/error-boundary"
 import { WorkDock } from "./work-dock"
 import { ChildSessionModal } from "./child-session-modal"
@@ -30,6 +30,16 @@ export default function TalkPage() {
   const talk = useTalkContext()
   const { activate } = talk
   useEffect(() => { activate() }, [activate])
+  // Partition cards: blocking approval/choice (unresolved) pin to the bottom
+  // strip; everything else renders inline at its anchored turn in the stream.
+  const inlineCards = useMemo(
+    () => selectInlineCards(talk.cards, talk.resolvedCardIds),
+    [talk.cards, talk.resolvedCardIds],
+  )
+  const pinnedCards = useMemo(
+    () => selectPinnedCards(talk.cards, talk.resolvedCardIds),
+    [talk.cards, talk.resolvedCardIds],
+  )
   // Which COO child session's chat the modal is showing (null → closed).
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
   // Type-to-talk: a tucked-away text input for when you can't (or don't want to)
@@ -157,6 +167,9 @@ export default function TalkPage() {
         rows={talk.rows}
         state={talk.state}
         onOpenThread={setChatSessionId}
+        inlineCards={inlineCards}
+        cardAnchorFor={talk.cardAnchorFor}
+        onCardAction={talk.cardAction}
       />
 
       {/* The orchestrator orb sits centered, morphing toward the focused (most-
@@ -177,10 +190,13 @@ export default function TalkPage() {
         idle={talk.state === "idle"}
       />
 
-      {/* Detail cards — a lower band that sits below the orb centre and above the
-          mic so it never covers the avatar or the control on mobile. The deck is
-          pointer-events:none (links re-enable themselves); cards drift in/out. */}
-      {talk.cards.length > 0 && (
+      {/* Pinned strip — the bottom actionable band, showing ONLY unresolved
+          approval/choice cards so a blocking decision is always reachable without
+          scrolling the transcript. All other cards render INLINE in the stream
+          (anchored to their turn). Sits below the orb centre and above the mic so
+          it never covers the avatar or the control on mobile. Deck is
+          pointer-events:none (buttons/links re-enable themselves). */}
+      {pinnedCards.length > 0 && (
         <div
           className="pointer-events-none absolute inset-x-0 z-20 flex items-end justify-center overflow-hidden px-4"
           style={{
@@ -193,14 +209,14 @@ export default function TalkPage() {
               set changes (orchestrator re-push / clear). */}
           <ErrorBoundary
             label="talk-cards"
-            resetKey={talk.cards.map((c) => c.id).join(",")}
+            resetKey={pinnedCards.map((c) => c.id).join(",")}
             fallback={
               <div className="pointer-events-none rounded-[var(--radius-lg)] border border-[var(--separator)] bg-[var(--material-regular)] px-4 py-2 text-caption1 text-[var(--text-tertiary)] backdrop-blur-md">
                 A card couldn’t be displayed.
               </div>
             }
           >
-            <CardStack cards={talk.cards} onAction={talk.cardAction} />
+            <PinnedCards cards={talk.cards} resolvedIds={talk.resolvedCardIds} onAction={talk.cardAction} />
           </ErrorBoundary>
         </div>
       )}
