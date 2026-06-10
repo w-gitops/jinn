@@ -141,8 +141,13 @@ export type Emit = (event: string, payload: unknown) => void
 
 /** Kokoro-82M TTS engine (sidecar-backed). Implemented by kokoro.ts. */
 export interface Tts {
-  /** Synthesize `text`, sentence-chunked, streaming talk:audio events; resolves when fully spoken. */
-  speak(sessionId: string, text: string, emit: Emit): Promise<void>
+  /**
+   * Synthesize `text`, sentence-chunked, streaming talk:audio events; resolves
+   * with the number of chunks emitted. `seqStart` continues a per-turn monotonic
+   * sequence across calls; `final:false` suppresses the `last:true` flag so a
+   * turn streamed sentence-by-sentence only signals end-of-audio on the flush.
+   */
+  speak(sessionId: string, text: string, emit: Emit, opts?: { seqStart?: number; final?: boolean }): Promise<number>
   status(): { available: boolean; downloading: boolean; progress: number; voice: string; ready: boolean }
   /** Pre-spawn the sidecar and load the model so the first real speak is fast. No-op if weights/venv are missing. */
   warm?(): Promise<void>

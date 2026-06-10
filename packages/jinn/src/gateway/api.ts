@@ -2288,18 +2288,18 @@ async function runWebSession(
         } catch (err) {
           logger.warn(`Failed to persist partial block for session ${currentSession.id}: ${err instanceof Error ? err.message : err}`);
         }
-        // Voice mode: accumulate the orchestrator's spoken text so the whole
-        // turn can be synthesized in one Kokoro call at completion (see flush
-        // below). Only `text` deltas are spoken; tool_use/context are not.
-        // Skip entirely when the client is muted (silent/read mode) — there's no
-        // point buffering or synthesizing audio the browser will discard.
+        // Voice mode: stream the orchestrator's spoken text — complete sentences
+        // synthesize immediately (per-sentence streaming); the flush at completion
+        // speaks the remainder. Only `text` deltas are spoken; tool_use/context
+        // are not. Skip entirely when the client is muted (silent/read mode) —
+        // there's no point buffering or synthesizing audio the browser will discard.
         if (
           currentSession.source === "talk" &&
           !isTalkMuted(currentSession.id) &&
           delta.type === "text" &&
           typeof delta.content === "string"
         ) {
-          feedTalkText(currentSession.id, delta.content);
+          feedTalkText(currentSession.id, delta.content, config.talk?.kokoro, context.emit);
         }
       },
       // A turn that settled as failed but whose CLI later finished delivers the
@@ -2532,10 +2532,10 @@ async function runWebSession(
       insertMessage(currentSession.id, "assistant", result.result);
     }
 
-    // Voice mode: synthesize the whole turn's spoken text in one Kokoro call
-    // (streams talk:audio over the WS). Fire-and-forget so completion isn't
-    // blocked on audio. Discard (don't synthesize) on a half-finished interrupt
-    // OR when the client is muted — the browser plays nothing in silent mode.
+    // Voice mode: flush the remainder of the turn's spoken text (final chunk,
+    // carries last:true). Fire-and-forget so completion isn't blocked on audio.
+    // Discard (don't synthesize) on a half-finished interrupt OR when the client
+    // is muted — the browser plays nothing in silent mode.
     if (currentSession.source === "talk") {
       if (wasInterrupted || isTalkMuted(currentSession.id)) discardTalkSpeech(currentSession.id);
       else void flushTalkSpeech(currentSession.id, config.talk?.kokoro, context.emit);

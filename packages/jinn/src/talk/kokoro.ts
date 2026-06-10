@@ -267,9 +267,9 @@ export function createKokoroTts(opts?: {
   }
 
   return {
-    async speak(sessionId: string, text: string, emit: Emit): Promise<void> {
+    async speak(sessionId: string, text: string, emit: Emit, opts?: { seqStart?: number; final?: boolean }): Promise<number> {
       const sentences = splitSentences(text)
-      if (sentences.length === 0) return
+      if (sentences.length === 0) return 0
 
       // Fail fast & gracefully if the engine can't run at all.
       if (!pythonPresent() || !weightsPresent()) {
@@ -278,10 +278,11 @@ export function createKokoroTts(opts?: {
         )
       }
 
-      let seq = 0
+      let seq = opts?.seqStart ?? 0
+      const markLast = opts?.final !== false
       for (let i = 0; i < sentences.length; i++) {
         const wav = await synth(sentences[i]!)
-        const last = i === sentences.length - 1
+        const last = markLast && i === sentences.length - 1
         emit(TALK_EVENTS.audio, {
           sessionId,
           seq: seq++,
@@ -290,6 +291,7 @@ export function createKokoroTts(opts?: {
           last,
         })
       }
+      return sentences.length
     },
 
     async warm(): Promise<void> {
