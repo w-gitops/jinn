@@ -70,11 +70,28 @@ async function _sendNotification(
   // it carries full context and the API hints it needs to follow up.
   // `displayMessage` is the clean, human-facing version shown in the web UI
   // notification banner.
+  //
+  // For /talk parents (source:"talk") the engine is the voice orchestrator: UUIDs
+  // and raw API endpoints must NOT appear (they'd be read aloud). Use a label-based
+  // wake message with a narration instruction instead.
+  const isTalkParent = parent.source === "talk";
+
   let message: string;
   let displayMessage: string;
   if (result.error) {
     message = `⚠️ Employee "${employeeName}" (child session ${childId}) hit an error and could not finish: ${result.error}`;
     displayMessage = `⚠️ ${employeeName} couldn't finish`;
+  } else if (isTalkParent) {
+    const label = childSession.title || childSession.employee || "a thread";
+    const raw = (result.result || "").trim() || "(no output)";
+    const llmPreview = raw.length > 500 ? raw.slice(0, 500) + "…" : raw;
+    message =
+      `📩 Thread "${label}" reported back.\n\n` +
+      `Reply preview:\n${llmPreview}\n\n` +
+      `Narrate the outcome aloud in 1–2 short sentences — no IDs, no URLs, no markdown. ` +
+      `If there is a link or detail worth seeing, push a card. ` +
+      `To follow up, delegate to this thread via /api/talk/delegate (its id is in your roster).`;
+    displayMessage = `📩 Thread "${label}" reported back\n${_clean(raw, 220)}`;
   } else {
     const raw = (result.result || "").trim() || "(no output)";
     const llmPreview = raw.length > 500 ? raw.slice(0, 500) + "…" : raw;

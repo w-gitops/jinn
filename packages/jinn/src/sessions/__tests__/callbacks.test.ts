@@ -45,6 +45,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     createdAt: new Date().toISOString(),
     lastActivity: new Date().toISOString(),
     lastError: null,
+    ...overrides,
   } as Session;
 }
 
@@ -155,6 +156,110 @@ describe("notifyParentSession", () => {
     expect(fetchSpy).toHaveBeenCalledOnce();
     const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
     expect(body.role).toBe("notification");
+  });
+});
+
+describe("notifyParentSession — talk parent (voice-friendly message)", () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.fn().mockResolvedValue({ ok: true });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    // Parent session has source: "talk"
+    vi.mocked(getSession).mockReturnValue(
+      makeSession({ id: "parent-001", parentSessionId: null, status: "idle", source: "talk" }),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    globalThis.fetch = originalFetch as typeof fetch;
+  });
+
+  it("uses the child title as the thread label when title is set", async () => {
+    const child = makeSession({ title: "Research task" });
+    notifyParentSession(child, { result: "Analysis complete" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.message).toContain('"Research task"');
+    expect(body.message).toContain("Analysis complete");
+    expect(body.message).not.toContain("child-001");
+    expect(body.message).not.toContain("GET /api/sessions");
+    expect(body.message).toContain("Narrate the outcome aloud");
+    expect(body.message).toContain("/api/talk/delegate");
+  });
+
+  it("falls back to employee name when title is null", async () => {
+    const child = makeSession({ title: null, employee: "research-bot" });
+    notifyParentSession(child, { result: "Done" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.message).toContain('"research-bot"');
+    expect(body.message).not.toContain("child-001");
+    expect(body.message).not.toContain("GET /api/sessions");
+    expect(body.message).toContain("Narrate the outcome aloud");
+  });
+
+  it('falls back to "a thread" when title and employee are both absent', async () => {
+    const child = makeSession({ title: null, employee: null });
+    notifyParentSession(child, { result: "Done" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.message).toContain('"a thread"');
+    expect(body.message).not.toContain("child-001");
+    expect(body.message).not.toContain("GET /api/sessions");
+  });
+
+  it("talk displayMessage uses label and clean preview, no API noise", async () => {
+    const child = makeSession({ title: "My task" });
+    notifyParentSession(child, { result: "Result here" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.displayMessage).toContain('"My task"');
+    expect(body.displayMessage).toContain("Result here");
+    expect(body.displayMessage).not.toContain("GET /api/sessions");
+  });
+
+  it("message matches the exact talk template shape", async () => {
+    const child = makeSession({ title: "Deploy fix" });
+    const preview = "Deployed successfully to production.";
+    notifyParentSession(child, { result: preview });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    const expected =
+      `📩 Thread "Deploy fix" reported back.\n\n` +
+      `Reply preview:\n${preview}\n\n` +
+      `Narrate the outcome aloud in 1–2 short sentences — no IDs, no URLs, no markdown. ` +
+      `If there is a link or detail worth seeing, push a card. ` +
+      `To follow up, delegate to this thread via /api/talk/delegate (its id is in your roster).`;
+    expect(body.message).toBe(expected);
+  });
+
+  it("non-talk parent keeps byte-identical message format (regression)", async () => {
+    // Override to a non-talk parent
+    vi.mocked(getSession).mockReturnValue(
+      makeSession({ id: "parent-001", parentSessionId: null, status: "idle", source: "api" }),
+    );
+    const child = makeSession({ title: "My task", employee: "test-employee" });
+    notifyParentSession(child, { result: "Some result" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    const childId = "child-001";
+    const employeeName = "test-employee";
+    const raw = "Some result";
+    const expectedMessage =
+      `📩 Employee "${employeeName}" replied in child session ${childId}.\n\n` +
+      `Reply preview:\n${raw}\n\n` +
+      `To read the full reply: GET /api/sessions/${childId}?last=N · ` +
+      `to follow up: POST /api/sessions/${childId}/message`;
+    expect(body.message).toBe(expectedMessage);
   });
 });
 
