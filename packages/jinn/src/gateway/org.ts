@@ -6,57 +6,72 @@ import type { Employee, JinnConfig } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { getModelRegistry, effortLevelsForModel } from "../shared/models.js";
 
+/**
+ * Recursively walk `dir`, invoking `visit` for every employee YAML file
+ * (.yaml/.yml, skipping department.yaml). Stops early and returns the first
+ * non-undefined value `visit` returns; visitors that never return a value
+ * walk the whole tree.
+ */
+function walkEmployeeYamls<T>(
+  dir: string,
+  visit: (fullPath: string) => T | undefined,
+): T | undefined {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const found = walkEmployeeYamls(fullPath, visit);
+      if (found !== undefined) return found;
+    } else if (
+      (entry.name.endsWith(".yaml") || entry.name.endsWith(".yml")) &&
+      entry.name !== "department.yaml"
+    ) {
+      const found = visit(fullPath);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+}
+
 export function scanOrg(): Map<string, Employee> {
   const registry = new Map<string, Employee>();
 
   if (!fs.existsSync(ORG_DIR)) return registry;
 
-  // Recursively find all .yaml files in org/
-  function scan(dir: string) {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        scan(fullPath);
-      } else if (
-        entry.name.endsWith(".yaml") &&
-        entry.name !== "department.yaml"
-      ) {
-        try {
-          const raw = fs.readFileSync(fullPath, "utf-8");
-          const data = yaml.load(raw) as any;
-          if (data && data.name && data.persona) {
-            const employee: Employee = {
-              name: data.name,
-              displayName: data.displayName || data.name,
-              department:
-                data.department || path.basename(path.dirname(fullPath)),
-              rank: data.rank || "employee",
-              engine: data.engine || "claude",
-              model: data.model || "sonnet",
-              persona: data.persona,
-              emoji: typeof data.emoji === "string" ? data.emoji : undefined,
-              cliFlags: Array.isArray(data.cliFlags) ? data.cliFlags : undefined,
-              effortLevel: typeof data.effortLevel === "string" ? data.effortLevel : undefined,
-              maxCostUsd: typeof data.maxCostUsd === "number" ? data.maxCostUsd : undefined,
-              alwaysNotify: typeof data.alwaysNotify === "boolean" ? data.alwaysNotify : true,
-              reportsTo: data.reportsTo ?? undefined,
-              mcp: data.mcp ?? undefined,
-              provides: Array.isArray(data.provides)
-                ? data.provides.filter((s: unknown) => s && typeof s === "object" && typeof (s as any).name === "string" && typeof (s as any).description === "string")
-                  .map((s: any) => ({ name: s.name as string, description: s.description as string }))
-                : undefined,
-            };
-            registry.set(employee.name, employee);
-          }
-        } catch (err) {
-          logger.warn(`Failed to parse employee file ${fullPath}: ${err}`);
-        }
+  walkEmployeeYamls(ORG_DIR, (fullPath) => {
+    try {
+      const raw = fs.readFileSync(fullPath, "utf-8");
+      const data = yaml.load(raw) as any;
+      if (data && data.name && data.persona) {
+        const employee: Employee = {
+          name: data.name,
+          displayName: data.displayName || data.name,
+          department:
+            data.department || path.basename(path.dirname(fullPath)),
+          rank: data.rank || "employee",
+          engine: data.engine || "claude",
+          model: data.model || "sonnet",
+          persona: data.persona,
+          emoji: typeof data.emoji === "string" ? data.emoji : undefined,
+          cliFlags: Array.isArray(data.cliFlags) ? data.cliFlags : undefined,
+          effortLevel: typeof data.effortLevel === "string" ? data.effortLevel : undefined,
+          maxCostUsd: typeof data.maxCostUsd === "number" ? data.maxCostUsd : undefined,
+          alwaysNotify: typeof data.alwaysNotify === "boolean" ? data.alwaysNotify : true,
+          reportsTo: data.reportsTo ?? undefined,
+          mcp: data.mcp ?? undefined,
+          provides: Array.isArray(data.provides)
+            ? data.provides.filter((s: unknown) => s && typeof s === "object" && typeof (s as any).name === "string" && typeof (s as any).description === "string")
+              .map((s: any) => ({ name: s.name as string, description: s.description as string }))
+            : undefined,
+        };
+        registry.set(employee.name, employee);
       }
+    } catch (err) {
+      logger.warn(`Failed to parse employee file ${fullPath}: ${err}`);
     }
-  }
+    return undefined; // keep walking — scanOrg visits every file
+  });
 
-  scan(ORG_DIR);
   return registry;
 }
 
@@ -67,30 +82,16 @@ export function scanOrg(): Map<string, Employee> {
 function findEmployeeYamlPath(name: string): string | undefined {
   if (!fs.existsSync(ORG_DIR)) return undefined;
 
-  function search(dir: string): string | undefined {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        const found = search(fullPath);
-        if (found) return found;
-      } else if (
-        (entry.name.endsWith(".yaml") || entry.name.endsWith(".yml")) &&
-        entry.name !== "department.yaml"
-      ) {
-        try {
-          const raw = fs.readFileSync(fullPath, "utf-8");
-          const data = yaml.load(raw) as any;
-          if (data?.name === name) return fullPath;
-        } catch {
-          // skip unreadable files
-        }
-      }
+  return walkEmployeeYamls(ORG_DIR, (fullPath) => {
+    try {
+      const raw = fs.readFileSync(fullPath, "utf-8");
+      const data = yaml.load(raw) as any;
+      if (data?.name === name) return fullPath;
+    } catch {
+      // skip unreadable files
     }
     return undefined;
-  }
-
-  return search(ORG_DIR);
+  });
 }
 
 /** Fields of an employee YAML that may be mutated via the update API.

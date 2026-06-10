@@ -323,169 +323,110 @@ export async function startGateway(
   /** IDs of connectors created from config.connectors.instances[] (vs legacy top-level connectors) */
   const instanceConnectorIds = new Set<string>();
 
-  if (config.connectors?.slack?.appToken && config.connectors?.slack?.botToken) {
+  /**
+   * Shared boilerplate for legacy top-level connectors: create, wire onMessage
+   * routing, register, and fire-and-forget start. Per-connector config guards
+   * and construction stay explicit at the call sites.
+   */
+  const initConnector = (opts: {
+    id: string;
+    label: string;
+    create: () => Connector;
+    /** Read at message time so it tracks the captured config like before. */
+    employee: () => string | undefined;
+    startMsg?: string;
+  }): void => {
     try {
-      const slack = new SlackConnector({
-        appToken: config.connectors.slack.appToken,
-        botToken: config.connectors.slack.botToken,
-        allowFrom: config.connectors.slack.allowFrom,
-        ignoreOldMessagesOnBoot: config.connectors.slack.ignoreOldMessagesOnBoot,
-      });
-      slack.onMessage((msg) => {
+      const connector = opts.create();
+      connector.onMessage((msg) => {
         const routeOpts: RouteOptions = {};
-        if (config.connectors.slack?.employee) {
-          const emp = employeeRegistry.get(config.connectors.slack.employee);
+        const employeeName = opts.employee();
+        if (employeeName) {
+          const emp = employeeRegistry.get(employeeName);
           if (emp) routeOpts.employee = emp;
         }
-        sessionManager.route(msg, slack, routeOpts).catch((err) => {
-          logger.error(`Slack route error: ${err instanceof Error ? err.message : err}`);
+        sessionManager.route(msg, connector, routeOpts).catch((err) => {
+          logger.error(`${opts.label} route error: ${err instanceof Error ? err.message : err}`);
         });
       });
       // Push to registry before starting so shutdown can clean up even if start is in-flight.
-      connectors.push(slack);
-      connectorMap.set("slack", slack);
+      connectors.push(connector);
+      connectorMap.set(opts.id, connector);
       // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
-      slack.start().catch((err) => {
-        logger.error(`Failed to start Slack connector: ${err instanceof Error ? err.message : err}`);
+      connector.start().catch((err) => {
+        logger.error(`Failed to start ${opts.label} connector: ${err instanceof Error ? err.message : err}`);
       });
+      if (opts.startMsg) logger.info(opts.startMsg);
     } catch (err) {
-      logger.error(`Failed to initialize Slack connector: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Failed to initialize ${opts.label} connector: ${err instanceof Error ? err.message : err}`);
     }
+  };
+
+  if (config.connectors?.slack?.appToken && config.connectors?.slack?.botToken) {
+    const slackConfig = config.connectors.slack;
+    initConnector({
+      id: "slack",
+      label: "Slack",
+      create: () =>
+        new SlackConnector({
+          appToken: slackConfig.appToken,
+          botToken: slackConfig.botToken,
+          allowFrom: slackConfig.allowFrom,
+          ignoreOldMessagesOnBoot: slackConfig.ignoreOldMessagesOnBoot,
+        }),
+      employee: () => config.connectors.slack?.employee,
+    });
   }
 
   if (config.connectors?.discord?.proxyVia) {
     // Remote mode: proxy all Discord operations through the primary instance
-    try {
-      const discord = new RemoteDiscordConnector({
-        proxyVia: config.connectors.discord.proxyVia,
-        channelId: config.connectors.discord.channelId,
-      });
-      discord.onMessage((msg) => {
-        const routeOpts: RouteOptions = {};
-        if (config.connectors.discord?.employee) {
-          const emp = employeeRegistry.get(config.connectors.discord.employee);
-          if (emp) routeOpts.employee = emp;
-        }
-        sessionManager.route(msg, discord, routeOpts).catch((err) => {
-          logger.error(`Discord route error: ${err instanceof Error ? err.message : err}`);
-        });
-      });
-      // Push to registry before starting so shutdown can clean up even if start is in-flight.
-      connectors.push(discord);
-      connectorMap.set("discord", discord);
-      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
-      discord.start().catch((err) => {
-        logger.error(`Failed to start remote Discord connector: ${err instanceof Error ? err.message : err}`);
-      });
-      logger.info("Discord remote connector starting");
-    } catch (err) {
-      logger.error(`Failed to initialize remote Discord connector: ${err instanceof Error ? err.message : err}`);
-    }
+    const discordConfig = config.connectors.discord;
+    initConnector({
+      id: "discord",
+      label: "remote Discord",
+      create: () =>
+        new RemoteDiscordConnector({
+          proxyVia: discordConfig.proxyVia!,
+          channelId: discordConfig.channelId,
+        }),
+      employee: () => config.connectors.discord?.employee,
+      startMsg: "Discord remote connector starting",
+    });
   } else if (config.connectors?.discord?.botToken) {
     // Primary mode: direct Discord bot connection
-    try {
-      const discord = new DiscordConnector(config.connectors.discord as DiscordConnectorConfig);
-      discord.onMessage((msg) => {
-        const routeOpts: RouteOptions = {};
-        if (config.connectors.discord?.employee) {
-          const emp = employeeRegistry.get(config.connectors.discord.employee);
-          if (emp) routeOpts.employee = emp;
-        }
-        sessionManager.route(msg, discord, routeOpts).catch((err) => {
-          logger.error(`Discord route error: ${err instanceof Error ? err.message : err}`);
-        });
-      });
-      // Push to registry before starting so shutdown can clean up even if start is in-flight.
-      connectors.push(discord);
-      connectorMap.set("discord", discord);
-      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
-      discord.start().catch((err) => {
-        logger.error(`Failed to start Discord connector: ${err instanceof Error ? err.message : err}`);
-      });
-      logger.info("Discord connector starting");
-    } catch (err) {
-      logger.error(`Failed to initialize Discord connector: ${err instanceof Error ? err.message : err}`);
-    }
-  } else if (config.connectors?.discord?.proxyVia) {
-    try {
-      const discord = new RemoteDiscordConnector({ proxyVia: config.connectors.discord.proxyVia });
-      discord.onMessage((msg) => {
-        const routeOpts: RouteOptions = {};
-        if (config.connectors.discord?.employee) {
-          const emp = employeeRegistry.get(config.connectors.discord.employee);
-          if (emp) routeOpts.employee = emp;
-        }
-        sessionManager.route(msg, discord, routeOpts).catch((err) => {
-          logger.error(`Discord (remote) route error: ${err instanceof Error ? err.message : err}`);
-        });
-      });
-      // Push to registry before starting so shutdown can clean up even if start is in-flight.
-      connectors.push(discord);
-      connectorMap.set("discord", discord);
-      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
-      discord.start().catch((err) => {
-        logger.error(`Failed to start remote Discord connector: ${err instanceof Error ? err.message : err}`);
-      });
-      logger.info(`Discord connector starting in remote mode (via ${config.connectors.discord.proxyVia})`);
-    } catch (err) {
-      logger.error(`Failed to initialize remote Discord connector: ${err instanceof Error ? err.message : err}`);
-    }
+    initConnector({
+      id: "discord",
+      label: "Discord",
+      create: () => new DiscordConnector(config.connectors.discord as DiscordConnectorConfig),
+      employee: () => config.connectors.discord?.employee,
+      startMsg: "Discord connector starting",
+    });
   }
 
   if (config.connectors?.telegram?.botToken) {
-    try {
-      const telegram = new TelegramConnector({
-        botToken: config.connectors.telegram.botToken,
-        allowFrom: config.connectors.telegram.allowFrom,
-        ignoreOldMessagesOnBoot: config.connectors.telegram.ignoreOldMessagesOnBoot,
-        stt: config.stt,
-      });
-      telegram.onMessage((msg) => {
-        const routeOpts: RouteOptions = {};
-        if (config.connectors.telegram?.employee) {
-          const emp = employeeRegistry.get(config.connectors.telegram.employee);
-          if (emp) routeOpts.employee = emp;
-        }
-        sessionManager.route(msg, telegram, routeOpts).catch((err) => {
-          logger.error(`Telegram route error: ${err instanceof Error ? err.message : err}`);
-        });
-      });
-      // Push to registry before starting so shutdown can clean up even if start is in-flight.
-      connectors.push(telegram);
-      connectorMap.set("telegram", telegram);
-      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
-      telegram.start().catch((err) => {
-        logger.error(`Failed to start Telegram connector: ${err instanceof Error ? err.message : err}`);
-      });
-    } catch (err) {
-      logger.error(`Failed to initialize Telegram connector: ${err instanceof Error ? err.message : err}`);
-    }
+    const telegramConfig = config.connectors.telegram;
+    initConnector({
+      id: "telegram",
+      label: "Telegram",
+      create: () =>
+        new TelegramConnector({
+          botToken: telegramConfig.botToken,
+          allowFrom: telegramConfig.allowFrom,
+          ignoreOldMessagesOnBoot: telegramConfig.ignoreOldMessagesOnBoot,
+          stt: config.stt,
+        }),
+      employee: () => config.connectors.telegram?.employee,
+    });
   }
 
   if (config.connectors?.whatsapp) {
-    try {
-      const whatsapp = new WhatsAppConnector(config.connectors.whatsapp ?? {});
-      whatsapp.onMessage((msg) => {
-        const routeOpts: RouteOptions = {};
-        if (config.connectors.whatsapp?.employee) {
-          const emp = employeeRegistry.get(config.connectors.whatsapp.employee);
-          if (emp) routeOpts.employee = emp;
-        }
-        sessionManager.route(msg, whatsapp, routeOpts).catch((err) => {
-          logger.error(`WhatsApp route error: ${err instanceof Error ? err.message : err}`);
-        });
-      });
-      // Push to registry before starting so shutdown can clean up even if start is in-flight.
-      connectors.push(whatsapp);
-      connectorMap.set("whatsapp", whatsapp);
-      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
-      whatsapp.start().catch((err) => {
-        logger.error(`Failed to start WhatsApp connector: ${err instanceof Error ? err.message : err}`);
-      });
-      logger.info("WhatsApp connector starting (scan QR code if first run)");
-    } catch (err) {
-      logger.error(`Failed to initialize WhatsApp connector: ${err instanceof Error ? err.message : err}`);
-    }
+    initConnector({
+      id: "whatsapp",
+      label: "WhatsApp",
+      create: () => new WhatsAppConnector(config.connectors.whatsapp ?? {}),
+      employee: () => config.connectors.whatsapp?.employee,
+      startMsg: "WhatsApp connector starting (scan QR code if first run)",
+    });
   }
 
   // Process named connector instances (allows multiple connectors of the same type)

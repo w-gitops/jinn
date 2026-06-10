@@ -9,13 +9,27 @@ export interface HookEndpointCtx {
 
 export const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 
+/**
+ * True if `addr` is a loopback address. Normalizes before comparing: lowercase,
+ * strips the IPv4-mapped `::ffff:` prefix, and accepts `::1` plus the whole
+ * 127.0.0.0/8 range (not just 127.0.0.1).
+ */
+export function isLoopback(addr: string | undefined): boolean {
+  if (!addr) return false;
+  let a = addr.trim().toLowerCase();
+  if (a.startsWith("::ffff:")) a = a.slice("::ffff:".length);
+  if (a === "::1") return true;
+  const m = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(a);
+  return m !== null && m.slice(1).every((o) => Number(o) <= 255);
+}
+
 export function handleHookPost(
   ctx: HookEndpointCtx,
   providedSecret: string | undefined,
   body: { jinnSessionId?: string; hook?: HookPayload },
 ): { status: number; body: string } {
   // Loopback check first — defense-in-depth alongside any upstream check.
-  if (!ctx.remoteAddress || !LOOPBACK.has(ctx.remoteAddress)) {
+  if (!isLoopback(ctx.remoteAddress)) {
     return { status: 403, body: "forbidden" };
   }
   // Defense-in-depth: an empty server secret would allow any client (including one
