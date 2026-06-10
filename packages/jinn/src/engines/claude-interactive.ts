@@ -643,13 +643,16 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
 
   /** Translate parsed SSE events from a PTY's proxy into StreamDeltas and route
    *  them to the active turn's onStream. A PTY outlives its turn, so we look up
-   *  the live active entry here rather than capturing onStream at spawn. */
+   *  the live active entry here rather than capturing onStream at spawn.
+   *  Any SSE event is also proof of life for a pending StopFailure grace window. */
   private handleSseEvent(jinnSessionId: string, e: SseDataEvent): void {
-    const onStream = this.active.get(jinnSessionId)?.onStream;
-    if (!onStream) return; // idle PTY / no turn in flight — nothing to stream
+    const entry = this.active.get(jinnSessionId);
+    if (!entry) return; // idle PTY / no turn in flight — nothing to stream
+    entry.resolver.noteActivity();
+    if (!entry.onStream) return;
     // Only the main agent's events reach here (the proxy suppresses sub-agent and
     // auxiliary streams), so deltas go straight to the transcript.
-    for (const d of sseEventToDeltas(e)) onStream(d);
+    for (const d of sseEventToDeltas(e)) entry.onStream(d);
   }
 
   /** Allocate + start a per-PTY SSE forward proxy. Returns the proxy and its port,
