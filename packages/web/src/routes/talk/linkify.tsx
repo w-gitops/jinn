@@ -20,7 +20,7 @@ export function splitLinks(text: string): LinkSegment[] {
   for (const m of text.matchAll(URL_RE)) {
     let url = m[0]
     // Trailing sentence punctuation belongs to the prose, not the URL.
-    const trimmed = url.replace(/[.,;:!?]+$/, "")
+    const trimmed = url.replace(/[.,;:!?…—»]+$/, "")
     const tail = url.slice(trimmed.length)
     url = trimmed
     const start = m.index ?? 0
