@@ -49,8 +49,19 @@ export function notifyRateLimitResumed(
 ): void {
   if (!childSession.parentSessionId) return;
 
-  const employeeName = childSession.employee || "Unknown";
-  _sendRaw(childSession.parentSessionId, `🔄 Employee "${employeeName}" (session ${childSession.id}) has resumed after rate limit cleared.`).catch((err) => {
+  const parent = getSession(childSession.parentSessionId);
+  const isTalkParent = parent?.source === "talk";
+
+  let message: string;
+  if (isTalkParent) {
+    const label = childSession.title || childSession.employee || "a thread";
+    message = `🔄 Thread "${label}" has resumed after rate limit cleared.`;
+  } else {
+    const employeeName = childSession.employee || "Unknown";
+    message = `🔄 Employee "${employeeName}" (session ${childSession.id}) has resumed after rate limit cleared.`;
+  }
+
+  _sendRaw(childSession.parentSessionId, message).catch((err) => {
     logger.warn(`[callbacks] Failed to send resume notification: ${err instanceof Error ? err.message : String(err)}`);
   });
 }

@@ -18,7 +18,7 @@ vi.mock("../../shared/logger.js", () => ({
   },
 }));
 
-import { notifyParentSession } from "../callbacks.js";
+import { notifyParentSession, notifyRateLimitResumed } from "../callbacks.js";
 import { getSession } from "../registry.js";
 import type { Session } from "../../shared/types.js";
 
@@ -334,6 +334,89 @@ describe("notifyParentSession — talk parent (voice-friendly message)", () => {
     const expectedMessage = `⚠️ Employee "test-employee" (child session child-001) hit an error and could not finish: Something broke`;
     expect(body.message).toBe(expectedMessage);
     expect(body.displayMessage).toBe(`⚠️ test-employee couldn't finish`);
+  });
+});
+
+describe("notifyRateLimitResumed — talk parent (no UUID leak)", () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.fn().mockResolvedValue({ ok: true });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    globalThis.fetch = originalFetch as typeof fetch;
+  });
+
+  it("talk parent + title → label in message, child id absent", async () => {
+    vi.mocked(getSession).mockReturnValue(
+      makeSession({ id: "parent-001", parentSessionId: null, status: "idle", source: "talk" }),
+    );
+    const child = makeSession({ title: "Research task" });
+    notifyRateLimitResumed(child);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.message).toContain('"Research task"');
+    expect(body.message).not.toContain("child-001");
+  });
+
+  it("talk parent + title null → falls back to employee name, no child id", async () => {
+    vi.mocked(getSession).mockReturnValue(
+      makeSession({ id: "parent-001", parentSessionId: null, status: "idle", source: "talk" }),
+    );
+    const child = makeSession({ title: null, employee: "research-bot" });
+    notifyRateLimitResumed(child);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.message).toContain('"research-bot"');
+    expect(body.message).not.toContain("child-001");
+  });
+
+  it('talk parent + no title/employee → "a thread", no child id', async () => {
+    vi.mocked(getSession).mockReturnValue(
+      makeSession({ id: "parent-001", parentSessionId: null, status: "idle", source: "talk" }),
+    );
+    const child = makeSession({ title: null, employee: null });
+    notifyRateLimitResumed(child);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.message).toContain('"a thread"');
+    expect(body.message).not.toContain("child-001");
+  });
+
+  it("talk parent → exact message shape (Thread label, no parenthetical)", async () => {
+    vi.mocked(getSession).mockReturnValue(
+      makeSession({ id: "parent-001", parentSessionId: null, status: "idle", source: "talk" }),
+    );
+    const child = makeSession({ title: "Deploy fix" });
+    notifyRateLimitResumed(child);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.message).toBe(
+      `🔄 Thread "Deploy fix" has resumed after rate limit cleared.`,
+    );
+  });
+
+  it("non-talk parent keeps byte-identical format (regression)", async () => {
+    vi.mocked(getSession).mockReturnValue(
+      makeSession({ id: "parent-001", parentSessionId: null, status: "idle", source: "api" }),
+    );
+    const child = makeSession({ employee: "test-employee" });
+    notifyRateLimitResumed(child);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.message).toBe(
+      `🔄 Employee "test-employee" (session child-001) has resumed after rate limit cleared.`,
+    );
   });
 });
 
