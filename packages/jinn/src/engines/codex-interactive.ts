@@ -15,7 +15,9 @@ import { codexCliFlags, extractCodexContextTokens } from "./codex.js";
 const SCROLLBACK_CAP_BYTES = 262144;
 const CODEX_SESSIONS_DIR = path.join(os.homedir(), ".codex", "sessions");
 const TURN_TIMEOUT_MS = 10 * 60 * 1000;
-const DONE_DEBOUNCE_MS = 800;
+// FALLBACK ONLY: task_complete (below) is the primary completion signal; this
+// quiet-window debounce settles turns whose transcript misses the marker.
+const DONE_DEBOUNCE_MS = 3000;
 const DISCOVER_POLL_MS = 200;
 const DISCOVER_TIMEOUT_MS = 30 * 1000;
 
@@ -72,7 +74,16 @@ function parseSessionIdFromFile(filePath: string): string | undefined {
   }
 }
 
-export function codexTranscriptLineToDeltas(line: string): { deltas: StreamDelta[]; doneText?: string; sessionId?: string; contextTokens?: number } {
+export function codexTranscriptLineToDeltas(line: string): {
+  deltas: StreamDelta[];
+  doneText?: string;
+  sessionId?: string;
+  contextTokens?: number;
+  /** event_msg task_complete — the turn's deterministic end marker. */
+  taskComplete?: { lastAgentMessage?: string };
+  /** event_msg turn_aborted — the turn was interrupted CLI-side. */
+  turnAborted?: boolean;
+} {
   const trimmed = line.trim();
   if (!trimmed) return { deltas: [] };
   let msg: any;
@@ -92,6 +103,15 @@ export function codexTranscriptLineToDeltas(line: string): { deltas: StreamDelta
     // a cumulative figure.
     const ctx = extractCodexContextTokens(msg.payload.info?.last_token_usage);
     return ctx ? { deltas: [{ type: "context", content: String(ctx) }], contextTokens: ctx } : { deltas: [] };
+  }
+
+  if (msg.type === "event_msg" && msg?.payload?.type === "task_complete") {
+    const lam = msg.payload.last_agent_message;
+    return { deltas: [], taskComplete: { lastAgentMessage: typeof lam === "string" ? lam : undefined } };
+  }
+
+  if (msg.type === "event_msg" && msg?.payload?.type === "turn_aborted") {
+    return { deltas: [], turnAborted: true };
   }
 
   if (msg.type !== "response_item") return { deltas: [] };
@@ -236,6 +256,18 @@ export class CodexInteractiveEngine implements InterruptibleEngine, PtyViewEngin
       if (parsed.sessionId && !codexSessionId) codexSessionId = parsed.sessionId;
       if (parsed.contextTokens) lastContextTokens = parsed.contextTokens;
       for (const d of parsed.deltas) opts.onStream?.(d);
+      if (parsed.taskComplete) {
+        // Deterministic end-of-turn marker — settle now (no quiet window).
+        const text = parsed.taskComplete.lastAgentMessage?.trim()
+          ? parsed.taskComplete.lastAgentMessage
+          : latestAnswer;
+        finish({ sessionId: codexSessionId ?? "", result: text, numTurns: 1, contextTokens: lastContextTokens });
+        return;
+      }
+      if (parsed.turnAborted) {
+        finish({ sessionId: codexSessionId ?? opts.resumeSessionId ?? "", result: latestAnswer, error: "Interrupted: codex turn aborted" });
+        return;
+      }
       if (parsed.doneText) {
         latestAnswer = parsed.doneText;
         if (turn.doneTimer) clearTimeout(turn.doneTimer);

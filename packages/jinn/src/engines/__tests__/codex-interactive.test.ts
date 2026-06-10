@@ -152,6 +152,36 @@ describe("CodexInteractiveEngine transcript parsing", () => {
   });
 });
 
+describe("codexTranscriptLineToDeltas — terminal markers", () => {
+  it("parses task_complete with last_agent_message", () => {
+    const line = JSON.stringify({
+      timestamp: "2026-06-10T06:19:26.649Z",
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: "t-1", last_agent_message: "All done." },
+    });
+    const parsed = codexTranscriptLineToDeltas(line);
+    expect(parsed.taskComplete).toEqual({ lastAgentMessage: "All done." });
+    expect(parsed.deltas).toEqual([]);
+  });
+
+  it("parses task_complete without last_agent_message", () => {
+    const line = JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "t-2" } });
+    expect(codexTranscriptLineToDeltas(line).taskComplete).toEqual({ lastAgentMessage: undefined });
+  });
+
+  it("parses turn_aborted", () => {
+    const line = JSON.stringify({ type: "event_msg", payload: { type: "turn_aborted", turn_id: "t-3" } });
+    expect(codexTranscriptLineToDeltas(line).turnAborted).toBe(true);
+  });
+
+  it("other event_msg payloads carry no terminal markers", () => {
+    const line = JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "t-4" } });
+    const parsed = codexTranscriptLineToDeltas(line);
+    expect(parsed.taskComplete).toBeUndefined();
+    expect(parsed.turnAborted).toBeUndefined();
+  });
+});
+
 describe("CodexInteractiveEngine — effort/model PTY args + respawn", () => {
   let lifecycle: PtyLifecycleManager;
   let engine: CodexInteractiveEngine;
