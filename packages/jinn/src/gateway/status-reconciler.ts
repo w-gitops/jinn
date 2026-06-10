@@ -21,6 +21,12 @@ export interface StatusReconcilerDeps {
   staleMs?: number;
   /** Test override. */
   now?: () => number;
+  /** Carry-over between sweeps: sessions seen stuck once. A session is only
+   *  reset on the SECOND consecutive sweep that finds it stuck — a single
+   *  observation can be the benign seconds between a turn's process exiting
+   *  and the gateway persisting its final status. Created by
+   *  startStatusReconciler; tests may pass their own. */
+  pendingStuck?: Set<string>;
 }
 
 /** One sweep: unstick sessions stuck at status:"running" with no live turn.
@@ -29,11 +35,13 @@ export function sweepOnce(deps: StatusReconcilerDeps): number {
   const now = deps.now?.() ?? Date.now();
   const staleMs = deps.staleMs ?? DEFAULT_STALE_MS;
   let fixed = 0;
-  for (const session of listSessions()) {
-    if (session.status !== "running") continue;
+  for (const session of listSessions({ status: "running" })) {
     const last = session.lastActivity ? new Date(session.lastActivity).getTime() : 0;
     const staleFor = now - last;
-    if (staleFor < staleMs) continue; // heartbeat is live — a turn is in flight
+    if (staleFor < staleMs) {
+      deps.pendingStuck?.delete(session.id); // fresh heartbeat — recovered, clear any mark
+      continue; // heartbeat is live — a turn is in flight
+    }
     const engine = deps.engines.get(session.engine);
     // Same live-turn probe as the API status path: interactive engines expose
     // isTurnRunning (warm-but-idle PTYs must not count); headless engines
@@ -45,7 +53,17 @@ export function sweepOnce(deps: StatusReconcilerDeps): number {
           ? (engine as unknown as { isAlive(id: string): boolean }).isAlive(session.id)
           : false)
     );
-    if (turnRunning) continue;
+    if (turnRunning) {
+      deps.pendingStuck?.delete(session.id); // live turn — clear any mark
+      continue;
+    }
+    // Session qualifies as stuck: stale heartbeat + no live turn.
+    const pending = deps.pendingStuck;
+    if (pending && !pending.has(session.id)) {
+      pending.add(session.id);
+      continue; // confirm on the next sweep — could be a turn-boundary race
+    }
+    pending?.delete(session.id);
     updateSession(session.id, {
       status: "idle",
       lastActivity: new Date(now).toISOString(),
@@ -69,9 +87,10 @@ export function sweepOnce(deps: StatusReconcilerDeps): number {
 
 /** Start the periodic sweep. Returns a stop function. */
 export function startStatusReconciler(deps: StatusReconcilerDeps): () => void {
+  const pendingStuck = deps.pendingStuck ?? new Set<string>();
   const timer = setInterval(() => {
     try {
-      sweepOnce(deps);
+      sweepOnce({ ...deps, pendingStuck });
     } catch (err) {
       logger.warn(`[reconciler] sweep failed: ${err instanceof Error ? err.message : String(err)}`);
     }

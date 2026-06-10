@@ -77,4 +77,57 @@ describe("status reconciler sweepOnce", () => {
     expect(reg.getSession("idle-1")?.status).toBe("idle");
     expect(reg.getSession("ghost-1")?.status).toBe("idle");
   });
+
+  it("leaves a stale 'waiting' session untouched (rate-limit wait)", () => {
+    insert("waiting-1", "waiting", iso(999_000));
+    const fixed = rec.sweepOnce({ engines: new Map([["claude", fakeEngine(false)]]), emit: () => {}, now: () => NOW });
+    expect(fixed).toBe(0);
+    expect(reg.getSession("waiting-1")?.status).toBe("waiting");
+  });
+
+  it("isAlive fallback: headless engine without isTurnRunning", () => {
+    insert("headless-live", "running", iso(120_000), "codex");
+    insert("headless-dead", "running", iso(120_000), "codex");
+    const aliveEngine = { name: "codex", run: async () => ({ sessionId: "", result: "" }), isAlive: (id: string) => id === "headless-live" } as any;
+    const fixed = rec.sweepOnce({ engines: new Map([["codex", aliveEngine]]), emit: () => {}, now: () => NOW });
+    expect(fixed).toBe(1);
+    expect(reg.getSession("headless-live")?.status).toBe("running");
+    expect(reg.getSession("headless-dead")?.status).toBe("idle");
+  });
+
+  it("isTurnRunning wins over isAlive (warm-but-idle PTY must be unstuck)", () => {
+    insert("warm-idle", "running", iso(120_000));
+    const warmIdle = { name: "claude", run: async () => ({ sessionId: "", result: "" }), isTurnRunning: () => false, isAlive: () => true } as any;
+    const fixed = rec.sweepOnce({ engines: new Map([["claude", warmIdle]]), emit: () => {}, now: () => NOW });
+    expect(fixed).toBe(1);
+    expect(reg.getSession("warm-idle")?.status).toBe("idle");
+  });
+
+  it("two-sweep confirmation: first sweep marks, second sweep fixes, recovery clears the mark", () => {
+    insert("boundary-1", "running", iso(120_000));
+    const pendingStuck = new Set<string>();
+    const deps = { engines: new Map([["claude", fakeEngine(false)]]), emit: () => {}, now: () => NOW, pendingStuck };
+    expect(rec.sweepOnce(deps)).toBe(0); // first observation — candidate only
+    expect(reg.getSession("boundary-1")?.status).toBe("running");
+    expect(rec.sweepOnce(deps)).toBe(1); // second consecutive observation — fixed
+    expect(reg.getSession("boundary-1")?.status).toBe("idle");
+
+    // A candidate that recovers (fresh heartbeat) is cleared, not fixed later.
+    insert("boundary-2", "running", iso(120_000));
+    expect(rec.sweepOnce(deps)).toBe(0); // marked
+    db.prepare("UPDATE sessions SET last_activity = ? WHERE id = ?").run(iso(1_000), "boundary-2");
+    expect(rec.sweepOnce(deps)).toBe(0); // fresh — mark cleared
+    db.prepare("UPDATE sessions SET last_activity = ? WHERE id = ?").run(iso(120_000), "boundary-2");
+    expect(rec.sweepOnce(deps)).toBe(0); // stale again — needs re-confirmation
+    expect(rec.sweepOnce(deps)).toBe(1); // now fixed
+  });
+
+  it("clears lastError and restamps lastActivity on fix", () => {
+    insert("stuck-meta", "running", iso(120_000));
+    db.prepare("UPDATE sessions SET last_error = 'boom' WHERE id = ?").run("stuck-meta");
+    rec.sweepOnce({ engines: new Map(), emit: () => {}, now: () => NOW });
+    const s = reg.getSession("stuck-meta");
+    expect(s?.lastError ?? null).toBeNull();
+    expect(new Date(s!.lastActivity).getTime()).toBe(NOW);
+  });
 });
