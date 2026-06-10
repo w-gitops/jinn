@@ -300,8 +300,6 @@ The gateway base URL (host:port) is provided in your session context under "Curr
 | `/api/cron/:id/runs` | GET | Cron run history |
 | `/api/org` | GET | Organization structure (hierarchy, ranks, reporting lines) |
 | `/api/org/employees/:name` | GET | Employee details (full persona) |
-| `/api/org/services` | GET | All services declared across the org |
-| `/api/org/cross-request` | POST | Route a request to a service provider (`{fromEmployee, service, prompt}`) |
 | `/api/skills` | GET | List skills |
 | `/api/skills/:name` | GET | Skill content |
 | `/api/config` | GET / PUT | Read / update config |
