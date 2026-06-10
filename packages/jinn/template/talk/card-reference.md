@@ -1,6 +1,6 @@
 # AURA card reference
 
-The voice persona keeps only the most common card inline. This file holds the full 13-type card catalogue, the delegation endpoint, the update/dismiss/clear endpoints, and how card taps return to you.
+The voice persona keeps only the most common card inline. This file holds the full 13-type card catalogue, every delegate request shape (spawn / continue / search-attach / detach), the search endpoint, the update/dismiss/clear endpoints, and how card taps return to you.
 
 Post every card to YOUR OWN talk session id (`<YOUR_OWN_SESSION_ID>` from your "Current session" context) — the card surface belongs to the voice session the operator is watching, NOT the COO child.
 
@@ -12,19 +12,69 @@ Post every card to YOUR OWN talk session id (`<YOUR_OWN_SESSION_ID>` from your "
 
 ## Delegation — the only way to hand work to the COO
 
-`POST <GATEWAY_URL>/api/talk/delegate` is your ONLY delegation surface. Never call `/api/sessions` directly.
+`POST <GATEWAY_URL>/api/talk/delegate` is your ONLY delegation surface. Never call `/api/sessions` directly. `sessionId` is ALWAYS your own talk session id on EVERY shape below.
 
-**Request body:**
+### Shape 1 — spawn a new COO thread
 ```json
-{"sessionId":"<YOUR_OWN_SESSION_ID>","thread":"new","label":"<short topic>","brief":"<expanded brief>"}
+{"sessionId":"<YOUR_OWN_SESSION_ID>","thread":"new","label":"<short topic>","brief":"<expanded brief>","utterance":"<operator's exact words>"}
 ```
-- `thread`: `"new"` to start a fresh COO thread, or an existing thread id from your roster to continue it.
-- `label`: short 1–3 word topic label (only needed when `thread:"new"`).
+- `thread`: `"new"` to start a fresh COO thread.
+- `label`: short 1–3 word topic label (only used when `thread:"new"`; auto-derived from the brief if omitted).
 - `brief`: the full expanded brief — goal, constraints, what done looks like.
+- `utterance` (optional, ALWAYS pass it): the operator's verbatim words. Sent alongside the brief as "original request — if the brief misreads this, the original words win." The brief expands; the utterance protects.
 
-**Success response:** `{"ok":true,"threadId":"<COO_SESSION_ID>","created":true|false}`
+**Response:** `{"ok":true,"threadId":"<COO_SESSION_ID>","created":true}`
 
-**Error (400) with unknown thread id:** returns `{"error":"…","threads":[…]}` — the valid roster. Correct yourself from it and retry.
+### Shape 2 — continue an existing thread
+```json
+{"sessionId":"<YOUR_OWN_SESSION_ID>","thread":"<COO_SESSION_ID>","brief":"<follow-up>","utterance":"<operator's exact words>"}
+```
+- `thread`: an existing thread id from your roster (no `label`). The id must be one of YOUR own COO children.
+
+**Response:** `{"ok":true,"threadId":"<COO_SESSION_ID>","created":false}`
+
+**Error (400) — unknown/foreign thread id:** returns `{"error":"…","threads":[{"id","label","status"}…]}` — your valid roster. Correct yourself from it and retry (or attach it instead — see Shape 3).
+
+### Shape 3 — attach a found session (observe or engage)
+Adopt ANY session (a COO thread you don't own, or any employee/chat session) as a soft link so the constellation shows it. Get the id from search (below).
+```json
+{"sessionId":"<YOUR_OWN_SESSION_ID>","thread":"<TARGET_SESSION_ID>","attach":true}
+```
+- Default `mode` is `"observe"` — read-only, NO message is sent (passing a `brief` in observe mode is a 400).
+- To send it work in the operator's name, set `mode:"engage"` + a `brief` (the message is prefixed "Relayed by AURA on behalf of the operator"):
+```json
+{"sessionId":"<YOUR_OWN_SESSION_ID>","thread":"<TARGET_SESSION_ID>","attach":true,"mode":"engage","brief":"<what to do>","utterance":"<operator's exact words>"}
+```
+- `mode`: only `"observe"` or `"engage"`. `utterance` is honored on engage exactly as on spawn/continue.
+
+**Response:** `{"ok":true,"threadId":"<TARGET_SESSION_ID>","attached":true,"mode":"observe"|"engage"}`
+
+### Shape 4 — detach
+Drop the soft link when the topic closes (no message sent):
+```json
+{"sessionId":"<YOUR_OWN_SESSION_ID>","thread":"<TARGET_SESSION_ID>","detach":true}
+```
+**Response:** `{"ok":true,"threadId":"<TARGET_SESSION_ID>","detached":true}`
+
+## Search — find any past conversation
+
+`GET <GATEWAY_URL>/api/talk/search?q=<words>` (optional `&limit=<n>`, default/max 20). Matches session titles/metadata AND message content across EVERY session ever — COO threads, employee sessions, chats.
+
+**Response:**
+```json
+{"ok":true,"results":[{"sessionId":"…","title":"…","employee":"movekit-eng"|null,"source":"talk"|"chat"|…,"lastActivity":"…","status":"idle"|"running"|…,"isTalkChild":true|false,"hits":[{"snippet":"…","role":"assistant","ts":1234567890}]}]}
+```
+- `isTalkChild`: **true** → it's one of YOUR own talk threads — just continue it with Shape 2 (do NOT attach). **false** → a foreign session — adopt it with Shape 3 (attach) to watch or engage.
+- `hits`: up to 3 content snippets per session (newest first); empty when only the title matched.
+
+### Worked example — "have the movekit engineer look at the failing build"
+1. Search: `GET /api/talk/search?q=movekit failing build`.
+2. A result comes back: `{"sessionId":"7f3a…","employee":"movekit-eng","isTalkChild":false,"hits":[{"snippet":"…build red on CI…"}]}`. `isTalkChild:false` → foreign session → attach + engage:
+```json
+{"sessionId":"<YOUR_OWN_SESSION_ID>","thread":"7f3a…","attach":true,"mode":"engage","brief":"Investigate the failing CI build and report the root cause + fix.","utterance":"have the movekit engineer look at the failing build"}
+```
+3. Say "On the movekit build now." and END YOUR TURN. When it reports back, narrate the outcome; detach with Shape 4 once resolved.
+(If search had returned `isTalkChild:true`, you'd skip attach and just continue it with Shape 2.)
 
 ## All 13 card types
 
