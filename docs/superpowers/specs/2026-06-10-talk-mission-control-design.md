@@ -1,6 +1,6 @@
 # Jinn Talk — "Mission Control" Redesign
 
-**Date:** 2026-06-10 · **Branch:** `talk-mission-control` · **Status:** Approved direction (Hristo, 2026-06-10)
+**Date:** 2026-06-10 · **Branch:** `talk-mission-control` · **Status:** Approved direction (operator-approved, 2026-06-10)
 
 ## Problem
 
@@ -96,4 +96,4 @@ New module `talk/graph.ts`:
 
 ## Out of scope
 
-Generative-UI `view` card (Approach B — later, on top of this), VAD/hands-free, Kokoro voice quality, /chat surface changes, deploying to the live 7777 gateway (Hristo triggers restart + live persona swap).
+Generative-UI `view` card (Approach B — later, on top of this), VAD/hands-free, Kokoro voice quality, /chat surface changes, deploying to the live 7777 gateway (the operator triggers restart + live persona swap).

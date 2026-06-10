@@ -1110,7 +1110,7 @@ git commit -m "feat(talk): per-sentence TTS streaming — kill the whole-turn de
 - Modify: `packages/jinn/template/talk/orchestrator-persona.md` (same text)
 - Modify: `packages/jinn/template/talk/card-reference.md` (restored card types + delegate endpoint)
 
-⚠️ Do NOT touch `~/.jinn/talk/orchestrator-persona.md` — it hot-reloads into the LIVE 7777 gateway. Swapping the live file is a deploy step for Hristo.
+⚠️ Do NOT touch `~/.jinn/talk/orchestrator-persona.md` — it hot-reloads into the LIVE 7777 gateway. Swapping the live file is a deploy step for the operator.
 
 - [ ] **Step 1: Model default**
 
@@ -2004,7 +2004,7 @@ git add -A && git commit -m "fix(talk): mission-control verification fixes" # on
 
 ---
 
-## Deploy notes (NOT part of this plan — Hristo's call)
+## Deploy notes (NOT part of this plan — the operator's call)
 
 - Merge `talk-mission-control` → main, rebuild, restart the 7777 daemon (`npm run jinn start -- --daemon` from `~/Projects/jinn` after `jinn stop` — never `jinn restart`).
 - Swap the live `~/.jinn/talk/orchestrator-persona.md` with the new template (hot-reloads instantly).
