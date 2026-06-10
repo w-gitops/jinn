@@ -189,9 +189,27 @@ export interface TrackerTask {
 }
 
 // ============================================================================
-// Talk transcript — system notification entries (delegation events).
-// Consumed by ConversationStream (Task 9); not yet rendered by Transcript.
+// Talk transcript — finalized conversation entries + system notifications.
+// Consumed by ConversationStream (Task 9) and the rehydrate transforms.
 // ============================================================================
+
+/**
+ * One finalized line of the talk conversation. Produced by the rehydrate
+ * transforms (server snapshot → UI) and seeded into the ConversationStream
+ * reducer. `partial` marks an assistant reply still streaming; `seg`/`full`
+ * are legacy caption fields kept for the rehydrate shape and ignored by the
+ * stream (which re-splits `full ?? text` into sentences itself).
+ */
+export interface TranscriptEntry {
+  id: string
+  role: "user" | "assistant"
+  text: string
+  partial?: boolean
+  /** Sentence index while a reply is spoken (legacy caption field). */
+  seg?: number
+  /** Full reply text — the stream splits this into karaoke sentences. */
+  full?: string
+}
 
 export type SystemEventKind = "reported" | "error" | "info"
 

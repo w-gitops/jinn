@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useGateway } from "@/hooks/use-gateway"
 import { useStt, type SttState } from "@/hooks/use-stt"
-import { useSpeak, splitSentences } from "./use-speak"
+import { useSpeak } from "./use-speak"
 import { stripMarkdown } from "@/lib/strip-markdown"
 import { api } from "@/lib/api"
 import { TalkAudioPlayer } from "./audio-player"
@@ -36,8 +36,9 @@ import {
   type SessionCompletedEvent,
 } from "./protocol"
 import { graphReducer, type GraphNode, type GraphAction } from "./graph-store"
-import type { TranscriptEntry } from "./transcript"
 import type { AvatarState, Card } from "./types"
+import { useConversation, type StreamRow } from "./use-conversation"
+import { channelHue } from "./channel-identity"
 import { threadReducer, type TalkThread, type ThreadAction } from "./thread-store"
 import { messagesToEntries, childrenToThreads } from "./rehydrate"
 import {
@@ -81,7 +82,8 @@ export interface TalkEngineInfo {
 
 export interface UseTalkReturn {
   state: AvatarState
-  entries: TranscriptEntry[]
+  /** The persistent conversation: user lines, AURA replies, delegation chips. */
+  rows: StreamRow[]
   /** Persistent COO threads (satellite orbs + the thread panel). */
   threads: TalkThread[]
   /**
@@ -158,7 +160,17 @@ export function useTalk(): UseTalkReturn {
   const gateway = useGateway()
 
   const [state, setState] = useState<AvatarState>("idle")
-  const [entries, setEntries] = useState<TranscriptEntry[]>([])
+  // The persistent conversation lives in the ConversationStream reducer; these
+  // stable action creators replace the old single-exchange `entries` state.
+  const {
+    rows,
+    appendUser,
+    appendAssistant: appendAssistantRow,
+    markSpoken,
+    finalizeAssistant,
+    addSystem,
+    rehydrate: rehydrateRows,
+  } = useConversation()
   const [threads, setThreads] = useState<TalkThread[]>([])
   // Lazy-init from localStorage so a routed-thread selection survives a reload.
   const [targetThreadId, setTargetThreadId] = useState<string | null>(() => loadTargetThread())
@@ -229,6 +241,10 @@ export function useTalk(): UseTalkReturn {
   // Live mirrors for WS-callback / send closures.
   const threadsRef = useRef<TalkThread[]>(threads)
   threadsRef.current = threads
+  // Live mirror of the conversation rows so rehydrate can guard "seed only when
+  // empty" without re-creating itself every time a row streams in.
+  const rowsRef = useRef<StreamRow[]>(rows)
+  rowsRef.current = rows
   const targetThreadIdRef = useRef<string | null>(targetThreadId)
   targetThreadIdRef.current = targetThreadId
 
@@ -295,31 +311,19 @@ export function useTalk(): UseTalkReturn {
     levelRafRef.current = requestAnimationFrame(tick)
   }, [])
 
-  // ---- Transcript helpers --------------------------------------------------
-  // Streaming display invariant: the caption shows only the CURRENT sentence,
-  // never the whole accumulated reply. We keep the full raw text in
-  // turnTextRef (for the spoken pass), but the entry's display `text` is the
-  // LAST sentence of the markdown-stripped accumulation, tagged with its `seg`
-  // index so transcript.tsx re-keys (switches) as sentences complete.
+  // ---- Conversation helpers ------------------------------------------------
+  // The full raw reply lives in turnTextRef (for the spoken pass); we push the
+  // FULL accumulated, markdown-stripped text into the stream reducer each delta,
+  // which re-splits it into sentences (one persistent AURA row, sentences grow).
   const appendAssistantText = useCallback((fragment: string) => {
-    setEntries((prev) => {
-      if (!asstIdRef.current) {
-        turnCounterRef.current += 1
-        asstIdRef.current = `a${turnCounterRef.current}`
-        turnTextRef.current = ""
-      }
-      const id = asstIdRef.current
-      turnTextRef.current += fragment
-      const stripped = stripMarkdown(turnTextRef.current)
-      const sentences = splitSentences(stripped)
-      const lastIdx = Math.max(0, sentences.length - 1)
-      const display = sentences.length ? sentences[lastIdx] : stripped
-      return [
-        ...prev.filter((e) => e.id !== id),
-        { id, role: "assistant", text: display, seg: lastIdx, partial: true },
-      ]
-    })
-  }, [])
+    if (!asstIdRef.current) {
+      turnCounterRef.current += 1
+      asstIdRef.current = `a${turnCounterRef.current}`
+      turnTextRef.current = ""
+    }
+    turnTextRef.current += fragment
+    appendAssistantRow(asstIdRef.current, stripMarkdown(turnTextRef.current))
+  }, [appendAssistantRow])
 
   // ---- COO thread bookkeeping ----------------------------------------------
   // Threads persist and NEVER auto-hide; idle threads dim (Mission Control).
@@ -381,11 +385,11 @@ export function useTalk(): UseTalkReturn {
     if (!orch || !msg) return
     const display = stripMarkdown(msg.replace(/^\[card-action[^\]]*\]\s*/, "")).trim()
     if (display) {
-      setEntries((prev) => [...prev, { id: `u${Date.now()}`, role: "user", text: display }])
+      appendUser(`u${Date.now()}`, display)
     }
     setState("thinking")
     api.sendMessage(orch, { message: msg }).catch(() => { setState("idle"); stopLevelLoop() })
-  }, [stopLevelLoop])
+  }, [stopLevelLoop, appendUser])
 
   // ---- WS subscription -----------------------------------------------------
   useEffect(() => {
@@ -416,19 +420,20 @@ export function useTalk(): UseTalkReturn {
       const kokoro = audioThisTurnRef.current && !mutedNow
       audioThisTurnRef.current = false
       const text = stripMarkdown(turnTextRef.current).trim()
+      // Lock in the complete sentence list before the karaoke pass (the last
+      // streaming delta may have raced session:completed).
+      if (asstId && text) appendAssistantRow(asstId, text)
       const finalize = () => {
         if (!asstId) return
-        setEntries((prev) =>
-          prev.map((e) => (e.id === asstId ? { ...e, partial: false, full: text || e.text } : e)),
-        )
+        finalizeAssistant(asstId)
       }
-      const captionSentence = ({ text: sentence, index }: { text: string; index: number }) => {
+      // markSpoken is driven by use-speak's onSentence callback, which fires as
+      // each sentence utterance STARTS (Web-Speech boundary events, or the
+      // estimated-timer fallback when no synth) — true per-sentence karaoke sync
+      // without a second event source.
+      const captionSentence = ({ index }: { text: string; index: number }) => {
         if (!asstId) return
-        setEntries((prev) =>
-          prev.map((e) =>
-            e.id === asstId ? { ...e, text: sentence, seg: index, partial: true } : e,
-          ),
-        )
+        markSpoken(asstId, index)
       }
       if (!text) {
         finalize()
@@ -514,6 +519,23 @@ export function useTalk(): UseTalkReturn {
               dispatchThread({ type: "dismiss", id: ev.node.id })
             }
           }
+          // Conversation delegation chips. Owned children: "added" → delegated,
+          // "completed" → reported (no live notification WS event exists, so the
+          // completed graph delta is the cleanest "child reported back" signal).
+          // Attachments: their own attached/detached chips.
+          const n = ev.node
+          if (n.depth === 1) {
+            const hue = channelHue(n.label || n.id)
+            if (ev.change === "added" && !n.attached) {
+              addSystem({ id: `sys-del-${n.id}`, event: "delegated", label: n.label, threadId: n.id, hue, ts: Date.now() })
+            } else if (ev.change === "completed" && !n.attached) {
+              addSystem({ id: `sys-rep-${n.id}-${Date.now()}`, event: "reported", label: n.label, threadId: n.id, hue, ts: Date.now() })
+            } else if (ev.change === "attached") {
+              addSystem({ id: `sys-att-${n.id}`, event: "attached", label: n.label, threadId: n.id, hue, ts: Date.now() })
+            } else if (ev.change === "detached") {
+              addSystem({ id: `sys-det-${n.id}-${Date.now()}`, event: "detached", label: n.label, threadId: n.id, hue, ts: Date.now() })
+            }
+          }
         }
         return
       }
@@ -587,7 +609,7 @@ export function useTalk(): UseTalkReturn {
     })
 
     return () => { unsub() }
-  }, [gateway, appendAssistantText, dispatchThread, dispatchGraph, startLevelLoop, stopLevelLoop, upsertCard, patchCard, dismissCard, clearCards])
+  }, [gateway, appendAssistantText, appendAssistantRow, finalizeAssistant, markSpoken, addSystem, dispatchThread, dispatchGraph, startLevelLoop, stopLevelLoop, upsertCard, patchCard, dismissCard, clearCards])
 
   // ---- Server rehydration --------------------------------------------------
   // Replay the reused orchestrator session so the transcript + COO thread chips
@@ -604,14 +626,11 @@ export function useTalk(): UseTalkReturn {
         api.getTalkGraph(orchId).catch(() => undefined),
       ])
       if (orchestratorIdRef.current !== orchId) return // superseded
+      // Seed the ConversationStream from the server snapshot — user/assistant
+      // lines AND system delegation chips. Non-clobbering: only seed when the
+      // stream is still empty (a live conversation is never overwritten).
       const allEntries = messagesToEntries(session as Record<string, unknown> | undefined)
-      // Filter out system entries before setting transcript state — system
-      // entries are consumed by ConversationStream (Task 9) which reads the
-      // full allEntries array directly once that component lands.
-      const mapped = allEntries.filter(
-        (e): e is TranscriptEntry => !("kind" in e),
-      )
-      if (mapped.length) setEntries((cur) => (cur.length ? cur : mapped))
+      if (allEntries.length && rowsRef.current.length === 0) rehydrateRows(allEntries)
 
       const rebuilt = childrenToThreads(
         children as Record<string, unknown>[],
@@ -637,7 +656,7 @@ export function useTalk(): UseTalkReturn {
     } catch {
       /* best-effort; a later reconnect rehydrate will retry */
     }
-  }, [dispatchGraph])
+  }, [dispatchGraph, rehydrateRows])
 
   // Marks that the bootstrap has kicked off the INITIAL rehydrate, so the
   // reconnect effect below only gates on it (never consumes it) — otherwise the
@@ -764,10 +783,7 @@ export function useTalk(): UseTalkReturn {
     const orch = orchestratorIdRef.current
     const text = rawText.trim()
     if (!orch || !text) return
-    setEntries((prev) => [
-      ...prev,
-      { id: `u${Date.now()}`, role: "user", text: stripMarkdown(text) },
-    ])
+    appendUser(`u${Date.now()}`, stripMarkdown(text))
     // Switch override: if a thread is selected, prepend a machine route hint so
     // the orchestrator CONTINUES that COO session instead of spawning a new one.
     // The transcript keeps the clean text; only the engine sees the hint.
@@ -781,7 +797,7 @@ export function useTalk(): UseTalkReturn {
     api.sendMessage(orch, { message: outbound }).catch(() => {
       setState("idle"); stopLevelLoop()
     })
-  }, [stopLevelLoop])
+  }, [stopLevelLoop, appendUser])
 
   /** Type-to-talk: send a typed message exactly like a transcribed voice turn.
    *  Works even when STT is unavailable — the graceful fallback for the mic. */
@@ -854,7 +870,7 @@ export function useTalk(): UseTalkReturn {
 
   return useMemo(
     () => ({
-      state, entries, threads, graph, targetThreadId, cards, level,
+      state, rows, threads, graph, targetThreadId, cards, level,
       connected: gateway.connected,
       listening,
       sttAvailable: stt.available,
@@ -872,6 +888,6 @@ export function useTalk(): UseTalkReturn {
       activate, cardAction,
       startListening, stop, stopSpeaking,
     }),
-    [state, entries, threads, graph, targetThreadId, cards, level, gateway.connected, listening, stt.available, stt.error, stt.state, stt.downloadProgress, stt.startDownload, ttsStatus, voiceMode, muted, toggleMute, sendText, dismissSttDownload, engineInfo, switchEngine, switchModel, selectThread, renameThread, dismissThread, activate, cardAction, startListening, stop, stopSpeaking],
+    [state, rows, threads, graph, targetThreadId, cards, level, gateway.connected, listening, stt.available, stt.error, stt.state, stt.downloadProgress, stt.startDownload, ttsStatus, voiceMode, muted, toggleMute, sendText, dismissSttDownload, engineInfo, switchEngine, switchModel, selectThread, renameThread, dismissThread, activate, cardAction, startListening, stop, stopSpeaking],
   )
 }

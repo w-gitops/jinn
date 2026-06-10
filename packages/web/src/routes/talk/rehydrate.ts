@@ -6,9 +6,8 @@
  * These transforms are pure (no React/DOM) so they can be unit-tested; use-talk
  * wires them into its bootstrap effect with non-clobbering setState guards.
  */
-import type { TranscriptEntry } from "./transcript"
 import type { TalkThread } from "./thread-store"
-import type { SystemEntry } from "./types"
+import type { TranscriptEntry, SystemEntry } from "./types"
 import { deriveLabel } from "./thread-store"
 import { channelHue } from "./channel-identity"
 import { stripMarkdown } from "@/lib/strip-markdown"
