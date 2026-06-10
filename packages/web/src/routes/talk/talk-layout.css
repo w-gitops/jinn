@@ -106,6 +106,10 @@
 
 /* ---- row 5: pinned (blocking) cards; collapses to 0 when absent ---- */
 .talk-pinned {
+  /* Own stacking position so the pinned deck out-paints the fixed orb layer
+     on z-ties (the orb layer sits earlier in the DOM at the same --z-stage). */
+  position: relative;
+  z-index: var(--z-stage);
   display: flex;
   align-items: flex-end;
   justify-content: center;

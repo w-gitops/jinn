@@ -62,6 +62,8 @@ export const SPRING_PRESETS = {
   bouncy: { stiffness: 180, damping: 12, mass: 1 },
   /** Tight tracking for audio-reactive values. */
   reactive: { stiffness: 320, damping: 30, mass: 0.8 },
+  /** Overdamped hero↔dock morph — decisive, no bounce (the "one mover"). */
+  stage: { stiffness: 170, damping: 26, mass: 1 },
 } as const satisfies Record<string, SpringConfig>
 
 /**

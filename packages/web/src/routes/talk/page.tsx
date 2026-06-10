@@ -6,14 +6,14 @@
  * button drives the loop (tap to talk, tap to send). TTS is browser
  * SpeechSynthesis by default, so it speaks aloud on the phone with no server deps.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import { ArrowLeft, Mic, Square, Sun, Moon, Keyboard, Volume2, VolumeX, Send, Search } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { mainButtonMode } from "./main-button"
 import { useTheme } from "@/routes/providers"
-import { AuraAvatar } from "./aura-avatar"
 import { ConversationStream } from "./conversation-stream"
+import { OrbLayer } from "./orb-layer"
 import { PinnedCards, selectInlineCards, selectPinnedCards } from "./cards/card-stack"
 import { ErrorBoundary } from "@/components/error-boundary"
 import { WorkDock } from "./work-dock"
@@ -53,6 +53,13 @@ export default function TalkPage() {
     hasRows: talk.rows.length > 0,
     pinnedCount: pinnedCards.length,
   })
+  // ONE derived flag drives both the dock row activation and the dock-row
+  // whisper — the two must stay structurally identical or the whisper can
+  // render into a zero-height row.
+  const docked = stage !== "hero"
+  // Anchors the OrbLayer measures: stage cell centre (hero) + 56px dock box.
+  const heroAnchorRef = useRef<HTMLDivElement | null>(null)
+  const dockAnchorRef = useRef<HTMLDivElement | null>(null)
   // Which session's chat the peek popup is showing (null → closed).
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
   // Session-search sheet (opened from the top-bar search icon).
@@ -191,17 +198,30 @@ export default function TalkPage() {
       </div>
 
       {/* row 3: orb dock — reserves the docked orb's space; anchor + whisper.
-          The orb itself is still the absolute CenteredOrb until Task 4. */}
-      <div className="talk-orbdock" data-active={stage !== "hero"}>
-        <div className="talk-orbdock__anchor" aria-hidden />
-        {stage !== "hero" && talk.state === "thinking" && talk.whisper && (
+          The OrbLayer below chases the anchor's rect when docked. */}
+      <div className="talk-orbdock" data-active={docked}>
+        <div ref={dockAnchorRef} className="talk-orbdock__anchor" aria-hidden />
+        {docked && talk.state === "thinking" && talk.whisper && (
           <p className="talk-whisper text-caption1 text-[var(--text-quaternary)]">{talk.whisper}</p>
         )}
       </div>
 
+      {/* The persistent orchestrator orb — position:fixed, spring-morphs between
+          the stage centre (hero) and the dock anchor above. Placed BEFORE
+          .talk-main in the DOM so the stream + pinned cards out-paint it on
+          equal z-index. */}
+      <OrbLayer
+        mode={stage}
+        state={talk.state}
+        level={talk.level}
+        channelHue={talk.focusHue}
+        heroAnchorRef={heroAnchorRef}
+        dockAnchorRef={dockAnchorRef}
+      />
+
       {/* row 4: main — transcript stage + WorkDock rail */}
       <div className="talk-main">
-        <div className="talk-stage">
+        <div ref={heroAnchorRef} className="talk-stage">
           {/* Persistent conversation — user lines, AURA karaoke replies,
               delegation chips. Fills the stage cell; the wrapper is
               pointer-events:none and the scroll viewport + links/chips
@@ -335,17 +355,6 @@ export default function TalkPage() {
         </div>
       </div>
 
-      {/* The orchestrator orb — still the absolute overlay until Task 4 replaces
-          it with the morphing OrbLayer. Whisper is null here: the dock-row
-          whisper (row 3) replaces it in the thinking state. */}
-      <CenteredOrb
-        state={talk.state}
-        level={talk.level}
-        channelHue={talk.focusHue}
-        whisper={null}
-        conversing={talk.rows.length > 0 || talk.state !== "idle"}
-      />
-
       {/* Peek popup for a tapped session (chip, orb, or search row) — now with
           attach controls + engage composer. */}
       <SessionPeek
@@ -369,69 +378,6 @@ export default function TalkPage() {
         onDownload={talk.startSttDownload}
         onCancel={talk.dismissSttDownload}
       />
-    </div>
-  )
-}
-
-/**
- * The orchestrator orb, centered on the surface and sized to the viewport. Its
- * own container is pointer-events:none so taps fall through to the controls; the
- * orb morphs toward `channelHue` (the focused COO channel) and eases back to
- * AURA's amber when nothing is running.
- *
- * Choreography (Task 13): idle = large + centered; `conversing` = compact +
- * lifted (the shell eases up and the orb is sized smaller) so the conversation
- * stream and dock have room. While `thinking`, a short muted whisper of the
- * orchestrator's current tool_use sits just under the orb.
- */
-function CenteredOrb({
-  state,
-  level,
-  channelHue,
-  whisper,
-  conversing,
-}: {
-  state: ReturnType<typeof useTalkContext>["state"]
-  level: number | undefined
-  channelHue: number | undefined
-  whisper: string | null
-  conversing: boolean
-}) {
-  const ref = useRef<HTMLDivElement | null>(null)
-  const [size, setSize] = useState(280)
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const measure = () => {
-      const w = el.clientWidth
-      const h = el.clientHeight
-      const base = Math.min(w, h || w)
-      // Compact while conversing so the orb reads as a calm presence behind the
-      // stream rather than dominating; large + central when idle.
-      const size = conversing
-        ? Math.max(120, Math.min(base * 0.4, 210))
-        : Math.max(160, Math.min(base * 0.6, 360))
-      setSize(size)
-    }
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [conversing])
-  return (
-    <div
-      ref={ref}
-      className={cn(
-        "talk-orb-shell pointer-events-none absolute inset-0 z-0 grid place-items-center",
-        conversing && "talk-orb-shell--conversing",
-      )}
-    >
-      <div className="flex flex-col items-center gap-2">
-        <AuraAvatar state={state} level={level} size={Math.round(size)} channelHue={channelHue} />
-        {state === "thinking" && whisper && (
-          <p className="talk-whisper text-caption1 text-[var(--text-quaternary)]">{whisper}</p>
-        )}
-      </div>
     </div>
   )
 }

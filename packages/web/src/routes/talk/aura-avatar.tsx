@@ -44,6 +44,8 @@ export interface AuraAvatarProps {
   channelHue?: number
   /** Tint strength 0..1 (default 1 when `channelHue` is set). */
   channelMix?: number
+  /** Docked (status-light) presentation — clamps the outer glow via CSS. */
+  docked?: boolean
   className?: string
 }
 
@@ -216,6 +218,7 @@ export function AuraAvatar({
   size = 340,
   channelHue,
   channelMix,
+  docked = false,
   className,
 }: AuraAvatarProps): JSX.Element {
   const reduced = usePrefersReducedMotion()
@@ -636,7 +639,7 @@ export function AuraAvatar({
   return (
     <div
       ref={wrapRef}
-      className={className ? `aura ${className}` : "aura"}
+      className={["aura", docked ? "aura--docked" : null, className].filter(Boolean).join(" ")}
       style={{ ["--aura-size" as string]: `${size}px` }}
       data-state={state}
       aria-hidden="true"
