@@ -433,10 +433,6 @@ export function ChatPane({
         />
       )}
 
-      {viewMode === 'cli' && sessionId && (
-        <CliKeybar onKey={(data) => cliTerminalRef.current?.sendKey(data)} />
-      )}
-
       {/* Input — chat-style composer for every view, including CLI (the PTY engine
           accepts attachments + the prompt is injected into xterm via bracketed-paste). */}
       <ChatInput
@@ -462,6 +458,11 @@ export function ChatPane({
             contextTokens={liveContextTokens ?? (currentSession?.lastContextTokens as number | null | undefined) ?? undefined}
             onNewChat={handleNewSession}
           />
+        }
+        terminalActionsSlot={
+          viewMode === 'cli' && sessionId ? (
+            <CliKeybar onKey={(data) => cliTerminalRef.current?.sendKey(data)} />
+          ) : undefined
         }
       />
     </div>

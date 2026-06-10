@@ -965,6 +965,7 @@ export default function SettingsPage() {
                       updateConfig(["engines", "claude", "model"], v)
                     }
                     options={modelOptions("claude", [
+                      { value: "claude-fable-5", label: "Fable 5" },
                       { value: "opus", label: "Opus" },
                       { value: "sonnet", label: "Sonnet" },
                       { value: "haiku", label: "Haiku" },

@@ -49,6 +49,8 @@ interface ChatInputProps {
   onShortcutsClick?: () => void
   /** Optional Engine/Model/Effort selector row, rendered just above the input. */
   selectorSlot?: React.ReactNode
+  /** Optional compact controls rendered on the right side of the hint strip. */
+  terminalActionsSlot?: React.ReactNode
 }
 
 /* ── File to MediaAttachment ─────────────────────────────── */
@@ -122,6 +124,7 @@ export function ChatInput({
   focusTrigger,
   onShortcutsClick,
   selectorSlot,
+  terminalActionsSlot,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -629,9 +632,7 @@ export function ChatInput({
         </button>
       </div>
 
-      {/* Meta strip: Engine·Model·Effort selector pinned LEFT, hints CENTERED.
-          3-col grid [1fr | auto | 1fr] so the hints sit true-center regardless of
-          selector width, with no overlap at narrow widths. */}
+      {/* Meta strip: Engine·Model·Effort selector LEFT, hints CENTER, terminal actions RIGHT. */}
       <div className="flex sm:grid sm:grid-cols-[1fr_auto_1fr] items-center gap-[var(--space-2)] mt-[var(--space-1)] min-w-0">
         {/* Selector — quiet inline metadata, left, with breathing room from the edge.
             Mobile: takes the full strip width (no 1fr spacer stealing half) and
@@ -651,8 +652,7 @@ export function ChatInput({
             </button>
           )}
         </div>
-        {/* Spacer col keeps the hints optically centered */}
-        <div aria-hidden />
+        <div className="justify-self-end mr-[10px] flex items-center">{terminalActionsSlot}</div>
       </div>
 
       {/* STT error banner */}

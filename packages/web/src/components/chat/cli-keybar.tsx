@@ -1,4 +1,5 @@
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, CornerDownLeft, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, CornerDownLeft, Keyboard, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { LucideIcon } from 'lucide-react'
 
@@ -21,27 +22,76 @@ export const CLI_KEYS: readonly CliKey[] = [
 ] as const
 
 export function CliKeybar({ onKey, disabled = false }: { onKey: (data: string) => void; disabled?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+
+    function handleMouseDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleMouseDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleMouseDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
   return (
-    <div role="toolbar" aria-label="Terminal keys" className="flex shrink-0 items-center gap-1 overflow-x-auto border-t border-[var(--border)] bg-[var(--bg)] px-2 py-1.5">
-      {CLI_KEYS.map((key) => {
-        const Icon = key.icon
-        return (
-          <Button
-            key={key.label}
-            type="button"
-            variant="ghost"
-            size={Icon ? 'icon-sm' : 'sm'}
-            onPointerDown={(e) => e.preventDefault()}
-            onClick={() => { if (!disabled) onKey(key.data) }}
-            disabled={disabled}
-            title={key.aria}
-            aria-label={key.aria}
-            className="shrink-0 font-mono text-[length:var(--text-caption1)]"
-          >
-            {Icon ? <Icon className="size-4" /> : key.label}
-          </Button>
-        )
-      })}
+    <div ref={ref} className="relative flex justify-end">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-xs"
+        onPointerDown={(e) => e.preventDefault()}
+        onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+        title="Terminal keys"
+        aria-label="Terminal keys"
+        aria-expanded={open}
+        className="text-[var(--text-quaternary)] hover:text-[var(--text-tertiary)]"
+      >
+        <Keyboard className="size-3.5" />
+      </Button>
+
+      {open && (
+        <div
+          role="toolbar"
+          aria-label="Terminal keys"
+          className="absolute bottom-full right-0 z-30 mb-2 flex w-max max-w-[min(92vw,280px)] flex-wrap items-center justify-end gap-1 rounded-[var(--radius-md)] border border-[var(--separator)] bg-[var(--material-regular)] p-1.5 shadow-lg backdrop-blur-md"
+        >
+          {CLI_KEYS.map((key) => {
+            const Icon = key.icon
+            return (
+              <Button
+                key={key.label}
+                type="button"
+                variant="ghost"
+                size={Icon ? 'icon-xs' : 'xs'}
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={() => { if (!disabled) onKey(key.data) }}
+                disabled={disabled}
+                title={key.aria}
+                aria-label={key.aria}
+                className="font-mono text-[length:var(--text-caption2)] text-[var(--text-secondary)]"
+              >
+                {Icon ? <Icon className="size-3.5" /> : key.label}
+              </Button>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
