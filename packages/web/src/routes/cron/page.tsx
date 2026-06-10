@@ -30,6 +30,7 @@ interface CronJob {
 
 interface CronRun {
   id?: string
+  timestamp?: string
   ts?: string
   startedAt?: string
   finishedAt?: string
@@ -115,7 +116,7 @@ function RecentRuns({ jobId }: { jobId: string }) {
       </div>
       <div className="flex flex-col gap-1">
         {runs.map((run, i) => {
-          const ts = run.ts || run.startedAt || ""
+          const ts = run.timestamp || run.ts || run.startedAt || ""
           const status = run.status || "unknown"
           const statusDot =
             status === "success" || status === "ok" ? "var(--system-green)"
