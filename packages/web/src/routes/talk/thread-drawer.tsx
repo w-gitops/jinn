@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
 } from "react"
 import { Send, X } from "lucide-react"
@@ -18,6 +19,7 @@ import type { GraphNode } from "./graph-store"
 import { childrenOf } from "./graph-store"
 import { statusOf } from "./thread-card"
 import { channelHue } from "./channel-identity"
+import { deriveLabel, type DockSideMap } from "./work-dock-layout"
 import { DURATION } from "./motion"
 import "./thread-drawer.css"
 
@@ -46,7 +48,13 @@ export interface ThreadDrawerProps {
   onClose: () => void
   /** Navigate the drawer to another session (breadcrumb up / child descend). */
   onNavigate: (id: string) => void
+  /** User rename overrides (WorkTree's source) so drawer labels match the tree. */
+  sideState?: DockSideMap
 }
+
+/** What counts as tabbable for the minimal focus trap. */
+const FOCUSABLE =
+  'button, [href], input, textarea, select, [tabindex]:not([tabindex="-1"])'
 
 /** Human label for the drawer header: session title → employee → short id. */
 function headerLabel(
@@ -79,16 +87,44 @@ function ancestorChain(graph: GraphNode[], id: string): GraphNode[] {
   return chain
 }
 
-export function ThreadDrawer({ sessionId, onClose, onNavigate }: ThreadDrawerProps) {
+export function ThreadDrawer({ sessionId, onClose, onNavigate, sideState }: ThreadDrawerProps) {
   // The session whose content is mounted — kept through the exit animation so
-  // the panel has something to show while sliding out.
-  const [mountedId, setMountedId] = useState<string | null>(sessionId)
+  // the panel has something to show while sliding out. Starts null even when
+  // sessionId is set: mounting via the effect below guarantees the trigger
+  // element is captured for focus restore BEFORE the panel steals focus.
+  const [mountedId, setMountedId] = useState<string | null>(null)
   // Drives the slide transition: mount with data-open=false, flip next frame.
   const [open, setOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement | null>(null)
+  // The element focused when the drawer opened (mirrors session-search-sheet's
+  // restoreFocusRef) — closing returns focus there instead of dropping to <body>.
+  const restoreFocusRef = useRef<HTMLElement | null>(null)
+
+  // Restore focus once the exit finishes (mountedId → null), and on unmount.
+  // Defined BEFORE the capture effect below: on the very first mount both run
+  // with mountedId null, and this one must see the ref still empty (no-op)
+  // rather than wipe a just-captured trigger.
+  useEffect(() => {
+    if (mountedId) return
+    const el = restoreFocusRef.current
+    restoreFocusRef.current = null
+    el?.focus?.()
+  }, [mountedId])
+  useEffect(
+    () => () => {
+      restoreFocusRef.current?.focus?.()
+      restoreFocusRef.current = null
+    },
+    [],
+  )
 
   useEffect(() => {
     if (sessionId) {
+      // Capture the trigger only on closed→open (navigating while open would
+      // otherwise re-capture an element inside the drawer itself).
+      if (!restoreFocusRef.current) {
+        restoreFocusRef.current = document.activeElement as HTMLElement | null
+      }
       setMountedId(sessionId)
       // Flip after mount so the closed→open transition actually plays.
       const raf = requestAnimationFrame(() => setOpen(true))
@@ -104,6 +140,7 @@ export function ThreadDrawer({ sessionId, onClose, onNavigate }: ThreadDrawerPro
     const panel = panelRef.current
     const done = () => setMountedId(null)
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false
+    // Backstop only — must stay ≥ --motion-hero (500ms) or the panel pops mid-slide.
     const timer = window.setTimeout(done, reduced ? 50 : DURATION.slow)
     const onEnd = (e: TransitionEvent) => {
       if (e.target === panel && e.propertyName === "transform") done()
@@ -116,10 +153,13 @@ export function ThreadDrawer({ sessionId, onClose, onNavigate }: ThreadDrawerPro
   }, [sessionId, mountedId])
 
   // Escape closes (capture so it wins over inner inputs).
+  // NOTE: capture + stopPropagation swallows ALL Escapes while the drawer is
+  // open — any future inline editing inside the drawer must hook BEFORE this.
   useEffect(() => {
     if (!sessionId) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (e.isComposing) return // IME cancel must not close the drawer
         e.stopPropagation()
         onClose()
       }
@@ -142,6 +182,7 @@ export function ThreadDrawer({ sessionId, onClose, onNavigate }: ThreadDrawerPro
         panelRef={panelRef}
         onClose={onClose}
         onNavigate={onNavigate}
+        sideState={sideState}
       />
     </>
   )
@@ -154,12 +195,14 @@ function DrawerPanel({
   panelRef,
   onClose,
   onNavigate,
+  sideState,
 }: {
   sessionId: string
   open: boolean
   panelRef: RefObject<HTMLDivElement | null>
   onClose: () => void
   onNavigate: (id: string) => void
+  sideState?: DockSideMap
 }) {
   const { messages, streamingText, loading, session, isInitialLoading, error } =
     useSessionChat(sessionId)
@@ -177,11 +220,18 @@ function DrawerPanel({
     return null
   }, [graph, sessionId])
 
+  // Same label derivation as WorkTree (rename override → cleaned/truncated) so
+  // crumbs and child rows never disagree with the tree the user clicked in.
+  const labelOf = useCallback(
+    (n: GraphNode) => deriveLabel(sideState?.get(n.id)?.labelOverride ?? n.label),
+    [sideState],
+  )
+
   // Breadcrumbs: AURA ▸ ancestors (clickable) ▸ current. A node missing from
   // the graph (dismissed/aged out) falls back to AURA ▸ header label.
   const chain = useMemo(() => ancestorChain(graph, sessionId), [graph, sessionId])
   const ancestors = chain.slice(0, -1)
-  const currentLabel = chain.length > 0 ? chain[chain.length - 1].label : label
+  const currentLabel = chain.length > 0 ? labelOf(chain[chain.length - 1]) : label
 
   const children = useMemo(() => childrenOf(graph, sessionId), [graph, sessionId])
 
@@ -189,6 +239,34 @@ function DrawerPanel({
   useEffect(() => {
     panelRef.current?.focus()
   }, [panelRef])
+
+  // Minimal focus trap, honouring aria-modal: on Tab, if focus would leave the
+  // panel, wrap to the first/last focusable element instead.
+  const onTrapKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (e.key !== "Tab") return
+      const panel = panelRef.current
+      if (!panel) return
+      const focusables = panel.querySelectorAll<HTMLElement>(FOCUSABLE)
+      if (focusables.length === 0) {
+        e.preventDefault()
+        return
+      }
+      const first = focusables[0]
+      const last = focusables[focusables.length - 1]
+      const active = document.activeElement
+      if (e.shiftKey) {
+        if (active === first || active === panel) {
+          e.preventDefault()
+          last.focus()
+        }
+      } else if (active === last) {
+        e.preventDefault()
+        first.focus()
+      }
+    },
+    [panelRef],
+  )
 
   return (
     <div
@@ -199,6 +277,7 @@ function DrawerPanel({
       tabIndex={-1}
       className="tdrawer"
       data-open={open}
+      onKeyDown={onTrapKeyDown}
     >
       <div className="tdrawer__header">
         <nav className="tdrawer__crumbs" aria-label="Thread path">
@@ -213,7 +292,7 @@ function DrawerPanel({
                 className="tdrawer__crumb tdrawer__crumb--link"
                 onClick={() => onNavigate(a.id)}
               >
-                {a.label}
+                {labelOf(a)}
               </button>
             </Fragment>
           ))}
@@ -241,11 +320,20 @@ function DrawerPanel({
 
       <div className="tdrawer__content">
         {children.length > 0 && (
-          <div className="tdrawer__subs" role="list" aria-label="Sub-threads">
+          <div className="tdrawer__subs">
+            {/* Label sits OUTSIDE the list element so role="list" contains only
+                listitems; the list keeps its accessible name via aria-label. */}
             <span className="tdrawer__subs-label">Sub-threads</span>
-            {children.map((child) => (
-              <ChildRow key={child.id} node={child} onNavigate={onNavigate} />
-            ))}
+            <div className="tdrawer__subs-list" role="list" aria-label="Sub-threads">
+              {children.map((child) => (
+                <ChildRow
+                  key={child.id}
+                  node={child}
+                  label={labelOf(child)}
+                  onNavigate={onNavigate}
+                />
+              ))}
+            </div>
           </div>
         )}
 
@@ -283,7 +371,16 @@ function DrawerPanel({
 }
 
 /** One row in the Sub-threads strip — hue dot, label, status pill; click descends. */
-function ChildRow({ node, onNavigate }: { node: GraphNode; onNavigate: (id: string) => void }) {
+function ChildRow({
+  node,
+  label,
+  onNavigate,
+}: {
+  node: GraphNode
+  /** Display label — derived by the caller so it matches WorkTree (rename overrides). */
+  label: string
+  onNavigate: (id: string) => void
+}) {
   const kind = statusOf(node)
   const hue = channelHue(node.label || node.id)
   return (
@@ -291,12 +388,12 @@ function ChildRow({ node, onNavigate }: { node: GraphNode; onNavigate: (id: stri
       <button
         type="button"
         className="tdrawer__sub-btn"
-        aria-label={`Open sub-thread: ${node.label} — ${kind}`}
+        aria-label={`Open sub-thread: ${label} — ${kind}`}
         style={{ ["--td-hue" as string]: String(hue) } as CSSProperties}
         onClick={() => onNavigate(node.id)}
       >
         <span className="tdrawer__dot" aria-hidden="true" />
-        <span className="tdrawer__sub-label">{node.label}</span>
+        <span className="tdrawer__sub-label">{label}</span>
         <span className="tdrawer__pill" data-kind={kind}>
           {kind}
         </span>

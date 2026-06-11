@@ -366,6 +366,7 @@ export default function TalkPage() {
         sessionId={chatSessionId}
         onClose={() => setChatSessionId(null)}
         onNavigate={setChatSessionId}
+        sideState={talk.sideState}
       />
 
       {/* Session-search sheet (title + message FTS), opened from the top bar. */}

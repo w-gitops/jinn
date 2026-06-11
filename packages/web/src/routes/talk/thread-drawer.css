@@ -18,6 +18,11 @@
 .tdrawer-scrim[data-open="true"] {
   opacity: 1;
 }
+/* While exiting (or pre-flip) the scrim is invisible — it must not eat clicks
+   meant for the page underneath. */
+.tdrawer-scrim[data-open="false"] {
+  pointer-events: none;
+}
 
 .tdrawer {
   position: fixed;
@@ -138,6 +143,11 @@
   gap: 2px;
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--separator);
+}
+.tdrawer__subs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .tdrawer__subs-label {
   font-family: var(--font-code);

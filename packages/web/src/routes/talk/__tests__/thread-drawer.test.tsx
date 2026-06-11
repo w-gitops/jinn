@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
-import { fireEvent, render, screen } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import type { GraphNode } from "../graph-store"
+import { DURATION } from "../motion"
 
 // ---------------------------------------------------------------------------
 // Module mocks — the drawer's data feeds are hook-shaped, so we mock the
@@ -150,5 +151,132 @@ describe("ThreadDrawer", () => {
       <ThreadDrawer sessionId={null} onClose={vi.fn()} onNavigate={vi.fn()} />,
     )
     expect(container.firstChild).toBeNull()
+  })
+
+  it("Escape during IME composition does NOT close", () => {
+    mocks.graph = chainGraph()
+    const onClose = vi.fn()
+    render(<ThreadDrawer sessionId="t1" onClose={onClose} onNavigate={vi.fn()} />)
+    fireEvent.keyDown(document, { key: "Escape", isComposing: true })
+    expect(onClose).not.toHaveBeenCalled()
+    // Sanity: a plain Escape still closes.
+    fireEvent.keyDown(document, { key: "Escape" })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it("uses sideState labelOverride (deriveLabel'd) for crumbs, current and child rows", () => {
+    mocks.graph = chainGraph()
+    const sideState = new Map([
+      ["t1", { labelOverride: "Renamed Lead" }],
+      ["g1", { labelOverride: "Renamed Analyst" }],
+    ])
+    render(
+      <ThreadDrawer
+        sessionId="t1"
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+        sideState={sideState}
+      />,
+    )
+    // Current crumb uses the override…
+    expect(screen.getByText("Renamed Lead")).toBeTruthy()
+    expect(screen.queryByText("Lead")).toBeNull()
+    // …and so does the child row.
+    expect(
+      screen.getByRole("button", { name: /open sub-thread: renamed analyst/i }),
+    ).toBeTruthy()
+  })
+
+  it("keeps the Sub-threads label outside the role=list element", () => {
+    mocks.graph = chainGraph()
+    render(<ThreadDrawer sessionId="t1" onClose={vi.fn()} onNavigate={vi.fn()} />)
+    const list = screen.getByRole("list", { name: "Sub-threads" })
+    const label = screen.getByText("Sub-threads")
+    expect(list.contains(label)).toBe(false)
+  })
+
+  it("Tab wraps focus from last to first focusable inside the panel", () => {
+    mocks.graph = chainGraph()
+    const { container } = render(
+      <ThreadDrawer sessionId="t1" onClose={vi.fn()} onNavigate={vi.fn()} />,
+    )
+    const panel = container.querySelector<HTMLElement>(".tdrawer")!
+    const focusables = panel.querySelectorAll<HTMLElement>(
+      'button, [href], input, textarea, select, [tabindex]:not([tabindex="-1"])',
+    )
+    const first = focusables[0]
+    const last = focusables[focusables.length - 1]
+    last.focus()
+    fireEvent.keyDown(last, { key: "Tab" })
+    expect(document.activeElement).toBe(first)
+    // Shift+Tab from the first wraps back to the last.
+    fireEvent.keyDown(first, { key: "Tab", shiftKey: true })
+    expect(document.activeElement).toBe(last)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Close-path lifecycle — jsdom never fires transitionend, so the fallback
+// timer path is the deterministic exit under fake timers.
+// ---------------------------------------------------------------------------
+describe("ThreadDrawer close-path lifecycle", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const drawer = (sessionId: string | null, onClose = vi.fn()) => (
+    <ThreadDrawer sessionId={sessionId} onClose={onClose} onNavigate={vi.fn()} />
+  )
+
+  it("keeps content mounted during exit, unmounts after the fallback timer", () => {
+    mocks.graph = chainGraph()
+    const { container, rerender } = render(drawer("t1"))
+    expect(container.querySelector(".tdrawer")).toBeTruthy()
+
+    rerender(drawer(null))
+    // Exit state: still mounted immediately (panel slides out).
+    expect(container.querySelector(".tdrawer")).toBeTruthy()
+
+    act(() => {
+      vi.advanceTimersByTime(DURATION.slow + 50)
+    })
+    expect(container.querySelector(".tdrawer")).toBeNull()
+  })
+
+  it("rapid null→new-id during exit cancels the pending unmount and shows the new session", () => {
+    mocks.graph = chainGraph()
+    const { container, rerender } = render(drawer("t1"))
+
+    rerender(drawer(null))
+    rerender(drawer("g1"))
+
+    act(() => {
+      vi.advanceTimersByTime(DURATION.slow + 50)
+    })
+    // Pending unmount was cancelled; the drawer now shows g1 (current crumb).
+    expect(container.querySelector(".tdrawer")).toBeTruthy()
+    expect(screen.getByText("Analyst")).toBeTruthy()
+  })
+
+  it("focuses the panel on open and restores the trigger on close", () => {
+    mocks.graph = chainGraph()
+    const trigger = document.createElement("button")
+    document.body.appendChild(trigger)
+    trigger.focus()
+    expect(document.activeElement).toBe(trigger)
+
+    const { container, rerender } = render(drawer("t1"))
+    const panel = container.querySelector<HTMLElement>(".tdrawer")!
+    expect(panel.contains(document.activeElement)).toBe(true)
+
+    rerender(drawer(null))
+    act(() => {
+      vi.advanceTimersByTime(DURATION.slow + 50)
+    })
+    expect(document.activeElement).toBe(trigger)
+    trigger.remove()
   })
 })
