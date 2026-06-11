@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { fireEvent, render, screen } from "@testing-library/react"
-import { ThreadCard } from "../thread-card"
+import { ThreadCard, subtreeRows } from "../thread-card"
 import type { GraphNode } from "../graph-store"
 
 const node = (over: Partial<GraphNode>): GraphNode => ({
@@ -34,8 +34,10 @@ describe("ThreadCard", () => {
     render(<ThreadCard threadId="t1" graph={graph} activity={new Map()} fallbackLabel="Movekit Lead" />)
     expect(screen.getByText(/Funnel Analyst/)).toBeTruthy()
     expect(screen.getByText(/Query Runner/)).toBeTruthy()
-    const rows = screen.getAllByRole("button", { name: /open thread/i })
-    expect(rows.length).toBeGreaterThanOrEqual(3) // head + 2 sub-rows
+    // head is a button; sub-rows are role="listitem" (overrides implicit button)
+    const headBtns = screen.getAllByRole("button", { name: /open thread/i })
+    const subItems = screen.getAllByRole("listitem", { name: /open thread/i })
+    expect(headBtns.length + subItems.length).toBeGreaterThanOrEqual(3) // head + 2 sub-rows
   })
 
   it("shows the report excerpt and settles when completed", () => {
@@ -66,5 +68,61 @@ describe("ThreadCard", () => {
   it("renders a settled fallback when the node is gone from the graph", () => {
     render(<ThreadCard threadId="zz" graph={[]} activity={new Map()} fallbackLabel="Old Thread" />)
     expect(screen.getByText(/AURA → Old Thread/)).toBeTruthy()
+  })
+
+  it("sub-row click calls onOpenThread with the sub-thread id", () => {
+    const onOpenThread = vi.fn()
+    const graph = [
+      node({}),
+      node({ id: "g1", parentId: "t1", depth: 2, label: "Funnel Analyst", status: "running" }),
+    ]
+    render(
+      <ThreadCard
+        threadId="t1"
+        graph={graph}
+        activity={new Map()}
+        fallbackLabel="Movekit Lead"
+        onOpenThread={onOpenThread}
+      />,
+    )
+    // sub-rows carry role="listitem" (overrides implicit button role)
+    fireEvent.click(screen.getByRole("listitem", { name: /funnel analyst/i }))
+    expect(onOpenThread).toHaveBeenCalledWith("g1")
+  })
+})
+
+describe("subtreeRows", () => {
+  it("returns DFS order for a depth-3 fixture", () => {
+    const graph: GraphNode[] = [
+      node({ id: "t1", parentId: "root", depth: 1, label: "Root" }),
+      node({ id: "g1", parentId: "t1", depth: 2, label: "G1" }),
+      node({ id: "g2", parentId: "t1", depth: 2, label: "G2" }),
+      node({ id: "gg1", parentId: "g1", depth: 3, label: "GG1" }),
+    ]
+    const rows = subtreeRows("t1", graph)
+    expect(rows.map((r) => r.id)).toEqual(["g1", "gg1", "g2"])
+  })
+
+  it("does not include nodes attached to the talk root (parentId: 'root')", () => {
+    const graph: GraphNode[] = [
+      node({ id: "t1", parentId: "root", depth: 1, label: "T1" }),
+      node({ id: "t2", parentId: "root", depth: 1, label: "T2" }), // sibling — parentId points to talk ROOT, not t1
+    ]
+    const rows = subtreeRows("t1", graph)
+    expect(rows.map((r) => r.id)).not.toContain("t2")
+  })
+
+  it("cycle guard: mutual-parent cycle does not hang and returns each node at most once", () => {
+    // Malformed WS delta: a and b point at each other as parents.
+    // Walk starts at "a": childrenOf("a") = [b], childrenOf("b") = [a] → would loop without guard.
+    const a = node({ id: "a", parentId: "b", depth: 2, label: "A" })
+    const b = node({ id: "b", parentId: "a", depth: 2, label: "B" })
+    const rows = subtreeRows("a", [a, b])
+    const ids = rows.map((r) => r.id)
+    // No id appears more than once
+    expect(new Set(ids).size).toBe(ids.length)
+    // Both nodes encountered at most once each
+    expect(ids.filter((x) => x === "a").length).toBeLessThanOrEqual(1)
+    expect(ids.filter((x) => x === "b").length).toBeLessThanOrEqual(1)
   })
 })

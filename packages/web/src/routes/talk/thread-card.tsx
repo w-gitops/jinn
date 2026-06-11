@@ -42,8 +42,11 @@ function statusOf(node: GraphNode | undefined): StatusKind {
 /** DFS the subtree under `rootId` (excluding the root), depth-first order. */
 export function subtreeRows(rootId: string, graph: GraphNode[]): GraphNode[] {
   const out: GraphNode[] = []
+  const seen = new Set<string>()
   const walk = (id: string) => {
     for (const child of childrenOf(graph, id)) {
+      if (seen.has(child.id)) continue
+      seen.add(child.id)
       out.push(child)
       walk(child.id)
     }
@@ -78,10 +81,11 @@ function SubRow({
   return (
     <button
       type="button"
+      role="listitem"
       className="tcard__sub"
       style={{ ["--tc-indent" as string]: String(indent), ["--tc-hue" as string]: String(hue) } as CSSProperties}
       data-status={kind}
-      aria-label={`Open thread: ${node.label}`}
+      aria-label={`Open thread: ${node.label} — ${kind}`}
       onClick={onOpenThread ? () => onOpenThread(node.id) : undefined}
     >
       <span className="tcard__connector" aria-hidden="true">
@@ -120,7 +124,7 @@ export function ThreadCard({ threadId, graph, activity, fallbackLabel, hue, onOp
       <button
         type="button"
         className="tcard__head"
-        aria-label={`Open thread: ${label}`}
+        aria-label={`Open thread: ${label} — ${kind}`}
         onClick={onOpenThread ? () => onOpenThread(threadId) : undefined}
       >
         <span className={`tcard__dot${kind === "working" ? " tcard__dot--working" : ""}`} aria-hidden="true" />
