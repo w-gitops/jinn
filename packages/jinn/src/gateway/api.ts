@@ -835,6 +835,9 @@ export async function handleApiRequest(
         // Fixes #38.
         model: body.model,
         prompt,
+        // Optional excerpt override (talk delegation passes the operator's
+        // verbatim ask so list UIs don't show the scaffolded prompt).
+        promptExcerpt: typeof body.promptExcerpt === "string" ? body.promptExcerpt : undefined,
         portalName: config.portal?.portalName,
       });
       logger.info(`Web session created: ${session.id} (model=${body.model || "default"})`);

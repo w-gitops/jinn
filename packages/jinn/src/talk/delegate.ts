@@ -15,8 +15,16 @@ import type { Attachment, AttachMode, AttachResult } from "./attachments.js";
 export interface DelegateDeps {
   getSession: (id: string) => Session | undefined;
   listChildSessions: (parentId: string) => Session[];
-  /** Internal POST /api/sessions — spawn a COO child; resolves to the new id. */
-  spawnChild: (opts: { prompt: string; parentSessionId: string }) => Promise<{ id: string }>;
+  /**
+   * Internal POST /api/sessions — spawn a COO child; resolves to the new id.
+   * `promptExcerpt` (optional) overrides the list-UI excerpt so it shows the
+   * operator's ask instead of the scaffolded delegation prompt.
+   */
+  spawnChild: (opts: {
+    prompt: string;
+    parentSessionId: string;
+    promptExcerpt?: string;
+  }) => Promise<{ id: string }>;
   /** Internal POST /api/sessions/:id/message — continue an existing thread. */
   continueThread: (sessionId: string, message: string) => Promise<void>;
   updateSession: (id: string, updates: { title?: string }) => unknown;
@@ -218,6 +226,9 @@ export async function delegateToThread(
     const { id } = await deps.spawnChild({
       prompt: ownedMessage(brief, utterance),
       parentSessionId: talk.id,
+      // The operator's verbatim ask makes a far better ThreadCard excerpt than
+      // the scaffolded prompt (brief + "--- Operator's original request…").
+      promptExcerpt: utterance,
     });
     deps.updateSession(id, { title: label });
     deps.emit("talk:thread:label", { sessionId: talk.id, threadId: id, label });

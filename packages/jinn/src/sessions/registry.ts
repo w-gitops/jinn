@@ -489,6 +489,13 @@ export interface CreateSessionOpts {
   parentSessionId?: string;
   userId?: string | null;
   effortLevel?: string;
+  /**
+   * Optional human-facing excerpt override. When the prompt is scaffolded
+   * (e.g. talk delegation wraps the operator's ask in a brief + verbatim
+   * block), callers pass the original ask here so list UIs don't show
+   * scaffold junk. Still flattened/truncated via promptExcerptOf.
+   */
+  promptExcerpt?: string;
 }
 
 function getNextSessionNumber(): number {
@@ -521,7 +528,7 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string; porta
   const now = new Date().toISOString();
   const id = uuidv4();
   const title = opts.title ?? generateTitle(opts.prompt);
-  const promptExcerpt = promptExcerptOf(opts.prompt) ?? null;
+  const promptExcerpt = promptExcerptOf(opts.promptExcerpt) ?? promptExcerptOf(opts.prompt) ?? null;
   const sessionKey = opts.sessionKey ?? opts.sourceRef;
   const connector = opts.connector ?? opts.source;
   const replyContext = opts.replyContext ? JSON.stringify(opts.replyContext) : null;

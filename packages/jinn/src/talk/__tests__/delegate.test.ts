@@ -162,7 +162,25 @@ describe("delegateToThread", () => {
     expect(d.spawnChild).toHaveBeenCalledWith({
       prompt: "Run phase 2" + VERBATIM,
       parentSessionId: "t1",
+      promptExcerpt: "do the thing now",
     });
+  });
+
+  it("passes the operator's utterance as promptExcerpt so the brief excerpt shows the ask, not scaffolding", async () => {
+    const d = deps();
+    await delegateToThread(
+      { sessionId: "t1", thread: "new", brief: "Run phase 2", utterance: "do the thing now" },
+      d,
+    );
+    const call = (d.spawnChild as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.promptExcerpt).toBe("do the thing now");
+  });
+
+  it("omits promptExcerpt when there is no utterance (excerpt falls back to the prompt)", async () => {
+    const d = deps();
+    await delegateToThread({ sessionId: "t1", thread: "new", brief: "Run phase 2" }, d);
+    const call = (d.spawnChild as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.promptExcerpt).toBeUndefined();
   });
 
   it("appends the verbatim block on a CONTINUED owned thread", async () => {

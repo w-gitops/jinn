@@ -473,11 +473,11 @@ export async function handleTalkApi(
         },
         emitAttachmentChange: (talkRootId, target, change, mode) =>
           emitAttachmentChange(talkRootId, target, change, mode, context.emit),
-        spawnChild: async ({ prompt, parentSessionId }) => {
+        spawnChild: async ({ prompt, parentSessionId, promptExcerpt }) => {
           const r = await fetch(`${base}/api/sessions`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prompt, parentSessionId }),
+            body: JSON.stringify({ prompt, parentSessionId, promptExcerpt }),
           });
           if (!r.ok) throw new Error(`spawn failed (${r.status})`);
           return (await r.json()) as { id: string };
