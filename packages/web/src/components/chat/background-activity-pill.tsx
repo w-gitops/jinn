@@ -1,5 +1,7 @@
 import type { BackgroundActivity } from '@/lib/api'
 
+const BACKGROUND_ACTIVITY_STALE_MS = 5 * 60 * 1000
+
 /**
  * Subtle informational pill shown when the session is officially idle but
  * background work (subagents / background tasks) is still making API calls.
@@ -13,7 +15,9 @@ export function BackgroundActivityPill({
   activity: BackgroundActivity | null
 }) {
   const n = activity?.activeStreams ?? 0
-  if (n <= 0) return null
+  const lastActivityAt = activity?.lastActivityAt ? new Date(activity.lastActivityAt).getTime() : 0
+  const stale = lastActivityAt > 0 && Date.now() - lastActivityAt > BACKGROUND_ACTIVITY_STALE_MS
+  if (n <= 0 || stale) return null
   return (
     <div className="px-[var(--space-3)] pb-[var(--space-1)] lg:px-[var(--space-8)]">
       <span

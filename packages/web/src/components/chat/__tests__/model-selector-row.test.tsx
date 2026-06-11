@@ -25,6 +25,10 @@ const REG: EnginesResponse = {
       name: 'antigravity', available: true, defaultModel: 'gemini-3-flash-preview', effortMechanism: 'none',
       models: [{ id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash', supportsEffort: false, effortLevels: [] }],
     },
+    codex: {
+      name: 'codex', available: true, defaultModel: 'gpt-5.5', effortMechanism: 'codex-config',
+      models: [{ id: 'gpt-5.5', label: 'GPT-5.5', supportsEffort: true, effortLevels: ['low', 'medium', 'high', 'xhigh'], contextWindow: 258400 }],
+    },
   },
 }
 
@@ -70,5 +74,15 @@ describe('ModelSelectorRow', () => {
   it('shows the "applies next message" note in existing mode when pending', () => {
     renderRow(<ModelSelectorRow mode="existing" value={{ engine: 'claude', model: 'opus' }} onChange={() => {}} pendingNote />)
     expect(screen.getByText(/applies next message/i)).toBeTruthy()
+  })
+
+  it('renders context tokens when a context window is known', () => {
+    renderRow(<ModelSelectorRow mode="existing" value={{ engine: 'codex', model: 'gpt-5.5' }} onChange={() => {}} contextTokens={50000} />)
+    expect(screen.getByText('50k/258k')).toBeTruthy()
+  })
+
+  it('shows over-window context as capped instead of hiding it', () => {
+    renderRow(<ModelSelectorRow mode="existing" value={{ engine: 'codex', model: 'gpt-5.5' }} onChange={() => {}} contextTokens={494290} />)
+    expect(screen.getByText('>258k/258k')).toBeTruthy()
   })
 })

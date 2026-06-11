@@ -93,6 +93,7 @@ interface FlatItem {
 // backend registry (sessions are bounded per group; "load more" fetches the rest).
 const DIRECT_GROUP = "__direct__"
 const CRON_GROUP = "__cron__"
+const BACKGROUND_ACTIVITY_STALE_MS = 5 * 60 * 1000
 
 const COLLAPSE_STORAGE_KEY = "jinn-sidebar-collapsed"
 const EXPANDED_STORAGE_KEY = "jinn-sidebar-expanded"
@@ -197,12 +198,12 @@ function titleCase(slug: string): string {
   return slug.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")
 }
 
-function isCronSession(session: Session): boolean {
+function isCronSession(session: Pick<Session, "source" | "sourceRef">): boolean {
   return session.source === "cron" || (session.sourceRef || "").startsWith("cron:")
 }
 
-function isDirectSession(session: Session, portalSlug: string): boolean {
-  return !isCronSession(session) && (!session.employee || session.employee === portalSlug)
+export function isDirectSession(session: Pick<Session, "source" | "sourceRef" | "employee">): boolean {
+  return !isCronSession(session) && !session.employee
 }
 
 // Sources the sidebar renders (others, e.g. slack/telegram, are shown elsewhere).
@@ -220,11 +221,15 @@ function sortSessionsByActivity(sessions: Session[]): Session[] {
 
 /** Idle-but-busy: the session's turn ended but subagents/background tasks are
  *  still making API calls. Running/error status always wins over this. */
-function hasBackgroundActivity(session: Session): boolean {
+export function hasBackgroundActivity(session: Pick<Session, "status" | "backgroundActivity">): boolean {
+  const activity = session.backgroundActivity
+  const lastActivityAt = activity?.lastActivityAt ? new Date(activity.lastActivityAt).getTime() : 0
+  const stale = lastActivityAt > 0 && Date.now() - lastActivityAt > BACKGROUND_ACTIVITY_STALE_MS
   return (
     session.status !== "running" &&
     session.status !== "error" &&
-    (session.backgroundActivity?.activeStreams ?? 0) > 0
+    !stale &&
+    (activity?.activeStreams ?? 0) > 0
   )
 }
 
@@ -868,7 +873,7 @@ export function ChatSidebar({
 
     for (const s of displayed) {
       if (isCronSession(s)) cronSessions.push(s)
-      else if (isDirectSession(s, portalSlug)) directSessions.push(s)
+      else if (isDirectSession(s)) directSessions.push(s)
       else {
         const emp = s.employee!
         if (!employeeSessionMap.has(emp)) employeeSessionMap.set(emp, [])

@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 /**
  * codex.ts spawns the codex CLI via node:child_process `spawn`. The parsing
@@ -77,7 +80,7 @@ vi.mock("node:child_process", () => ({
   }),
 }));
 
-import { CodexEngine } from "../codex.js";
+import { CodexEngine, type CodexEngineOpts } from "../codex.js";
 import type { StreamDelta, EngineResult } from "../../shared/types.js";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -107,10 +110,18 @@ const cmdEnd = (command: string, exit_code: number, output: string) =>
 async function runWith(
   opts: Record<string, unknown>,
   stdoutLines: string[],
-  { closeCode = 0, trailingNoNewline }: { closeCode?: number | null; trailingNoNewline?: string } = {},
+  {
+    closeCode = 0,
+    trailingNoNewline,
+    engineOpts,
+  }: { closeCode?: number | null; trailingNoNewline?: string; engineOpts?: CodexEngineOpts } = {},
 ): Promise<{ result: EngineResult; deltas: StreamDelta[]; call: SpawnCall }> {
   const deltas: StreamDelta[] = [];
-  const engine = new CodexEngine();
+  const safeEngineOpts = {
+    codexSessionsDir: fs.mkdtempSync(path.join(os.tmpdir(), "codex-test-sessions-")),
+    ...engineOpts,
+  };
+  const engine = new CodexEngine(safeEngineOpts);
   const promise = engine.run({
     prompt: "hello",
     cwd: "/tmp",
@@ -286,27 +297,24 @@ describe("CodexEngine — systemPrompt / developer_instructions injection", () =
 });
 
 describe("CodexEngine — usage / context-token extraction", () => {
-  it("uses input_tokens alone for contextTokens (cached_input_tokens NOT double-counted)", async () => {
+  it("does not use flat turn.completed input_tokens as contextTokens (headless Codex reports it cumulatively)", async () => {
     const { result } = await runWith({}, [
       threadStarted("t1"),
       agentMessage("ok"),
-      // cached_input_tokens is a SUBSET of input_tokens — context fill must be
-      // input_tokens (1000), not the sum (1300).
       turnCompleted({ input_tokens: 1000, cached_input_tokens: 300, output_tokens: 50 }),
     ]);
-    expect(result.contextTokens).toBe(1000);
-    expect(result.contextTokens).not.toBe(1300);
+    expect(result.contextTokens).toBeUndefined();
   });
 
   it("increments numTurns per turn.completed event", async () => {
     const { result } = await runWith({}, [
       threadStarted("t1"),
       agentMessage("a"),
-      turnCompleted({ input_tokens: 100 }),
-      turnCompleted({ input_tokens: 200 }),
+      turnCompleted({ input_tokens: 100, last_token_usage: { input_tokens: 100 } }),
+      turnCompleted({ input_tokens: 300, last_token_usage: { input_tokens: 200 } }),
     ]);
     expect(result.numTurns).toBe(2);
-    // Last turn's input_tokens wins.
+    // Last turn's per-turn usage wins, not cumulative input_tokens.
     expect(result.contextTokens).toBe(200);
   });
 
@@ -319,11 +327,11 @@ describe("CodexEngine — usage / context-token extraction", () => {
     expect(result.contextTokens).toBeUndefined();
   });
 
-  it("omits impossible cumulative Codex usage values from contextTokens", async () => {
+  it("omits cumulative Codex usage values from contextTokens", async () => {
     const { result } = await runWith({}, [
       threadStarted("t1"),
       agentMessage("a"),
-      turnCompleted({ input_tokens: 9_282_000, output_tokens: 50 }),
+      turnCompleted({ input_tokens: 310_356, output_tokens: 50 }),
     ]);
     expect(result.contextTokens).toBeUndefined();
   });
@@ -338,6 +346,40 @@ describe("CodexEngine — usage / context-token extraction", () => {
       }),
     ]);
     expect(result.contextTokens).toBe(42_000);
+  });
+
+  it("backfills headless contextTokens from the Codex rollout transcript", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-context-"));
+    const dir = path.join(root, "2026", "06", "11");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "rollout-2026-06-11T00-00-00-thread-rollout.jsonl"),
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "thread-rollout" } }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: { input_tokens: 9_282_000 },
+              last_token_usage: { input_tokens: 58_463, cached_input_tokens: 5_000 },
+            },
+          },
+        }),
+        "",
+      ].join("\n"),
+    );
+
+    const { result } = await runWith(
+      {},
+      [
+        threadStarted("thread-rollout"),
+        agentMessage("ok"),
+        turnCompleted({ input_tokens: 494_290, output_tokens: 50 }),
+      ],
+      { engineOpts: { codexSessionsDir: root } },
+    );
+    expect(result.contextTokens).toBe(58_463);
   });
 });
 

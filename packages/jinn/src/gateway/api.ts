@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
-import type { CronJob, Engine, IncomingMessage, JinnConfig, Session, StreamDelta, Target } from "../shared/types.js";
+import type { CronJob, Engine, IncomingMessage, JinnConfig, JsonObject, Session, StreamDelta, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import { getModelRegistry, invalidateModelRegistry, effortLevelsForModel, refreshPiModels, engineAvailable, isKnownEngine, engineUnavailableMessage } from "../shared/models.js";
 import { validateSessionPatch } from "../sessions/session-patch.js";
@@ -78,6 +78,9 @@ import { maybeEmitTalkGraph } from "../talk/graph.js";
 
 /** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
 const HOOK_BODY_MAX_BYTES = 64 * 1024;
+const SESSION_LIST_PER_GROUP = 50;
+const BACKGROUND_ACTIVITY_STALE_MS = 5 * 60 * 1000;
+const SUPERSEDED_TURN_META_KEY = "supersededRunningTurnAt";
 
 export interface ApiContext {
   config: JinnConfig;
@@ -409,14 +412,56 @@ function serializeSession(session: Session, context: ApiContext): Session {
   const queueDepth = queue.getPendingCount(session.sessionKey || session.sourceRef);
   const transportState = queue.getTransportState(session.sessionKey || session.sourceRef, session.status);
   const bg = context.backgroundActivity?.get(session.id);
+  const bgIsStale = bg && Date.now() - bg.lastActivityAt > BACKGROUND_ACTIVITY_STALE_MS;
+  if (bgIsStale) context.backgroundActivity?.delete(session.id);
   return {
     ...session,
     queueDepth,
     transportState,
-    backgroundActivity: bg
+    backgroundActivity: bg && !bgIsStale
       ? { activeStreams: bg.activeStreams, lastActivityAt: new Date(bg.lastActivityAt).toISOString() }
       : null,
   };
+}
+
+function withTransportMeta(session: Session, updates: JsonObject): JsonObject {
+  const base =
+    session.transportMeta && typeof session.transportMeta === "object" && !Array.isArray(session.transportMeta)
+      ? session.transportMeta
+      : {};
+  return { ...base, ...updates };
+}
+
+function supersedeRunningTurn(session: Session): void {
+  updateSession(session.id, {
+    transportMeta: withTransportMeta(session, {
+      [SUPERSEDED_TURN_META_KEY]: new Date().toISOString(),
+    }),
+  });
+}
+
+function clearSupersededTurnMeta(sessionId: string): void {
+  const session = getSession(sessionId);
+  const meta = session?.transportMeta;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta) || !(SUPERSEDED_TURN_META_KEY in meta)) return;
+  const next = { ...meta };
+  delete next[SUPERSEDED_TURN_META_KEY];
+  updateSession(sessionId, { transportMeta: next });
+}
+
+function isTurnSuperseded(sessionId: string, turnStartedAt: number): boolean {
+  const marker = getSession(sessionId)?.transportMeta?.[SUPERSEDED_TURN_META_KEY];
+  if (typeof marker !== "string") return false;
+  const markedAt = new Date(marker).getTime();
+  return Number.isFinite(markedAt) && markedAt >= turnStartedAt;
+}
+
+function isSessionLiveRunning(session: Session, context: ApiContext): boolean {
+  if (session.status !== "running") return false;
+  const engine = context.sessionManager.getEngine(session.engine);
+  if (!engine || !isInterruptibleEngine(engine)) return true;
+  if ("isTurnRunning" in engine) return Boolean((engine as any).isTurnRunning(session.id));
+  return engine.isAlive(session.id);
 }
 
 function checkInstanceHealth(port: number): Promise<boolean> {
@@ -447,7 +492,7 @@ export async function handleApiRequest(
     if (method === "GET" && pathname === "/api/status") {
       const config = context.getConfig();
       const sessions = listSessions();
-      const running = sessions.filter((s) => s.status === "running").length;
+      const running = sessions.filter((s) => isSessionLiveRunning(s, context)).length;
       const connectors = Object.fromEntries(
         Array.from(context.connectors.values()).map((connector) => [connector.name, connector.getHealth()]),
       );
@@ -489,7 +534,7 @@ export async function handleApiRequest(
     // GET /api/sessions
     //   ?group=<employee|__direct__|__cron__>&offset=M&limit=N → one group's page (sidebar "load more")
     //   ?limit=0                                              → every session (power-user escape hatch)
-    //   (default)                                             → top PER_GROUP recent per group + counts
+    //   (default)                                             → top SESSION_LIST_PER_GROUP recent per group + counts
     if (method === "GET" && pathname === "/api/sessions") {
       const query = url.searchParams.get("q");
       if (query && query.trim()) {
@@ -508,12 +553,11 @@ export async function handleApiRequest(
         const all = listSessions();
         return json(res, all.map((session) => serializeSession(session, context)));
       }
-      const PER_GROUP = 8;
-      const sessions = listRecentPerGroup(PER_GROUP);
+      const sessions = listRecentPerGroup(SESSION_LIST_PER_GROUP);
       return json(res, {
         sessions: sessions.map((session) => serializeSession(session, context)),
         counts: getSessionGroupCounts(),
-        perGroup: PER_GROUP,
+        perGroup: SESSION_LIST_PER_GROUP,
       });
     }
 
@@ -934,6 +978,17 @@ export async function handleApiRequest(
       const engine = ptyEngine ?? context.sessionManager.getEngine(session.engine);
       if (!engine) return serverError(res, `Engine "${session.engine}" not available`);
 
+      // Only interrupt if a turn is actually in flight. With warm PTYs, isAlive is
+      // also true for an idle-but-warm engine — isTurnRunning distinguishes them.
+      // Headless engines lack isTurnRunning; their isAlive ≈ "turn running".
+      const turnRunning = session.status === "running" && isInterruptibleEngine(engine)
+        && ("isTurnRunning" in engine ? (engine as any).isTurnRunning(session.id) : engine.isAlive(session.id));
+      const shouldInterruptRunningTurn =
+        !isNotification &&
+        (config.sessions?.interruptOnNewMessage ?? true) &&
+        turnRunning;
+      if (shouldInterruptRunningTurn) supersedeRunningTurn(session);
+
       // Persist the message immediately. For notifications, store the clean
       // human-facing `displayMessage` (what the UI banner renders) — the engine
       // still runs on the full `prompt` via the dispatch below.
@@ -971,12 +1026,7 @@ export async function handleApiRequest(
       // If a turn is already running, check whether we should interrupt or queue.
       // Notifications (child completion callbacks) should never interrupt — just queue.
       if (session.status === "running") {
-        // Only interrupt if a turn is actually in flight. With warm PTYs, isAlive is
-        // also true for an idle-but-warm engine — isTurnRunning distinguishes them.
-        // Headless engines lack isTurnRunning; their isAlive ≈ "turn running".
-        const turnRunning = isInterruptibleEngine(engine)
-          && ("isTurnRunning" in engine ? (engine as any).isTurnRunning(session.id) : engine.isAlive(session.id));
-        if (!isNotification && (config.sessions?.interruptOnNewMessage ?? true) && turnRunning) {
+        if (shouldInterruptRunningTurn) {
           logger.info(`Interrupting running session ${session.id} for new message`);
           engine.kill(session.id, "Interrupted: new message received");
           // SessionQueue serializes per-session; the new turn enqueued below will
@@ -2228,6 +2278,7 @@ async function runWebSession(
       })()
       : prompt;
 
+    const turnStartedAt = Date.now();
     const result = await engine.run({
       prompt: promptToRun,
       resumeSessionId: currentSession.engineSessionId ?? undefined,
@@ -2339,12 +2390,18 @@ async function runWebSession(
       return;
     }
 
+    const wasInterrupted = result.error?.startsWith("Interrupted");
+    const wasSuperseded = !wasInterrupted && isTurnSuperseded(currentSession.id, turnStartedAt);
+    const quietPreempted = wasInterrupted || wasSuperseded;
+
     // Turn settled. Most engines replace live partials with a single final
     // assistant message. Antigravity's transcript is already interleaved text +
-    // tool rows, so preserve those blocks when tool cards were streamed.
+    // tool rows, so preserve those blocks when tool cards were streamed. If the
+    // turn was preempted by a newer user message, drop stale partials/results so
+    // the old assistant answer cannot land after the new user bubble.
     const streamedBlocks = getMessages(currentSession.id).filter((m) => m.partial);
     const preserveStreamedBlocks =
-      currentSession.engine === "antigravity" && streamedBlocks.some((m) => !!m.toolCall);
+      !quietPreempted && currentSession.engine === "antigravity" && streamedBlocks.some((m) => !!m.toolCall);
     const resultAlreadyPersisted =
       preserveStreamedBlocks &&
       !!result.result?.trim() &&
@@ -2352,8 +2409,7 @@ async function runWebSession(
     if (preserveStreamedBlocks) finalizePartialMessages(currentSession.id);
     else deletePartialMessages(currentSession.id);
 
-    const wasInterrupted = result.error?.startsWith("Interrupted");
-    const rateLimit = !wasInterrupted ? detectRateLimit(result) : { limited: false as const };
+    const rateLimit = !quietPreempted ? detectRateLimit(result) : { limited: false as const };
 
     if (rateLimit.limited) {
       // Drop any buffered voice text — we won't speak a rate-limited turn.
@@ -2523,7 +2579,7 @@ async function runWebSession(
     }
 
     // Persist the assistant response
-    if (result.result && !resultAlreadyPersisted) {
+    if (result.result && !resultAlreadyPersisted && !quietPreempted) {
       insertMessage(currentSession.id, "assistant", result.result);
     }
 
@@ -2532,7 +2588,7 @@ async function runWebSession(
     // Discard (don't synthesize) on a half-finished interrupt OR when the client
     // is muted — the browser plays nothing in silent mode.
     if (currentSession.source === "talk") {
-      if (wasInterrupted || isTalkMuted(currentSession.id)) discardTalkSpeech(currentSession.id);
+      if (quietPreempted || isTalkMuted(currentSession.id)) discardTalkSpeech(currentSession.id);
       else void flushTalkSpeech(currentSession.id, config.talk?.kokoro, context.emit);
     }
 
@@ -2543,11 +2599,11 @@ async function runWebSession(
       // with no lastError, mirroring the connector path (manager.ts). Otherwise the
       // session would stick in "error" with a misleading "Interrupted" message and
       // fire a false parent-callback failure when the interrupt is the last action.
-      status: wasInterrupted ? "idle" : (result.error ? "error" : "idle"),
+      status: quietPreempted ? "idle" : (result.error ? "error" : "idle"),
       lastActivity: new Date().toISOString(),
-      lastError: wasInterrupted ? null : (result.error ?? null),
+      lastError: quietPreempted ? null : (result.error ?? null),
     });
-    if (syncRequested && !rateLimit.limited && !wasInterrupted) {
+    if (syncRequested && !rateLimit.limited && !quietPreempted) {
       const meta = (getSession(currentSession.id)?.transportMeta || currentSession.transportMeta || {}) as Record<string, unknown>;
       if (meta && typeof meta === "object" && !Array.isArray(meta)) {
         const nextMeta = { ...meta } as Record<string, unknown>;
@@ -2555,15 +2611,16 @@ async function runWebSession(
         updateSession(currentSession.id, { transportMeta: nextMeta as any });
       }
     }
-    const reportedError = wasInterrupted ? null : (result.error ?? null);
-    if (completedSession) {
+    clearSupersededTurnMeta(currentSession.id);
+    const reportedError = quietPreempted ? null : (result.error ?? null);
+    if (completedSession && !quietPreempted) {
       notifyParentSession(completedSession, { result: result.result, error: reportedError, cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
     }
 
     // Relay the turn back to the originating connector channel (#51). Only
     // connector-sourced sessions reaching this path (parent callbacks, cron
     // follow-ups) deliver; web/talk/cron + interrupted turns no-op.
-    if (completedSession && !wasInterrupted && result.result) {
+    if (completedSession && !quietPreempted && result.result) {
       await deliverConnectorReply(completedSession, result.result, context.connectors);
     }
 
@@ -2571,7 +2628,7 @@ async function runWebSession(
       sessionId: currentSession.id,
       employee: currentSession.employee || config.portal?.portalName || "Jinn",
       title: currentSession.title,
-      result: result.result,
+      result: quietPreempted ? null : result.result,
       error: reportedError,
       cost: result.cost,
       durationMs: result.durationMs,

@@ -8,10 +8,9 @@ import { logger } from "../shared/logger.js";
  *  errors under sub-agent concurrency. */
 const upstreamAgent = new https.Agent({ keepAlive: true, maxSockets: 64 });
 
-/** Kill an upstream connection that goes silent this long (no bytes). Generous so
- *  long extended-thinking pauses and slow first-token never trip it; only a truly
- *  hung/half-open socket is reaped. */
-const UPSTREAM_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+/** Kill an upstream connection that goes silent this long (no bytes). Long enough
+ *  for extended-thinking/tool gaps, while still reaping genuinely stuck sockets. */
+const UPSTREAM_IDLE_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** A parsed Anthropic SSE event's `data:` JSON payload (already JSON.parsed). */
 export interface SseDataEvent {

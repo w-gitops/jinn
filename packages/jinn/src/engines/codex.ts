@@ -1,11 +1,20 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import type { InterruptibleEngine, EngineRunOpts, EngineResult, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { resolveBin } from "../shared/resolve-bin.js";
 
+const CODEX_SESSIONS_DIR = path.join(os.homedir(), ".codex", "sessions");
+
 interface LiveProcess {
   proc: ChildProcess;
   terminationReason: string | null;
+}
+
+export interface CodexEngineOpts {
+  codexSessionsDir?: string;
 }
 
 export function codexCliFlags(flags: string[] | undefined): string[] {
@@ -15,7 +24,7 @@ export function codexCliFlags(flags: string[] | undefined): string[] {
 }
 
 /**
- * Most-recent-turn input-context size from a codex `turn.completed` usage object.
+ * Most-recent-turn input-context size from a codex per-turn usage object.
  * codex's `cached_input_tokens` is a SUBSET of `input_tokens` (OpenAI semantics),
  * so the window fill is `input_tokens` alone — summing would double-count.
  * Best-effort: returns undefined on any shape mismatch.
@@ -36,9 +45,63 @@ export function extractCodexContextTokens(usage: unknown): number | undefined {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
+function walkJsonl(dir: string, out: string[] = []): string[] {
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const entry of entries) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) walkJsonl(p, out);
+    else if (entry.isFile() && entry.name.endsWith(".jsonl")) out.push(p);
+  }
+  return out;
+}
+
+function codexSessionIdFromTranscript(filePath: string): string | undefined {
+  try {
+    const first = fs.readFileSync(filePath, "utf-8").split("\n", 1)[0];
+    const msg = JSON.parse(first);
+    const id = msg?.payload?.id;
+    return typeof id === "string" && id ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function latestCodexTranscript(sessionId: string, root: string): string | undefined {
+  return walkJsonl(root)
+    .map((file) => {
+      try { return { file, mtimeMs: fs.statSync(file).mtimeMs }; }
+      catch { return undefined; }
+    })
+    .filter((entry): entry is { file: string; mtimeMs: number } => !!entry)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .find(({ file }) => codexSessionIdFromTranscript(file) === sessionId)?.file;
+}
+
+export function lastCodexTranscriptContextTokens(sessionId: string, root = CODEX_SESSIONS_DIR): number | undefined {
+  const file = latestCodexTranscript(sessionId, root);
+  if (!file) return undefined;
+  let last: number | undefined;
+  try {
+    for (const line of fs.readFileSync(file, "utf-8").split("\n")) {
+      if (!line.trim()) continue;
+      let msg: any;
+      try { msg = JSON.parse(line); } catch { continue; }
+      if (msg?.type !== "event_msg" || msg?.payload?.type !== "token_count") continue;
+      const ctx = extractCodexContextTokens(msg.payload.info?.last_token_usage);
+      if (ctx) last = ctx;
+    }
+  } catch {
+    return undefined;
+  }
+  return last;
+}
+
 export class CodexEngine implements InterruptibleEngine {
   name = "codex" as const;
   private liveProcesses = new Map<string, LiveProcess>();
+
+  constructor(private readonly opts: CodexEngineOpts = {}) {}
 
   kill(sessionId: string, reason = "Interrupted"): void {
     const live = this.liveProcesses.get(sessionId);
@@ -202,11 +265,20 @@ export class CodexEngine implements InterruptibleEngine {
           }
         }
 
+        const resolvedThreadId = threadId || opts.resumeSessionId || "";
+        if (resolvedThreadId) {
+          const transcriptCtx = lastCodexTranscriptContextTokens(
+            resolvedThreadId,
+            this.opts.codexSessionsDir ?? CODEX_SESSIONS_DIR,
+          );
+          if (transcriptCtx) lastContextTokens = transcriptCtx;
+        }
+
         logger.info(`Codex engine exited with code ${code} (thread: ${threadId || "none"}, turns: ${numTurns})`);
 
         if (terminationReason) {
           resolve({
-            sessionId: threadId || opts.resumeSessionId || "",
+            sessionId: resolvedThreadId,
             result: resultText,
             error: terminationReason,
             numTurns: numTurns || undefined,
@@ -220,7 +292,7 @@ export class CodexEngine implements InterruptibleEngine {
           // surface a transient/benign error item (e.g. the `web_search_request`
           // deprecation notice that codex emits before the answer) as a failure.
           resolve({
-            sessionId: threadId || opts.resumeSessionId || "",
+            sessionId: resolvedThreadId,
             result: resultText,
             error: resultText.trim() ? undefined : (turnError ?? undefined),
             numTurns: numTurns || undefined,
@@ -232,7 +304,7 @@ export class CodexEngine implements InterruptibleEngine {
         const errMsg = turnError || `Codex exited with code ${code}: ${stderr.slice(0, 500)}`;
         logger.error(errMsg);
         resolve({
-          sessionId: threadId || opts.resumeSessionId || "",
+          sessionId: resolvedThreadId,
           result: resultText,
           error: errMsg,
           ...(typeof lastContextTokens === "number" ? { contextTokens: lastContextTokens } : {}),
@@ -401,7 +473,8 @@ export class CodexEngine implements InterruptibleEngine {
     }
 
     if (eventType === "turn.completed") {
-      return { type: "usage", contextTokens: extractCodexContextTokens(msg.usage) };
+      const usage = msg.usage as Record<string, unknown> | undefined;
+      return { type: "usage", contextTokens: extractCodexContextTokens(usage?.last_token_usage) };
     }
 
     if (eventType === "turn.failed") {

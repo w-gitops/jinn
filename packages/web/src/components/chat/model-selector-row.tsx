@@ -215,17 +215,18 @@ export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled,
       {(() => {
         const cw = contextWindowFor(registry, engine, modelId)
         if (!cw || !contextTokens || contextTokens <= 0) return null
-        if (contextTokens > cw) return null
-        const pct = contextTokens / cw
+        const rawPct = contextTokens / cw
+        const pct = Math.min(rawPct, 1)
         const color = pct >= 0.9 ? 'var(--system-red)' : pct >= 0.75 ? 'var(--system-orange)' : undefined
+        const label = contextTokens > cw ? `>${fmtK(cw)}/${fmtK(cw)}` : `${fmtK(contextTokens)}/${fmtK(cw)}`
         return (
           <>
             <Sep />
             <span
-              title={`Context: ${contextTokens.toLocaleString()} / ${cw.toLocaleString()} tokens (${Math.round(pct * 100)}%)`}
+              title={`Context: ${contextTokens.toLocaleString()} / ${cw.toLocaleString()} tokens (${Math.round(rawPct * 100)}%)`}
               style={color ? { color } : undefined}
             >
-              {fmtK(contextTokens)}/{fmtK(cw)}
+              {label}
             </span>
           </>
         )
