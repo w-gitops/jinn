@@ -58,7 +58,7 @@ function AttachBannerRow({
   }, [busy, orchestratorId, node.id])
 
   return (
-    <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-[var(--accent)] bg-[var(--accent-fill)] px-3 py-1 text-[length:var(--text-caption1)] text-[var(--accent)] backdrop-blur-md">
+    <div className="talk-banner-pill inline-flex max-w-full items-center gap-2 rounded-full border border-[var(--accent)] bg-[var(--accent-fill)] px-3 py-1 text-[length:var(--text-caption1)] text-[var(--accent)] backdrop-blur-md">
       <span className="truncate">
         ⇄ attached to <span className="font-[var(--weight-semibold)]">{label}</span> — engage
       </span>

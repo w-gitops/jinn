@@ -286,6 +286,7 @@
 .jt-state--running { color: var(--accent); }
 .jt-state--running .jt-dot {
   background: var(--accent);
+  /* deliberate: ambient status pulse, tuned slower than --motion-ambient */
   animation: jt-pulse 1.4s var(--ease-smooth, cubic-bezier(0.4, 0, 0.2, 1)) infinite;
 }
 .jt-state--done { color: var(--system-green); }
@@ -308,6 +309,7 @@
     var(--accent),
     color-mix(in srgb, var(--accent) 55%, #fff)
   );
+  /* deliberate: slow progress glide — no matching token */
   transition: width 1100ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .jt-bar__fill--error {
@@ -342,6 +344,7 @@
 .jt-agent--running .jt-agent__dot {
   background: var(--accent);
   box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent);
+  /* deliberate: ambient activity ring, tuned slower than --motion-ambient */
   animation: jt-ring 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 .jt-agent--done .jt-agent__dot { background: var(--system-green); }
@@ -375,6 +378,7 @@
   height: 100%;
   border-radius: 99px;
   background: var(--accent);
+  /* deliberate: slow progress glide — no matching token */
   transition: width 900ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -388,6 +392,8 @@ a.jt-card--link {
   text-decoration: none;
   pointer-events: auto; /* re-enable: links are interactive */
   cursor: pointer;
+  /* deliberate: spring hover pop (tuned family with .jt-choice__opt /
+     .jt-approval__btn) — overshoot easing has no matching token */
   transition:
     transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1),
     box-shadow 320ms cubic-bezier(0.4, 0, 0.2, 1),
@@ -464,6 +470,7 @@ a.jt-card--link:hover {
   border: 1px solid var(--separator);
   background: var(--fill-tertiary);
   color: var(--text-primary);
+  /* deliberate: spring hover pop — tuned, no matching token */
   transition:
     transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1),
     border-color 220ms cubic-bezier(0.4, 0, 0.2, 1),
@@ -587,6 +594,7 @@ a.jt-card--link:hover {
   font-weight: 600;
   border-radius: var(--radius-lg);
   border: 1px solid var(--separator);
+  /* deliberate: spring hover pop — tuned, no matching token */
   transition:
     transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1),
     filter 200ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -728,6 +736,8 @@ a.jt-card--link:hover {
   }
 }
 
+/* deliberate: card materialize/dissolve — tuned spring pop, no matching token.
+   Durations are driven inline by card-stack.tsx via --jt-in-ms / --jt-out-ms. */
 .jt-card--entering {
   animation: jt-card-in var(--jt-in-ms, 620ms) cubic-bezier(0.34, 1.56, 0.64, 1) both;
   animation-delay: var(--jt-stagger, 0ms);

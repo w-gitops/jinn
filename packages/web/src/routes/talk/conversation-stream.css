@@ -18,7 +18,9 @@
   align-items: center;
   justify-content: flex-end;
   pointer-events: none;
-  transition: opacity 480ms var(--ease-smooth, cubic-bezier(0.4, 0, 0.2, 1));
+  /* Structural stage dim (content stage) — rides the hero timing so the
+     transcript recedes on the same beat as the rest of the choreography. */
+  transition: opacity var(--motion-hero);
 }
 
 .cstream__scroll {
@@ -62,6 +64,7 @@
   flex-direction: column;
   gap: 3px;
   max-width: 100%;
+  /* deliberate: 460ms spring entrance — tuned, no matching token */
   animation: cstream-row-in 460ms var(--ease-spring, cubic-bezier(0.34, 1.56, 0.64, 1)) both;
 }
 
@@ -120,7 +123,7 @@
 
 /* karaoke sentence treatments */
 .cstream__sentence {
-  transition: opacity 300ms var(--ease-smooth, cubic-bezier(0.4, 0, 0.2, 1));
+  transition: opacity var(--motion-enter);
 }
 .cstream__sentence--spoken {
   opacity: 1;
@@ -150,6 +153,7 @@
   opacity: 0;
   filter: blur(6px);
   transform: translateY(6px);
+  /* deliberate: karaoke word reveal — tuned, no matching token */
   animation: cstream-word-in 420ms var(--ease-spring, cubic-bezier(0.34, 1.56, 0.64, 1)) both;
 }
 @keyframes cstream-word-in {
@@ -212,12 +216,20 @@
   pointer-events: auto;
   cursor: pointer;
   color: var(--text-secondary);
-  transition: border-color 200ms var(--ease-smooth, cubic-bezier(0.4, 0, 0.2, 1)),
-    color 200ms var(--ease-smooth, cubic-bezier(0.4, 0, 0.2, 1));
+  /* The chip's own transform never fights the row entrance — the 460ms spring
+     animates the parent .cstream__row, not the chip. */
+  transition:
+    border-color var(--motion-exit),
+    color var(--motion-exit),
+    transform var(--motion-exit);
 }
 .cstream__chip[data-clickable="true"]:hover {
   border-color: color-mix(in srgb, var(--accent) 40%, var(--separator));
   color: var(--text-primary);
+  transform: translateY(-1px);
+}
+.cstream__chip[data-clickable="true"]:active {
+  transform: scale(0.98);
 }
 
 .cstream__chip-dot {
@@ -260,7 +272,19 @@
   font-size: 12px;
   color: var(--accent);
   cursor: pointer;
-  animation: cstream-row-in 280ms var(--ease-smooth, cubic-bezier(0.4, 0, 0.2, 1)) both;
+  /* Own keyframes (not cstream-row-in): the fill-both end state must preserve
+     the static translateX(-50%) centering, which `transform: none` would drop. */
+  animation: cstream-jump-in var(--motion-enter) both;
+}
+@keyframes cstream-jump-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%);
+  }
 }
 
 .talk-link {
@@ -287,6 +311,13 @@
   }
   .cstream__sentence {
     transition: none;
+  }
+  .cstream__chip[data-clickable="true"] {
+    transition: none;
+  }
+  .cstream__chip[data-clickable="true"]:hover,
+  .cstream__chip[data-clickable="true"]:active {
+    transform: none;
   }
   .cstream__jump {
     animation: none;

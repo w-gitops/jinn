@@ -41,6 +41,22 @@
 .talk-banner-row:not(:empty) {
   padding-bottom: var(--space-2);
 }
+/* Banner pills materialize like stream content (fade + small drop-in). No exit
+   animation: a detached row unmounts immediately and the grid row collapsing
+   is feedback enough — animating a flow-row exit would need a removal delay. */
+.talk-banner-pill {
+  animation: talk-banner-in var(--motion-enter) both;
+}
+@keyframes talk-banner-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
 
 /* ---- row 3: orb dock — reserves space for the docked orb + whisper ---- */
 .talk-orbdock {
@@ -190,5 +206,8 @@
 @media (prefers-reduced-motion: reduce) {
   .talk-orbdock {
     transition: none;
+  }
+  .talk-banner-pill {
+    animation: none;
   }
 }
