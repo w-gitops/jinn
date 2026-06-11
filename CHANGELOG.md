@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.20.0] - 2026-06-11
+
+> Talk becomes a real delegation workspace: searchable session memory, server-owned delegation graphs, persistent conversation flow, and live work rails. The gateway also gets a stability pass for interactive engines, stuck-session recovery, restart safety, and context telemetry.
+
+### ✨ Features
+- **Talk delegation workspace.** Server-owned `POST /api/talk/delegate`, live `TalkGraph` snapshots/deltas, persisted prompt excerpts, attach/detach controls, session search, inline cards, and a WorkDock/work-tree that can follow nested employee sessions at any depth.
+- **Conversation-first Talk UI.** Persistent transcript, pinned decision cards, focused stage modes, thread drawer breadcrumbs, real delegation hierarchy, live activity lines, completion excerpts, and a calmer orb/stage layout that keeps the conversation visible while work happens.
+- **Talk voice flow upgrades.** Per-sentence TTS streaming removes whole-turn dead air, speech is sanitized server-side for URLs/UUIDs/machine tags, and the orchestrator persona now favors delegation-first behavior with search and attachment awareness.
+- **Message search.** Sessions now have FTS5 full-text search over messages with chunked backfill and a fail-safe degrade path so search failures never take down the gateway.
+
+### ⚡ Performance / Reliability
+- **Interactive engine stability.** Shared PTY stream/tailer infrastructure, bounded stream maps, StopFailure grace windows, late-Stop recovery, Codex terminal-marker gating, and retry-aware SSE activity tracking reduce false failed turns and leaked process state.
+- **Gateway resilience.** Status reconciliation unsticks stale `running` sessions, restart keeps the PID file until the process actually exits, config/job writes are atomic, cron reads are tail-based, connector stop intervals are cleaned up, and queue/session deletes purge related work items.
+- **Context hygiene.** Employee prompts now use audience-scoped context, compact org rosters, deduped API references, cleaner chain-of-command slugs, and less repeated template text.
+
+### 🐛 Fixes
+- **Chat session state and context telemetry.** Background-agent indicators now reflect live engine activity, external CLI turns sync into the web session, the SSE idle window is 60 minutes, and Codex context meters use current-turn token telemetry instead of cumulative totals.
+- **Claude onboarding hangs.** Trust seeding now also marks Claude Code's global onboarding and Claude-in-Chrome onboarding complete, preventing first-run interactive prompts from blocking gateway-launched Claude sessions.
+- **Talk correctness.** Delegation cards survive reload, thread cards honor session renames and status vocabulary, stale notifications are preserved on rehydrate, label-based wake messages avoid leaking session ids, and card/thread accessibility edge cases were tightened.
+- **Session/search safety.** FTS backfill failures disable search for the process instead of blocking boot; rate-limit retries preserve transport metadata; media messages survive reconcile age caps; and loopback checks/config writes are normalized.
+
+### 🪄 Docs
+- Added Talk redesign specs, implementation plans, and post-review notes for the delegation graph, stage layout, and conversation-first UI work.
+
 ## [0.19.0] - 2026-06-09
 
 > Talk grows up: a calmer voice-first surface, a configurable orchestrator engine with seamless fallback (so Talk works on Codex/Antigravity, not just Claude), in-app mic setup, type-to-talk, and a silent/read mode. Plus a fresh-install hardening pass, org-map improvements, and a repository privacy scrub.
