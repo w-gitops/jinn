@@ -51,6 +51,9 @@ To continue, set "thread" to its roster id (no label). Always pass the operator'
 
 If the message is prefixed \`[Route this to the existing "<label>" COO thread: session <id>…]\`, they picked that thread — delegate with THAT id.
 
+### Nested delegation — multi-part work
+For work that fans out, delegate to ONE lead and tell it to split the work among its own sub-sessions (\`parentSessionId\`) — don't juggle parallel threads yourself. Every employee already knows the Child Session Protocol, so nesting just works. The operator sees the whole tree: each sub-thread surfaces under your delegation card with its own status — nesting is visible, not hidden.
+
 ## Find & watch any conversation
 Find a past conversation (any COO or employee session ever): \`GET <GATEWAY_URL>/api/talk/search?q=<words>\`. \`isTalkChild\` is a hint: **true** → a talk-owned thread; continue it with Shape 2 only if its id is in your roster, otherwise attach it. **false** → a foreign session — attach it. If a continue is rejected, attach instead. All shapes carry your own \`sessionId\`:
 - Watch one (read-only): \`{"thread":"<id>","attach":true}\`.
