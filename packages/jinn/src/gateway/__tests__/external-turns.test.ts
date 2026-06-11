@@ -34,7 +34,18 @@ function makeSession(overrides: Partial<{ engineSessionId: string }> = {}): stri
 
 /** Write a transcript jsonl of [role, text, isoTs, extra] tuples. */
 function writeTranscript(
-  entries: Array<{ type: string; text?: string; ts: string; sidechain?: boolean; meta?: boolean; toolResult?: boolean }>,
+  entries: Array<{
+    type: string;
+    text?: string;
+    ts: string;
+    sidechain?: boolean;
+    meta?: boolean;
+    toolResult?: boolean;
+    promptSource?: string;
+    sourceTool?: boolean;
+    originKind?: string;
+    synthetic?: boolean;
+  }>,
 ): string {
   const file = path.join(tmp, `transcript-${++seq}.jsonl`);
   const lines = entries.map((e) =>
@@ -43,8 +54,12 @@ function writeTranscript(
       timestamp: e.ts,
       isSidechain: e.sidechain ?? false,
       ...(e.meta ? { isMeta: true } : {}),
+      ...(e.promptSource ? { promptSource: e.promptSource } : {}),
+      ...(e.sourceTool ? { sourceToolAssistantUUID: "assistant-tool", toolUseResult: { ok: true } } : {}),
+      ...(e.originKind ? { origin: { kind: e.originKind } } : {}),
       message: {
         role: e.type,
+        ...(e.synthetic ? { model: "<synthetic>" } : {}),
         content: e.toolResult
           ? [{ type: "tool_result", content: "tool output" }]
           : [{ type: "text", text: e.text ?? "" }],
@@ -72,6 +87,25 @@ describe("readTranscriptTail", () => {
     expect(tail!.map((e) => [e.role, e.content])).toEqual([
       ["user", "hello"],
       ["assistant", "the answer"],
+    ]);
+  });
+
+  it("skips Claude control, compaction, task-notification, and tool-result transcript entries", () => {
+    const file = writeTranscript([
+      { type: "user", text: "typed prompt", ts: iso(14_000), promptSource: "typed" },
+      { type: "user", text: "This session is being continued from a previous conversation that ran out of context.", ts: iso(13_000) },
+      { type: "user", text: "<command-name>/compact</command-name>", ts: iso(12_000) },
+      { type: "user", text: "<local-command-stdout>Compacted</local-command-stdout>", ts: iso(11_000) },
+      { type: "user", text: "<task-notification><result>done</result></task-notification>", ts: iso(10_000), originKind: "task-notification" },
+      { type: "user", text: "tool result text", ts: iso(9_000), sourceTool: true },
+      { type: "user", text: "system continuation", ts: iso(8_000), promptSource: "system" },
+      { type: "assistant", text: "No response requested.", ts: iso(7_000), synthetic: true },
+      { type: "assistant", text: "real answer", ts: iso(6_000) },
+    ]);
+    const tail = ext.readTranscriptTail(file, Date.now() - 30_000);
+    expect(tail!.map((e) => [e.role, e.content])).toEqual([
+      ["user", "typed prompt"],
+      ["assistant", "real answer"],
     ]);
   });
 

@@ -69,7 +69,7 @@ import { readJsonlTail } from "./jsonl-tail.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
 import { handleHookPost, isLoopback } from "./hook-endpoint.js";
-import { scheduleOnLoadTailSync } from "./external-turns.js";
+import { scheduleOnLoadTailSync, transcriptEntryText } from "./external-turns.js";
 import { handleTalkApi } from "../talk/routes.js";
 import { getOrchestratorPersona } from "../talk/orchestrator-persona.js";
 import { feedTalkText, flushTalkSpeech, discardTalkSpeech } from "../talk/tts-stream.js";
@@ -1983,21 +1983,8 @@ function loadTranscriptMessages(engineSessionId: string): Array<{ role: string; 
     for (const line of lines) {
       try {
         const obj = JSON.parse(line);
-        const type = obj.type;
-        if (type !== "user" && type !== "assistant") continue;
-        const msg = obj.message;
-        if (!msg) continue;
-
-        let content = msg.content;
-        if (Array.isArray(content)) {
-          content = content
-            .filter((b: Record<string, unknown>) => b.type === "text")
-            .map((b: Record<string, unknown>) => b.text)
-            .join("");
-        }
-        if (typeof content === "string" && content.trim()) {
-          messages.push({ role: type, content: content.trim() });
-        }
+        const text = transcriptEntryText(obj);
+        if (text) messages.push(text);
       } catch {
         continue;
       }

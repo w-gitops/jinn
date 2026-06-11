@@ -36,6 +36,44 @@ export interface TranscriptTailEntry {
   timestampIso: string;
 }
 
+function isControlText(content: string): boolean {
+  const t = content.trim();
+  return (
+    t.startsWith("<command-name>") ||
+    t.startsWith("<local-command-") ||
+    t.startsWith("<task-notification>") ||
+    t.startsWith("This session is being continued from a previous conversation")
+  );
+}
+
+export function isPersistableClaudeTranscriptEntry(obj: any): boolean {
+  if (!obj || typeof obj !== "object") return false;
+  const type = obj?.type;
+  if (type !== "user" && type !== "assistant") return false;
+  if (obj.isSidechain === true || obj.isMeta === true) return false;
+  if (obj.sourceToolAssistantUUID || obj.toolUseResult) return false;
+  if (obj.promptSource === "system") return false;
+  if (obj?.origin?.kind === "task-notification") return false;
+  if (obj?.message?.model === "<synthetic>") return false;
+  const raw = obj?.message?.content;
+  if (typeof raw === "string" && isControlText(raw)) return false;
+  return true;
+}
+
+export function transcriptEntryText(obj: any): { role: "user" | "assistant"; content: string } | null {
+  if (!isPersistableClaudeTranscriptEntry(obj)) return null;
+  let content = obj?.message?.content;
+  if (Array.isArray(content)) {
+    content = content
+      .filter((b: Record<string, unknown>) => b?.type === "text")
+      .map((b: Record<string, unknown>) => String(b.text ?? ""))
+      .join("");
+  }
+  if (typeof content !== "string" || !content.trim()) return null;
+  if (isControlText(content)) return null;
+  return { role: obj.type, content: content.trim() };
+}
+
 /**
  * Parse the user/assistant text entries of a Claude transcript newer than
  * `sinceMs`. Sidechain (sub-agent) and meta entries are skipped; array content
@@ -56,22 +94,13 @@ export function readTranscriptTail(transcriptPath: string, sinceMs: number): Tra
     if (!t) continue;
     let obj: any;
     try { obj = JSON.parse(t); } catch { continue; }
-    const type = obj?.type;
-    if (type !== "user" && type !== "assistant") continue;
-    if (obj.isSidechain === true || obj.isMeta === true) continue;
     const iso = obj.timestamp;
     if (typeof iso !== "string") continue;
     const ms = new Date(iso).getTime();
     if (!Number.isFinite(ms) || ms <= sinceMs) continue;
-    let content = obj?.message?.content;
-    if (Array.isArray(content)) {
-      content = content
-        .filter((b: Record<string, unknown>) => b?.type === "text")
-        .map((b: Record<string, unknown>) => String(b.text ?? ""))
-        .join("");
-    }
-    if (typeof content !== "string" || !content.trim()) continue;
-    entries.push({ role: type, content: content.trim(), timestampMs: ms, timestampIso: iso });
+    const text = transcriptEntryText(obj);
+    if (!text) continue;
+    entries.push({ ...text, timestampMs: ms, timestampIso: iso });
   }
   return entries;
 }
