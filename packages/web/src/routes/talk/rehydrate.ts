@@ -7,6 +7,8 @@
  * wires them into its bootstrap effect with non-clobbering setState guards.
  */
 import type { TranscriptEntry, SystemEntry } from "./types"
+import type { TalkGraphNodeWire } from "./protocol"
+import { channelHue } from "./channel-identity"
 import { stripMarkdown } from "@/lib/strip-markdown"
 
 /**
@@ -46,6 +48,39 @@ export function messagesToEntries(
  * Classifies by leading emoji: 📩/🔄 → "reported", ⚠️ → "error", other → "info".
  * Extracts the label from the first quoted segment, falling back to first 60 chars.
  */
+/** A `delegated` chip payload for use-conversation's addSystem. */
+export interface DelegationChip {
+  id: string
+  event: "delegated"
+  label: string
+  threadId: string
+  hue: number
+  ts: number
+}
+
+/**
+ * Rebuild the `delegated` conversation rows (ThreadCards) from a graph
+ * SNAPSHOT. Live delegations insert their row on the talk:graph "added" delta,
+ * which a page reload can't replay — so on (re)connect the snapshot's depth-1
+ * OWNED nodes are mapped back to the same `sys-del-<id>` rows. Attached nodes
+ * (soft links — they get attached/detached chips, not cards) and depth-2+
+ * descendants (rendered inside their root's card) are skipped. Ids are stable,
+ * so the conversation reducer's dedup-by-id makes re-application (reconnect,
+ * raced live delta) a no-op.
+ */
+export function snapshotDelegationChips(nodes: TalkGraphNodeWire[]): DelegationChip[] {
+  return nodes
+    .filter((n) => n.depth === 1 && !n.attached)
+    .map((n) => ({
+      id: `sys-del-${n.id}`,
+      event: "delegated" as const,
+      label: n.label,
+      threadId: n.id,
+      hue: channelHue(n.label || n.id),
+      ts: Date.parse(n.lastActivity) || Date.now(),
+    }))
+}
+
 function _parseNotification(id: string, content: string): SystemEntry {
   const emojiMatch = content.match(/^(📩|⚠️|🔄)/)
   const quotedMatch = content.match(/"([^"]+)"/)

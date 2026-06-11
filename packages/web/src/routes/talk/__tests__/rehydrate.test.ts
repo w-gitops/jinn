@@ -115,3 +115,67 @@ describe("messagesToEntries", () => {
     expect(messagesToEntries({ messages: "nope" })).toEqual([])
   })
 })
+
+// ---------------------------------------------------------------------------
+// snapshotDelegationChips — delegation cards rebuilt from the graph snapshot
+// ---------------------------------------------------------------------------
+import { snapshotDelegationChips } from "../rehydrate"
+import { conversationReducer, type StreamRow } from "../use-conversation"
+import type { TalkGraphNodeWire } from "../protocol"
+
+const wire = (over: Partial<TalkGraphNodeWire>): TalkGraphNodeWire => ({
+  id: "t1",
+  parentId: "root",
+  depth: 1,
+  label: "Movekit Lead",
+  employee: null,
+  status: "running",
+  lastActivity: "2026-06-11T00:00:00Z",
+  ...over,
+})
+
+describe("snapshotDelegationChips", () => {
+  it("maps depth-1 owned nodes to delegated chips (stable sys-del ids, ts from lastActivity)", () => {
+    const chips = snapshotDelegationChips([wire({})])
+    expect(chips).toHaveLength(1)
+    expect(chips[0]).toMatchObject({
+      id: "sys-del-t1",
+      event: "delegated",
+      label: "Movekit Lead",
+      threadId: "t1",
+      ts: Date.parse("2026-06-11T00:00:00Z"),
+    })
+    expect(typeof chips[0].hue).toBe("number")
+  })
+
+  it("skips attached and depth-2+ nodes", () => {
+    const chips = snapshotDelegationChips([
+      wire({}),
+      wire({ id: "att1", attached: true, mode: "observe" }),
+      wire({ id: "g1", parentId: "t1", depth: 2, label: "Analyst" }),
+    ])
+    expect(chips.map((c) => c.threadId)).toEqual(["t1"])
+  })
+
+  it("reducer-level: snapshot chips append once AFTER history; a second snapshot doesn't duplicate", () => {
+    let rows: StreamRow[] = []
+    rows = conversationReducer(rows, {
+      type: "rehydrate",
+      entries: [{ id: "u1", role: "user", text: "hi", partial: false, full: "hi" }],
+    })
+    const nodes = [wire({}), wire({ id: "t2", label: "Other Lead" })]
+    for (const chip of snapshotDelegationChips(nodes)) rows = conversationReducer(rows, { type: "system", ...chip })
+    expect(rows.map((r) => r.id)).toEqual(["u1", "sys-del-t1", "sys-del-t2"])
+    // Second snapshot (reconnect) — reducer dedups by row id, nothing duplicates.
+    for (const chip of snapshotDelegationChips(nodes)) rows = conversationReducer(rows, { type: "system", ...chip })
+    expect(rows.map((r) => r.id)).toEqual(["u1", "sys-del-t1", "sys-del-t2"])
+  })
+
+  it("a chip already added live (talk:graph delta) is not re-appended on snapshot", () => {
+    let rows: StreamRow[] = []
+    // Live "added" path uses the same sys-del-<id> id.
+    rows = conversationReducer(rows, { type: "system", id: "sys-del-t1", event: "delegated", label: "Movekit Lead", threadId: "t1", ts: 1 })
+    for (const chip of snapshotDelegationChips([wire({})])) rows = conversationReducer(rows, { type: "system", ...chip })
+    expect(rows.filter((r) => r.id === "sys-del-t1")).toHaveLength(1)
+  })
+})

@@ -42,7 +42,7 @@ import { useConversation, type StreamRow } from "./use-conversation"
 import { whisperFor } from "./talk-whisper"
 import { channelHue } from "./channel-identity"
 import { focusNode, deriveLabel, type DockSideMap, type DockSideState } from "./work-dock-layout"
-import { messagesToEntries } from "./rehydrate"
+import { messagesToEntries, snapshotDelegationChips } from "./rehydrate"
 import {
   loadTargetThread,
   saveTargetThread,
@@ -724,7 +724,9 @@ export function useTalk(): UseTalkReturn {
             asstIdRef.current = null
             speakReplyIfNeeded(finishedId)
           } else if (isChild && s) {
-            dispatchGraph({ type: "setStatus", id: s, status: "idle" })
+            // A failed child reads as "error" in the card + tree (a later server
+            // graph upsert may correct it — that's fine, it's fresher).
+            dispatchGraph({ type: "setStatus", id: s, status: ev.error ? "error" : "idle" })
             // The live line ends; keep a sanitized excerpt of the final report.
             // Fall back to ev.error so a failed child shows something instead of blank.
             dispatchActivity({ type: "report", id: s, text: ev.result ?? ev.error ?? "" })
@@ -761,6 +763,14 @@ export function useTalk(): UseTalkReturn {
       // (Child sessions are no longer mirrored into a separate thread store.)
       const snapNodes = graphSnap?.nodes ?? []
       if (snapNodes.length) dispatchGraph({ type: "snapshot", nodes: snapNodes })
+      // Rebuild the delegation ThreadCards: live cards are inserted by the
+      // talk:graph "added" delta, which a reload can't replay. This runs AFTER
+      // rehydrateRows above (dispatches process in order), so rebuilt cards
+      // append after history — the original live insertion position is
+      // approximated by append-at-end, which is acceptable (cards mostly trail
+      // the turn that spawned them). The conversation reducer dedups by row id,
+      // so chips already added live (or by a prior reconnect) are no-ops.
+      for (const chip of snapshotDelegationChips(snapNodes)) addSystem(chip)
       // Drop a persisted target selection that no longer maps to a live node.
       setTargetThreadId((cur) => {
         if (!cur) return cur
@@ -771,7 +781,7 @@ export function useTalk(): UseTalkReturn {
     } catch {
       /* best-effort; a later reconnect rehydrate will retry */
     }
-  }, [dispatchGraph, rehydrateRows])
+  }, [dispatchGraph, rehydrateRows, addSystem])
 
   // Marks that the bootstrap has kicked off the INITIAL rehydrate, so the
   // reconnect effect below only gates on it (never consumes it) — otherwise the

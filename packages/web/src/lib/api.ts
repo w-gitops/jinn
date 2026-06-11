@@ -1,3 +1,5 @@
+import type { TalkGraphNodeWire } from '@/routes/talk/protocol'
+
 export interface TranscriptContentBlock {
   type: 'text' | 'tool_use' | 'tool_result' | 'thinking'
   text?: string
@@ -316,9 +318,10 @@ export const api = {
    */
   talkCreateSession: (fresh = false) =>
     post<{ sessionId: string; reused: boolean }>("/api/talk/session", { fresh }),
-  /** Talk: full delegation-tree snapshot under the orchestrator (Mission Control). */
+  /** Talk: full delegation-tree snapshot under the orchestrator (Mission Control).
+   *  Nodes are the wire type (incl. briefExcerpt/attached/mode), not a stripped copy. */
   getTalkGraph: (rootId: string) =>
-    get<{ rootId: string; nodes: Array<{ id: string; parentId: string | null; depth: number; label: string; employee: string | null; status: string; lastActivity: string }> }>(
+    get<{ rootId: string; nodes: TalkGraphNodeWire[] }>(
       `/api/talk/graph?root=${encodeURIComponent(rootId)}`,
     ),
   /** Talk: TTS/loop readiness + the active orchestrator engine/model. */
