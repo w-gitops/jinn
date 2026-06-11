@@ -13,7 +13,7 @@
 .talk-root {
   /* ---- z-index scale ---- */
   --z-stage: 10;   /* stage content + orb layer */
-  --z-rail: 20;    /* WorkDock rail (narrow-screen overlay mode) */
+  --z-rail: 20;    /* WorkTree rail (always floats over the stage edge) */
   --z-chrome: 30;  /* top bar, bottom controls */
   --z-overlay: 40; /* search sheet, session peek, modals */
 

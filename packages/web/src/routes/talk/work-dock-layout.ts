@@ -1,22 +1,23 @@
 /**
- * Jinn Talk — pure WorkDock layout helpers (Mission Control).
+ * Jinn Talk — pure work-rail layout helpers (Mission Control).
  *
- * The WorkDock is the single graph-driven work rail: it reads the delegation
- * graph (graph-store) directly — there is no longer a separate thread store.
- * Depth-1 nodes are the COO threads (one chip each); depth-2+ are the employees
- * a COO dispatched (mini-dots under the chip). Nodes never auto-hide on
- * completion — idle/done is a dimmed visual state. The only way a chip leaves is
+ * Serves the WorkTree, the single graph-driven work rail (always a floating
+ * overlay on the right edge — it never takes a layout column). It reads the
+ * delegation graph (graph-store) directly — there is no separate thread store.
+ * Depth-1 nodes are the COO threads (one root row each); depth-2+ descendants
+ * render as labeled, indented sub-rows (WorkTree walks them via thread-card's
+ * subtreeRows — the old anonymous mini-dots are gone). Nodes never auto-hide on
+ * completion — idle/done is a dimmed visual state. The only way a row leaves is
  * an explicit user dismiss, tracked as a tombstone in the side-state map.
  *
- * These functions are pure (no React / DOM) so the ordering + frontier walk can
- * be unit-tested. Ported + extended from the retired constellation-layout.ts.
+ * These functions are pure (no React / DOM) so the ordering can be unit-tested.
+ * Ported + extended from the retired constellation-layout.ts.
  */
 import type { GraphNode } from "./graph-store"
 import { isWorking, depth1Of } from "./graph-store"
 import { channelHue } from "./channel-identity"
 
 export const MAX_DOCK_NODES = 8
-export const MAX_MINI_DOTS = 6
 
 /**
  * Per-node UI side-state, layered over the server-authoritative graph and
@@ -33,12 +34,6 @@ export interface DockSideState {
 }
 
 export type DockSideMap = Map<string, DockSideState>
-
-/** A depth-2+ descendant rendered as a mini-dot under its COO chip. */
-export interface MiniDot {
-  id: string
-  working: boolean
-}
 
 /** Clean a raw label into a compact topic string (ported from thread-store). */
 export function deriveLabel(raw: string): string {
@@ -88,31 +83,6 @@ export function orderDockNodes(
     shown: sorted.slice(0, MAX_DOCK_NODES),
     overflow: Math.max(0, sorted.length - MAX_DOCK_NODES),
   }
-}
-
-/**
- * Depth-2+ descendants of a node (its employee sub-sessions), working-first,
- * capped at MAX_MINI_DOTS. Walks the frontier so grandchildren (depth-3+) are
- * included. Returns lightweight `{ id, working }` rather than full nodes.
- */
-export function miniDotsFor(nodeId: string, nodes: GraphNode[]): MiniDot[] {
-  const subtree: GraphNode[] = []
-  const frontier = new Set<string>([nodeId])
-  let grew = true
-  while (grew) {
-    grew = false
-    for (const x of nodes) {
-      if (x.parentId && frontier.has(x.parentId) && !frontier.has(x.id)) {
-        frontier.add(x.id)
-        subtree.push(x)
-        grew = true
-      }
-    }
-  }
-  return subtree
-    .sort((a, b) => (isWorking(b) ? 1 : 0) - (isWorking(a) ? 1 : 0))
-    .slice(0, MAX_MINI_DOTS)
-    .map((x) => ({ id: x.id, working: isWorking(x) }))
 }
 
 /**

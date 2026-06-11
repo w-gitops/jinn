@@ -110,8 +110,8 @@ export interface UseTalkReturn {
   rows: StreamRow[]
   /**
    * Full delegation-graph: every session in the talk tree at any depth. Depth-1
-   * nodes are the COO threads (WorkDock chips); depth-2+ are employee
-   * grandchildren (mini-dots). Nodes persist and NEVER auto-hide — idle nodes
+   * nodes are the COO threads (WorkTree root rows); depth-2+ are employee
+   * descendants (indented sub-rows). Nodes persist and NEVER auto-hide — idle nodes
    * are dimmed by the renderer. This is the SINGLE source for the work rail.
    */
   graph: GraphNode[]
@@ -405,10 +405,10 @@ export function useTalk(): UseTalkReturn {
   }, [appendAssistantRow])
 
   // ---- Dock side-state mutators --------------------------------------------
-  // The WorkDock reads the graph directly; these layer user renames + dismiss
+  // The WorkTree reads the graph directly; these layer user renames + dismiss
   // tombstones over it (persisted to the existing talk-storage keys). Nodes
   // NEVER auto-hide — idle/done dims (Mission Control); only an explicit dismiss
-  // removes a chip (the gateway child stays alive).
+  // removes a row (the gateway child stays alive).
   const patchSide = useCallback((id: string, patch: Partial<DockSideState>) => {
     setSideState((prev) => {
       const next = new Map(prev)

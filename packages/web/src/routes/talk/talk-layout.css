@@ -76,7 +76,7 @@
   text-overflow: ellipsis;
 }
 
-/* ---- row 4: main = stage (transcript) + rail (WorkDock) ---- */
+/* ---- row 4: main = stage (transcript) + rail (WorkTree) ---- */
 .talk-main {
   position: relative;
   display: flex;

@@ -2,7 +2,7 @@
  * Jinn Talk — /talk route (AURA voice surface).
  *
  * Mobile-first. The orchestrator orb sits center; when it spawns COO child
- * sessions they appear as chips in the WorkDock rail (right edge). One big mic
+ * sessions they appear as rows in the WorkTree rail (right edge). One big mic
  * button drives the loop (tap to talk, tap to send). TTS is browser
  * SpeechSynthesis by default, so it speaks aloud on the phone with no server deps.
  */
@@ -16,7 +16,7 @@ import { ConversationStream } from "./conversation-stream"
 import { OrbLayer } from "./orb-layer"
 import { PinnedCards, selectInlineCards, selectPinnedCards } from "./cards/card-stack"
 import { ErrorBoundary } from "@/components/error-boundary"
-import { WorkDock } from "./work-dock"
+import { WorkTree } from "./work-tree"
 import { SessionPeek } from "./session-peek"
 import { SessionSearchSheet } from "./session-search-sheet"
 import { AttachBanner } from "./attach-banner"
@@ -219,7 +219,7 @@ export default function TalkPage() {
         dockAnchorRef={dockAnchorRef}
       />
 
-      {/* row 4: main — transcript stage + WorkDock rail */}
+      {/* row 4: main — transcript stage + WorkTree rail */}
       <div className="talk-main">
         <div ref={heroAnchorRef} className="talk-stage">
           {/* Persistent conversation — user lines, AURA karaoke replies,
@@ -238,11 +238,13 @@ export default function TalkPage() {
           />
         </div>
         <div className="talk-rail">
-          {/* WorkDock — the single graph-driven work rail: one chip per depth-1
-              node, mini-dots for employees, ⋯ menu for rename/dismiss/pin. */}
-          <WorkDock
+          {/* WorkTree — the single graph-driven work rail: every node of the
+              delegation tree is a labeled row (any depth), ⋯ menu on roots for
+              rename/dismiss/pin, live activity lines on working rows. */}
+          <WorkTree
             graph={talk.graph}
             sideState={talk.sideState}
+            activity={talk.activity}
             targetThreadId={talk.targetThreadId}
             onOpenThread={setChatSessionId}
             onSelectTarget={talk.selectThread}

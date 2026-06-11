@@ -1,11 +1,9 @@
 import { describe, it, expect } from "vitest"
 import {
   orderDockNodes,
-  miniDotsFor,
   deriveLabel,
   focusNode,
   MAX_DOCK_NODES,
-  MAX_MINI_DOTS,
   type DockSideMap,
 } from "../work-dock-layout"
 import type { GraphNode } from "../graph-store"
@@ -112,37 +110,6 @@ describe("orderDockNodes", () => {
     const v = orderDockNodes(nodes, side)
     expect(v.shown).toHaveLength(MAX_DOCK_NODES)
     expect(v.overflow).toBe(0) // one dismissed → exactly MAX shown, none left over
-  })
-})
-
-describe("miniDotsFor", () => {
-  it("returns a node's depth-2+ descendants, working first, capped at 6", () => {
-    const nodes = [
-      d1("coo1"),
-      child("e1", "coo1", { status: "running" }),
-      child("e2", "coo1", { status: "idle" }),
-      child("e3", "other"),
-      ...Array.from({ length: 7 }, (_, i) => child(`m${i}`, "coo1", { status: "idle" })),
-    ]
-    const dots = miniDotsFor("coo1", nodes)
-    expect(dots).toHaveLength(MAX_MINI_DOTS)
-    expect(dots[0]).toEqual({ id: "e1", working: true })
-    expect(dots.some((d) => d.id === "e3")).toBe(false)
-  })
-
-  it("walks the frontier to grandchildren (depth-3+)", () => {
-    const nodes = [
-      d1("coo1"),
-      child("e1", "coo1", { depth: 2, status: "idle" }),
-      child("g1", "e1", { depth: 3, status: "running" }),
-    ]
-    const dots = miniDotsFor("coo1", nodes)
-    expect(dots.map((d) => d.id).sort()).toEqual(["e1", "g1"])
-    expect(dots.find((d) => d.id === "g1")!.working).toBe(true)
-  })
-
-  it("returns [] for a node with no descendants", () => {
-    expect(miniDotsFor("coo1", [d1("coo1")])).toEqual([])
   })
 })
 
