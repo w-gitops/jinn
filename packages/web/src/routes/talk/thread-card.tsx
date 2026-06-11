@@ -29,9 +29,10 @@ export interface ThreadCardProps {
   onOpenThread?: (id: string) => void
 }
 
-type StatusKind = "working" | "waiting" | "done" | "error"
+export type StatusKind = "working" | "waiting" | "done" | "error"
 
-function statusOf(node: GraphNode | undefined): StatusKind {
+/** Shared status mapping for thread rows (also used by the thread drawer). */
+export function statusOf(node: GraphNode | undefined): StatusKind {
   if (!node) return "done"
   if (node.status === "error" || node.status === "failed") return "error"
   if (node.status === "waiting") return "waiting"

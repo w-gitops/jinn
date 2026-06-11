@@ -18,7 +18,7 @@ import './session-search-sheet.css'
 interface SessionSearchSheetProps {
   open: boolean
   onClose: () => void
-  /** Open the SessionPeek popup for a session id. */
+  /** Open the thread drawer for a session id. */
   onPeek: (sessionId: string) => void
 }
 

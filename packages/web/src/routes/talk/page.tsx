@@ -17,7 +17,7 @@ import { OrbLayer } from "./orb-layer"
 import { PinnedCards, selectInlineCards, selectPinnedCards } from "./cards/card-stack"
 import { ErrorBoundary } from "@/components/error-boundary"
 import { WorkTree } from "./work-tree"
-import { SessionPeek } from "./session-peek"
+import { ThreadDrawer } from "./thread-drawer"
 import { SessionSearchSheet } from "./session-search-sheet"
 import { AttachBanner } from "./attach-banner"
 import { hasEngageAttachment } from "./session-search"
@@ -359,12 +359,13 @@ export default function TalkPage() {
         </div>
       </div>
 
-      {/* Peek popup for a tapped session (chip, orb, or search row) — now with
-          attach controls + engage composer. */}
-      <SessionPeek
+      {/* Thread drawer for a tapped session (chip, tree row, or search row) —
+          breadcrumb path + descend into sub-threads, attach controls + engage
+          composer. The conversation stays visible behind the scrim. */}
+      <ThreadDrawer
         sessionId={chatSessionId}
-        open={!!chatSessionId}
         onClose={() => setChatSessionId(null)}
+        onNavigate={setChatSessionId}
       />
 
       {/* Session-search sheet (title + message FTS), opened from the top bar. */}

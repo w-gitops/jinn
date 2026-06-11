@@ -387,7 +387,7 @@ export const api = {
    * owned COO thread (thread:"<id>"), or attach/detach a soft link
    * (attach:true / detach:true, optional mode:"observe"|"engage" + brief).
    * NOTE: a follow-up to an ALREADY-attached engage session does NOT go here
-   * (both delegate paths 400 — see session-peek's composer, which uses
+   * (both delegate paths 400 — see the thread drawer's composer, which uses
    * sendMessage instead). Throws on 4xx with the backend `error` message.
    */
   talkDelegate: (body: TalkDelegateBody) =>
