@@ -15,7 +15,7 @@
   --z-stage: 10;   /* stage content + orb layer */
   --z-rail: 20;    /* WorkTree rail (always floats over the stage edge) */
   --z-chrome: 30;  /* top bar, bottom controls */
-  --z-overlay: 40; /* search sheet, session peek, modals */
+  --z-overlay: 40; /* search sheet, thread drawer, modals */
 
   /* ---- spacing scale (talk-local, sequential 1–8; differs from global Tailwind-style px/4 scale) ---- */
   --space-1: 4px;

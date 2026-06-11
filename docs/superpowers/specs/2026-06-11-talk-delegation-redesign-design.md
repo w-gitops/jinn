@@ -118,4 +118,7 @@ Thread-activity store is advisory overlay data — missing entries render nothin
 
 ## Post-review deviations
 
-(filled in during implementation if reviews force changes)
+- **Sub-row entrance animation:** ThreadCard sub-rows enter with a translateY+fade instead of the specced grid `0fr→1fr` height expansion — simpler, and visually equivalent at the one-row scale a delegation typically adds.
+- **`activityFor` instead of reusing `whisperFor`:** child "now doing" lines come from a new child-scoped mapper (`thread-activity.ts`). The orchestrator whisper phrasing (routing…/preparing a card…) didn't fit worker sessions, so the two vocabularies stay separate.
+- **Delegation cards are rebuilt from the graph snapshot on reload:** live cards insert on the `talk:graph` "added" delta, which rehydration can't replay. On (re)connect, `snapshotDelegationChips` maps depth-1 owned snapshot nodes back to their stable `sys-del-<id>` rows after the transcript rehydrate — the original live insertion order is approximated by appending after history (the reducer dedups by id, so reconnects are no-ops).
+- **ThreadDrawer ✕ close button:** the drawer has an explicit close button beyond the specced Escape/scrim-click paths — mobile reachability (the scrim sliver is thin on narrow viewports).

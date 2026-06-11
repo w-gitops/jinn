@@ -3,9 +3,10 @@
  *
  * Pure reducer + selectors over the server-authoritative session tree under the
  * voice orchestrator (talk:graph WS deltas + GET /api/talk/graph snapshots).
- * Depth-1 nodes are the COO threads (satellite orbs / panel chips); depth-2+
- * are employees under a COO (mini-dots). Nodes NEVER auto-hide on completion —
- * idle is a dimmed visual state; removal only happens on server delete.
+ * Depth-1 nodes are the COO threads (work-tree root rows / ThreadCards);
+ * depth-2+ are employees under a COO (indented ↳ sub-rows in the rail and on
+ * the cards). Nodes NEVER auto-hide on completion — done is a dimmed visual
+ * state; removal only happens on server delete.
  *
  * Graph deltas can carry a pre-running "idle" status on added/status changes
  * (the gateway emits them before its running-write), so live working state for
