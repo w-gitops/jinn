@@ -40,6 +40,7 @@ import { activityFor, threadActivityReducer, type ActivityMap } from "./thread-a
 import type { AvatarState, Card } from "./types"
 import { useConversation, type StreamRow } from "./use-conversation"
 import { whisperFor } from "./talk-whisper"
+import { joinStreamChunks } from "./stream-text"
 import { channelHue } from "./channel-identity"
 import { focusNode, deriveLabel, type DockSideMap, type DockSideState } from "./work-dock-layout"
 import { messagesToEntries, snapshotDelegationChips } from "./rehydrate"
@@ -400,7 +401,10 @@ export function useTalk(): UseTalkReturn {
       asstIdRef.current = `a${turnCounterRef.current}`
       turnTextRef.current = ""
     }
-    turnTextRef.current += fragment
+    // joinStreamChunks inserts the missing space at content-block boundaries
+    // (text before/after a tool call streams as separate blocks with no
+    // separator — "…now.On it" → "…now. On it").
+    turnTextRef.current = joinStreamChunks(turnTextRef.current, fragment)
     appendAssistantRow(asstIdRef.current, stripMarkdown(turnTextRef.current))
   }, [appendAssistantRow])
 
