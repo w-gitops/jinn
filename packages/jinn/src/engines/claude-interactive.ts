@@ -252,6 +252,11 @@ export interface TurnResolverOpts {
   assumeStarted?: boolean;
   /** Test override for the StopFailure grace window (default 20s). */
   stopFailureGraceMs?: number;
+  /** This turn is a Claude-native local command (see isNativeClaudeCommand). Such
+   *  commands produce no new assistant message, so a Stop hook's
+   *  last_assistant_message is the PREVIOUS turn's stale text — maybeComplete must
+   *  settle empty rather than re-persist it as a duplicate. */
+  native?: boolean;
 }
 
 /** State machine for one interactive turn: resolves after BOTH SessionStart + Stop, or on StopFailure/interrupt. */
@@ -324,7 +329,10 @@ export class TurnResolver {
       this.settle({ sessionId: "", result: "", error: "Interactive turn produced no Claude session id" });
       return;
     }
-    const text = String(this.stopPayload.last_assistant_message ?? "");
+    // Native local commands (/usage, /limits, …) produce no new assistant
+    // message; the Stop hook's last_assistant_message is the prior turn's stale
+    // text. Settling with it would persist a duplicate chat echo — settle empty.
+    const text = this.opts.native ? "" : String(this.stopPayload.last_assistant_message ?? "");
     this.settle({ sessionId: sid, result: text, error: undefined, numTurns: 1 });
   }
 
@@ -399,9 +407,28 @@ const LOST_STOP_RECOVERY_QUIET_MS = 15_000;
 const LOST_STOP_RECOVERY_MIN_MS = 10_000;
 const LATE_RECOVERY_WINDOW_MS = 10 * 60 * 1000;
 
-function isNativeClaudeCommand(prompt: string): boolean {
+/** Claude Code built-in slash commands that run locally and never produce a new
+ *  assistant API turn. Two behaviours, both handled by the native-command path:
+ *   - Context mutators (/compact, /clear, /model) end without firing a Stop hook;
+ *     the native-command quiet-window timer settles them with an empty result.
+ *   - Info/overlay commands (/usage, /limits, /cost, …) DO fire a Stop hook on
+ *     dismiss, but its `last_assistant_message` still carries the PREVIOUS turn's
+ *     text. Without native classification that stale text was persisted as a new
+ *     assistant message — the duplicate-chat-echo bug. native-aware maybeComplete
+ *     settles these empty instead.
+ *  Only commands that genuinely yield no persistable assistant output belong here:
+ *  misclassifying a real-turn command (/init, /review, skill commands) would drop
+ *  its answer. */
+const NATIVE_CLAUDE_COMMANDS = new Set([
+  "/compact", "/clear", "/model",
+  "/usage", "/limits", "/cost", "/status", "/config", "/help", "/doctor",
+  "/release-notes", "/vim", "/terminal-setup", "/mcp", "/agents", "/permissions",
+  "/hooks", "/memory", "/export", "/login", "/logout", "/bug", "/resume",
+]);
+
+export function isNativeClaudeCommand(prompt: string): boolean {
   const first = prompt.trim().split(/\s+/, 1)[0]?.toLowerCase();
-  return first === "/compact" || first === "/clear" || first === "/model";
+  return first !== undefined && NATIVE_CLAUDE_COMMANDS.has(first);
 }
 
 /** Bracketed-paste `text` into a PTY then submit with CR after a 50ms beat.
@@ -597,13 +624,14 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       relayScript: HOOK_RELAY_SCRIPT,
       statusLineDir: CLAUDE_LIMITS_DIR,
     });
+    const nativeCommand = isNativeClaudeCommand(opts.prompt);
     const resolver = new TurnResolver({
       fallbackSessionId: opts.resumeSessionId,
       assumeStarted: !!warm, // warm PTY = SessionStart already fired (turn 1 or idle spawn)
+      native: nativeCommand,
     });
     const entry: { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty } = { resolver, onStream: opts.onStream };
     this.active.set(jinnSessionId, entry);
-    const nativeCommand = isNativeClaudeCommand(opts.prompt);
 
     // Register BEFORE spawning so a fast SessionStart is buffered+drained, not lost.
     this.hookRegistry.register(jinnSessionId, (h) => {
