@@ -199,9 +199,11 @@ async function readCodexRateLimits(config: JinnConfig): Promise<JsonRecord> {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let closeStdinTimer: NodeJS.Timeout | undefined;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      if (closeStdinTimer) clearTimeout(closeStdinTimer);
       child.kill("SIGTERM");
       reject(new Error(stderr.trim() || "Timed out reading Codex rate limits"));
     }, 5000);
@@ -210,6 +212,7 @@ async function readCodexRateLimits(config: JinnConfig): Promise<JsonRecord> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (closeStdinTimer) clearTimeout(closeStdinTimer);
       child.kill("SIGTERM");
       resolve(value);
     }
@@ -239,15 +242,23 @@ async function readCodexRateLimits(config: JinnConfig): Promise<JsonRecord> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (closeStdinTimer) clearTimeout(closeStdinTimer);
       reject(err);
     });
     child.on("close", () => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (closeStdinTimer) clearTimeout(closeStdinTimer);
       reject(new Error(stderr.trim() || "Codex app-server exited before returning rate limits"));
     });
-    child.stdin.end(`${JSON.stringify(initialize)}\n${JSON.stringify(request)}\n`);
+    child.stdin.write(`${JSON.stringify(initialize)}\n${JSON.stringify(request)}\n`);
+    // `codex app-server --stdio` can exit early if stdin is closed immediately
+    // after the write. Keeping it open briefly mirrors a real JSON-RPC client and
+    // gives the server time to process both requests.
+    closeStdinTimer = setTimeout(() => {
+      try { child.stdin.end(); } catch { /* best effort */ }
+    }, 1000);
   });
 }
 
