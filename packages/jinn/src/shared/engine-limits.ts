@@ -41,6 +41,12 @@ function isoFromSeconds(seconds: number | undefined): string | undefined {
   return seconds ? new Date(seconds * 1000).toISOString() : undefined;
 }
 
+function limitWindowName(fallback: string, durationMins: number | undefined): string {
+  if (durationMins === 300) return "5h";
+  if (durationMins === 10_080) return "7d";
+  return fallback;
+}
+
 function baseSnapshot(config: JinnConfig, engine: string): EngineLimitEngineSnapshot {
   const registry = getModelRegistry(config);
   const entry = registry[engine];
@@ -67,14 +73,21 @@ function windowFromClaude(name: string, value: unknown, durationMins: number): E
   };
 }
 
-function newestJsonFile(dir: string): string | null {
+function claudeSnapshotFile(dir: string): string | null {
   try {
     const files = fs.readdirSync(dir)
       .filter((name) => name.endsWith(".json"))
       .map((name) => path.join(dir, name))
-      .map((file) => ({ file, mtimeMs: fs.statSync(file).mtimeMs }))
+      .map((file) => {
+        let hasRateLimits = false;
+        try {
+          const parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
+          hasRateLimits = !!parsed?.rate_limits?.five_hour || !!parsed?.rate_limits?.seven_day;
+        } catch { /* ignore corrupt snapshots here; collector handles selected file */ }
+        return { file, hasRateLimits, mtimeMs: fs.statSync(file).mtimeMs };
+      })
       .sort((a, b) => b.mtimeMs - a.mtimeMs);
-    return files[0]?.file ?? null;
+    return files.find((f) => f.hasRateLimits)?.file ?? files[0]?.file ?? null;
   } catch {
     return null;
   }
@@ -101,7 +114,7 @@ async function collectClaudeLimits(config: JinnConfig): Promise<EngineLimitEngin
     return { ...snap, status: "unsupported", unsupportedReason: "Claude CLI is not installed." };
   }
 
-  const latest = newestJsonFile(CLAUDE_LIMITS_DIR);
+  const latest = claudeSnapshotFile(CLAUDE_LIMITS_DIR);
   const accountPlan = await claudeAuthPlan(config);
   if (!latest) {
     return {
@@ -157,11 +170,12 @@ async function collectClaudeLimits(config: JinnConfig): Promise<EngineLimitEngin
 
 function windowFromCodex(name: string, value: unknown): EngineLimitWindow | undefined {
   if (!isRecord(value)) return undefined;
+  const durationMins = num(value.windowDurationMins);
   const resetsAt = num(value.resetsAt);
   return {
-    name,
+    name: limitWindowName(name, durationMins),
     usedPercent: num(value.usedPercent),
-    windowDurationMins: num(value.windowDurationMins),
+    windowDurationMins: durationMins,
     resetsAt,
     resetsAtIso: isoFromSeconds(resetsAt),
   };
@@ -277,11 +291,15 @@ function bucketsFromCodex(result: JsonRecord): EngineLimitBucket[] {
       id: bucketId,
       name: str(value.limitName),
       planType: str(value.planType),
-      primary: windowFromCodex("primary", value.primary),
-      secondary: windowFromCodex("secondary", value.secondary),
+      primary: windowFromCodex("5h", value.primary),
+      secondary: windowFromCodex("7d", value.secondary),
       credits: creditsFromCodex(value.credits),
     }];
   });
+}
+
+function planWindow(name: string, windowDurationMins: number): EngineLimitWindow {
+  return { name, windowDurationMins };
 }
 
 async function collectCodexLimits(config: JinnConfig): Promise<EngineLimitEngineSnapshot> {
@@ -350,11 +368,14 @@ export async function collectEngineLimits(
     } else if (name === "codex") {
       engines[name] = await collectCodexLimits(config);
     } else if (name === "antigravity") {
-      engines[name] = collectUnsupported(
-        config,
-        name,
-        "Antigravity exposes models through `agy models`, but no stable structured CLI quota endpoint was found.",
-      );
+      const snap = baseSnapshot(config, name);
+      engines[name] = {
+        ...snap,
+        status: snap.available ? "static" : "unsupported",
+        source: "agy models + interactive /credits",
+        windows: [planWindow("5h", 300), planWindow("7d", 10_080)],
+        unsupportedReason: "Antigravity exposes plan windows and G1 credit controls through the interactive `/credits` and `/settings` UI, but no stable non-interactive JSON quota endpoint was found.",
+      };
     } else if (name === "pi") {
       engines[name] = collectUnsupported(
         config,
