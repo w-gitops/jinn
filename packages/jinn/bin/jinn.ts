@@ -65,6 +65,16 @@ program
   });
 
 program
+  .command("limits")
+  .description("Show engine rate limits, quota windows, and model capabilities")
+  .option("-e, --engine <name>", "Only show one engine")
+  .option("--json", "Print raw JSON")
+  .action(async (opts: { engine?: string; json?: boolean }) => {
+    const { runLimits } = await import("../src/cli/limits.js");
+    await runLimits(opts);
+  });
+
+program
   .command("create <name>")
   .description("Create a new Jinn instance")
   .option("-p, --port <port>", "Set gateway port (auto-assigned if omitted)")
