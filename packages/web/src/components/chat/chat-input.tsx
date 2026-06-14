@@ -523,26 +523,8 @@ export function ChatInput({
         </div>
       )}
 
-      <div className={`flex items-center gap-[var(--space-2)] bg-[var(--fill-secondary)] rounded-[var(--radius-lg)] py-1.5 px-[var(--space-3)] min-h-11 transition-[border-color] duration-200 ease-in-out border ${loading ? 'border-[var(--accent)]' : 'border-[var(--separator)]'}`}>
-        {/* Attach button */}
-        <button
-          aria-label="Attach file"
-          onClick={() => fileInputRef.current?.click()}
-          className="w-8 h-8 shrink-0 rounded-[var(--radius-sm)] flex items-center justify-center bg-transparent border-none cursor-pointer text-[var(--text-secondary)] mb-0"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-          </svg>
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*,audio/*,.pdf,.doc,.docx,.txt,.csv,.json,.zip"
-          multiple
-          className="hidden"
-          onChange={handleFileAttach}
-        />
-
+      {/* Composer card — textarea on top, a quiet toolbar row below. */}
+      <div className={`rounded-[22px] bg-[var(--bg-secondary)] shadow-[var(--shadow-card)] px-[var(--space-3)] pt-[var(--space-2)] pb-1.5 transition-[border-color] duration-200 ease-in-out border ${loading ? 'border-[var(--accent)]' : 'border-[var(--border)]'}`}>
         {/* Textarea */}
         <textarea
           id="chat-textarea"
@@ -558,109 +540,136 @@ export function ChatInput({
           }
           rows={1}
           disabled={disabled}
-          className={`flex-1 bg-transparent border-none outline-none resize-none text-[var(--text-primary)] text-[length:var(--text-subheadline)] leading-5 max-h-30 min-h-5 h-5 p-0 m-0 ${disabled ? 'opacity-50' : 'opacity-100'}`}
+          className={`block w-full bg-transparent border-none outline-none resize-none text-[var(--text-primary)] text-[length:var(--text-subheadline)] leading-6 max-h-30 min-h-6 px-1 pt-1 pb-2 m-0 ${disabled ? 'opacity-50' : 'opacity-100'}`}
           onInput={(e) => {
             resize(e.target as HTMLTextAreaElement)
           }}
         />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*,audio/*,.pdf,.doc,.docx,.txt,.csv,.json,.zip"
+          multiple
+          className="hidden"
+          onChange={handleFileAttach}
+        />
 
-        {/* Language picker — only shown when multiple STT languages configured */}
-        {stt.languages.length > 1 && (
+        {/* Toolbar: [+ attach] · [model chip] · spacer · [mic] · [send] */}
+        <div className="flex items-center gap-[var(--space-2)]">
+          {/* Attach */}
           <button
-            aria-label={`STT language: ${stt.selectedLanguage.toUpperCase()}. Click to switch.`}
-            onClick={stt.cycleLanguage}
-            className="h-6 px-1.5 shrink-0 rounded-[var(--radius-sm)] flex items-center justify-center bg-[var(--fill-tertiary)] border-none cursor-pointer text-[var(--text-secondary)] text-[11px] font-semibold font-[family-name:var(--font-mono)] tracking-[0.5px] uppercase transition-all duration-150 ease-in-out"
-            title={`Transcription language: ${stt.selectedLanguage.toUpperCase()}. Click to cycle.`}
+            aria-label="Attach file"
+            title="Attach file"
+            onClick={() => fileInputRef.current?.click()}
+            className="w-[34px] h-[34px] shrink-0 rounded-full flex items-center justify-center bg-transparent border border-[var(--border)] cursor-pointer text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] transition-colors"
           >
-            {stt.selectedLanguage}
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
           </button>
-        )}
 
-        {/* Voice input / STT button */}
-        <button
-          aria-label={
-            stt.state === 'recording' ? 'Stop recording'
-            : stt.state === 'transcribing' ? 'Transcribing…'
-            : 'Voice input'
-          }
-          onClick={handleMicClick}
-          disabled={stt.state === 'transcribing'}
-          className={`w-8 h-8 shrink-0 flex items-center justify-center border-none transition-all duration-150 ease-in-out ${stt.state === 'recording' ? 'rounded-full bg-[var(--system-red)] text-white cursor-pointer' : `rounded-[var(--radius-sm)] bg-transparent text-[var(--text-secondary)] ${stt.state === 'transcribing' ? 'cursor-wait' : 'cursor-pointer'}`}`}
-          title={
-            stt.state === 'recording' ? 'Stop recording'
-            : stt.state === 'transcribing' ? 'Transcribing…'
-            : 'Voice input'
-          }
-        >
-          {stt.state === 'transcribing' ? (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-[stt-spin_1s_linear_infinite]">
-              <path d="M12 2a10 10 0 0 1 10 10" />
-            </svg>
-          ) : (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-              <line x1="12" y1="19" x2="12" y2="23" />
-              <line x1="8" y1="23" x2="16" y2="23" />
-            </svg>
+          {/* Model chip — the restyled selector trigger */}
+          {selectorSlot && (
+            <div className="min-w-0 flex items-center overflow-hidden">
+              {selectorSlot}
+            </div>
           )}
-        </button>
 
-        {/* Live waveform during recording */}
-        {stt.state === 'recording' && stt.analyser && (
-          <SttWaveform analyser={stt.analyser} width={64} height={28} />
-        )}
+          <div className="flex-1" />
 
-        {/* Stop button — shown when loading */}
-        {loading && onInterrupt && (
+          {/* Language picker — only shown when multiple STT languages configured */}
+          {stt.languages.length > 1 && (
+            <button
+              aria-label={`STT language: ${stt.selectedLanguage.toUpperCase()}. Click to switch.`}
+              onClick={stt.cycleLanguage}
+              className="h-7 px-2 shrink-0 rounded-full flex items-center justify-center bg-[var(--fill-tertiary)] border border-[var(--border)] cursor-pointer text-[var(--text-secondary)] text-[11px] font-semibold font-[family-name:var(--font-mono)] tracking-[0.5px] uppercase transition-all duration-150 ease-in-out"
+              title={`Transcription language: ${stt.selectedLanguage.toUpperCase()}. Click to cycle.`}
+            >
+              {stt.selectedLanguage}
+            </button>
+          )}
+
+          {/* Live waveform during recording */}
+          {stt.state === 'recording' && stt.analyser && (
+            <SttWaveform analyser={stt.analyser} width={64} height={28} />
+          )}
+
+          {/* Voice input / STT button */}
           <button
-            onClick={onInterrupt}
-            aria-label="Stop"
-            className="w-8 h-8 rounded-full bg-[var(--system-red)] text-white border-none cursor-pointer flex items-center justify-center shrink-0 transition-all duration-150 ease-in-out"
+            aria-label={
+              stt.state === 'recording' ? 'Stop recording'
+              : stt.state === 'transcribing' ? 'Transcribing…'
+              : 'Voice input'
+            }
+            onClick={handleMicClick}
+            disabled={stt.state === 'transcribing'}
+            className={`w-[34px] h-[34px] shrink-0 flex items-center justify-center transition-all duration-150 ease-in-out ${stt.state === 'recording' ? 'rounded-full bg-[var(--system-red)] text-white border-none cursor-pointer' : `rounded-full bg-transparent border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] ${stt.state === 'transcribing' ? 'cursor-wait' : 'cursor-pointer'}`}`}
+            title={
+              stt.state === 'recording' ? 'Stop recording'
+              : stt.state === 'transcribing' ? 'Transcribing…'
+              : 'Voice input'
+            }
           >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-              <rect x="4" y="4" width="16" height="16" rx="2" />
-            </svg>
+            {stt.state === 'transcribing' ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-[stt-spin_1s_linear_infinite]">
+                <path d="M12 2a10 10 0 0 1 10 10" />
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="23" />
+                <line x1="8" y1="23" x2="16" y2="23" />
+              </svg>
+            )}
           </button>
-        )}
 
-        {/* Send button */}
-        <button
-          onClick={handleSubmit}
-          disabled={!hasContent || disabled}
-          aria-label="Send message"
-          className={`w-8 h-8 rounded-full border-none flex items-center justify-center shrink-0 transition-all duration-150 ease-in-out ${hasContent ? 'bg-[var(--accent)] text-[var(--accent-contrast)] cursor-pointer' : 'bg-[var(--fill-tertiary)] text-[var(--text-quaternary)] cursor-default'}`}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="12" y1="19" x2="12" y2="5" />
-            <polyline points="5 12 12 5 19 12" />
-          </svg>
-        </button>
+          {/* Stop button — shown when a turn is streaming (interrupts). */}
+          {loading && onInterrupt ? (
+            <button
+              onClick={onInterrupt}
+              aria-label="Stop"
+              className="w-[38px] h-[38px] rounded-full bg-[var(--system-red)] text-white border-none cursor-pointer flex items-center justify-center shrink-0 transition-all duration-150 ease-in-out"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="4" y="4" width="16" height="16" rx="2" />
+              </svg>
+            </button>
+          ) : (
+            /* Send button — accent circle */
+            <button
+              onClick={handleSubmit}
+              disabled={!hasContent || disabled}
+              aria-label="Send message"
+              className={`w-[38px] h-[38px] rounded-full border-none flex items-center justify-center shrink-0 transition-all duration-150 ease-in-out ${hasContent ? 'bg-[var(--accent)] text-[var(--accent-contrast)] cursor-pointer' : 'bg-[var(--fill-tertiary)] text-[var(--text-quaternary)] cursor-default'}`}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="12" y1="19" x2="12" y2="5" />
+                <polyline points="5 12 12 5 19 12" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Meta strip: Engine·Model·Effort selector LEFT, hints CENTER. */}
-      <div className="flex sm:grid sm:grid-cols-[1fr_auto_1fr] items-center gap-[var(--space-2)] mt-[var(--space-1)] min-w-0">
-        {/* Selector — quiet inline metadata, left, with breathing room from the edge.
-            Mobile: takes the full strip width (no 1fr spacer stealing half) and
-            scrolls horizontally if the pills overflow rather than wrapping. */}
-        <div className="min-w-0 ml-[10px] justify-self-start flex flex-1 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] sm:flex-initial [&::-webkit-scrollbar]:hidden">
-          {selectorSlot}
-        </div>
-        {/* Hints — centered, hidden on mobile for space */}
-        <div className="hidden sm:flex justify-self-center text-[length:var(--text-caption2)] text-[var(--text-quaternary)] items-center gap-[var(--space-3)]">
-          <span>/ - commands</span>
-          <span>@name - mention</span>
+      {/* Slim helper row — shortcuts + terminal access (CLI view). Quiet; the
+          command/mention hints were dropped (discoverable by typing / or @). */}
+      {(onShortcutsClick || terminalActionsSlot || reserveTerminalActions || mobileTerminalActionsSlot) && (
+        <div className="flex items-center justify-end gap-[var(--space-3)] mt-1.5 px-1.5 min-w-0">
           {onShortcutsClick && (
             <button
               onClick={onShortcutsClick}
-              className="flex items-center gap-1 text-[length:var(--text-caption2)] text-[var(--text-quaternary)] hover:text-[var(--text-tertiary)] transition-colors bg-transparent border-none cursor-pointer p-0 font-[inherit]"
+              className="hidden sm:flex items-center gap-1 text-[length:var(--text-caption2)] text-[var(--text-quaternary)] hover:text-[var(--text-tertiary)] transition-colors bg-transparent border-none cursor-pointer p-0 font-[inherit]"
             >
               <kbd className="rounded bg-[var(--fill-tertiary)] px-1 py-0.5 font-mono text-[10px] leading-none">?</kbd>
               <span>shortcuts</span>
             </button>
           )}
           {(terminalActionsSlot || reserveTerminalActions) && (
-            <span className={terminalActionsSlot ? 'flex items-center' : 'invisible flex items-center pointer-events-none'} aria-hidden={!terminalActionsSlot}>
+            <span
+              className={`hidden sm:flex items-center text-[length:var(--text-caption2)] text-[var(--text-quaternary)] ${terminalActionsSlot ? '' : 'invisible pointer-events-none'}`}
+              aria-hidden={!terminalActionsSlot}
+            >
               {terminalActionsSlot ?? (
                 <span className="flex items-center gap-1">
                   <kbd className="flex size-4 items-center justify-center rounded bg-[var(--fill-tertiary)] text-[10px] leading-none">⌨</kbd>
@@ -669,16 +678,11 @@ export function ChatInput({
               )}
             </span>
           )}
-        </div>
-        <div
-          className={mobileTerminalActionsSlot ? 'mr-[10px] flex shrink-0 items-center justify-self-end sm:mr-0' : 'hidden sm:block'}
-          aria-hidden={!mobileTerminalActionsSlot}
-        >
           {mobileTerminalActionsSlot && (
             <div className="flex items-center sm:hidden">{mobileTerminalActionsSlot}</div>
           )}
         </div>
-      </div>
+      )}
 
       {/* STT error banner */}
       {stt.state === 'error' && stt.error && (

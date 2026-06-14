@@ -437,7 +437,7 @@ export function ChatPane({
           <CliTerminal ref={cliTerminalRef} sessionId={sessionId} />
         </Suspense>
       ) : (sessionId || messages.length > 0) ? (
-        <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
+        <ChatMessages messages={messages} loading={loading} streamingText={streamingText} onRetry={(t) => void handleSend(t)} />
       ) : null}
 
       {/* Queue panel — hidden in the live xterm view (noise on top of the PTY). */}

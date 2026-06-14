@@ -404,15 +404,58 @@ function shouldShowTimestamp(messages: Message[], index: number): boolean {
   return gap > 5 * 60 * 1000
 }
 
+/* ── MessageActions — subtle copy/retry row under a message ─ */
+
+const ACTION_BTN =
+  'inline-flex h-[26px] w-[26px] items-center justify-center rounded-[7px] border-none bg-transparent text-[var(--text-quaternary)] transition-colors hover:bg-[var(--fill-tertiary)] hover:text-[var(--text-secondary)] cursor-pointer disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-[var(--text-quaternary)]'
+
+function MessageActions({ text, onRetry, retryDisabled }: { text: string; onRetry?: () => void; retryDisabled?: boolean }) {
+  const [copied, setCopied] = useState(false)
+
+  function handleCopy() {
+    if (!text) return
+    navigator.clipboard.writeText(text)
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1400) })
+      .catch(() => {})
+  }
+
+  return (
+    <div className="mt-0.5 -ml-1 flex items-center gap-0.5">
+      <button onClick={handleCopy} aria-label={copied ? 'Copied' : 'Copy message'} title={copied ? 'Copied' : 'Copy'} className={ACTION_BTN}>
+        {copied ? (
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+        ) : (
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+        )}
+      </button>
+      {onRetry && (
+        <button onClick={onRetry} disabled={retryDisabled} aria-label="Retry" title="Resend the previous message" className={ACTION_BTN}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M1 4v6h6M23 20v-6h-6" />
+            <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+          </svg>
+        </button>
+      )}
+    </div>
+  )
+}
+
 /* ── MessageRow — memoized per-message renderer ─────────── */
 
 interface MessageRowProps {
   msg: Message
   index: number
   messages: Message[]
+  loading?: boolean
+  onRetry?: (text: string) => void
 }
 
-const MessageRow = React.memo(function MessageRow({ msg, index: i, messages }: MessageRowProps) {
+const MessageRow = React.memo(function MessageRow({ msg, index: i, messages, loading, onRetry }: MessageRowProps) {
   const isUser = msg.role === 'user'
   const isNotification = msg.role === 'notification'
   const showTimestamp = shouldShowTimestamp(messages, i)
@@ -441,6 +484,16 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, messages }: M
 
   // Memoize timestamp formatting — avoids Date allocations on every parent re-render
   const formattedTimestamp = useMemo(() => formatTimestamp(msg.timestamp), [msg.timestamp])
+
+  // Retry resends the user message that prompted this assistant reply (the gateway
+  // has no in-place regenerate, so re-sending the prior prompt is the honest action).
+  const prevUserText = useMemo(() => {
+    if (isUser || isNotification) return ''
+    for (let j = i - 1; j >= 0; j--) {
+      if (messages[j].role === 'user' && messages[j].content.trim()) return messages[j].content
+    }
+    return ''
+  }, [messages, i, isUser, isNotification])
 
   return (
     <div key={msg.id || i}>
@@ -498,6 +551,15 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, messages }: M
 
             {/* Media attachments */}
             {media.length > 0 && <MessageMedia media={media} isUser={false} />}
+
+            {/* Subtle action row — copy + retry (no avatars, full-width preserved) */}
+            {textContent && (
+              <MessageActions
+                text={textContent}
+                onRetry={onRetry && prevUserText ? () => onRetry(prevUserText) : undefined}
+                retryDisabled={loading}
+              />
+            )}
           </div>
         </div>
       )}
@@ -529,9 +591,11 @@ interface ChatMessagesProps {
   messages: Message[]
   loading: boolean
   streamingText?: string
+  /** Resend a prior user message (assistant action-row "retry"). */
+  onRetry?: (text: string) => void
 }
 
-export function ChatMessages({ messages, loading, streamingText }: ChatMessagesProps) {
+export function ChatMessages({ messages, loading, streamingText, onRetry }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -672,7 +736,7 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
 
         const { msg, index: i } = item
         return (
-          <MessageRow key={msg.id || i} msg={msg} index={i} messages={messages} />
+          <MessageRow key={msg.id || i} msg={msg} index={i} messages={messages} loading={loading} onRetry={onRetry} />
         )
       })}
 

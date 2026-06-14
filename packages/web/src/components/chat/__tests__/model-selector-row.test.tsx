@@ -40,49 +40,33 @@ vi.mock('@/hooks/use-model-registry', async (importActual) => {
 
 import { ModelSelectorRow } from '../model-selector-row'
 
-describe('ModelSelectorRow', () => {
-  it('new-chat mode: Engine is an editable dropdown button', () => {
-    renderRow(<ModelSelectorRow mode="new" value={{}} onChange={() => {}} />)
-    expect(screen.getByRole('button', { name: 'Engine' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Model' })).toBeTruthy()
-  })
-
-  it('shows the engine + model labels from the registry', () => {
-    renderRow(<ModelSelectorRow mode="new" value={{ engine: 'claude', model: 'opus' }} onChange={() => {}} />)
-    expect(screen.getByText('Claude')).toBeTruthy()
-    expect(screen.getByText('Opus 4.8')).toBeTruthy()
-  })
-
-  it('existing-chat mode: Engine is a locked trigger (explainer popover), not an engine list; model stays editable', () => {
-    renderRow(<ModelSelectorRow mode="existing" value={{ engine: 'claude', model: 'opus' }} onChange={() => {}} />)
-    // The locked engine is a clickable trigger labelled "Engine (locked)", not a plain "Engine" dropdown.
-    expect(screen.queryByRole('button', { name: 'Engine' })).toBeNull()
-    expect(screen.getByRole('button', { name: /engine \(locked\)/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Model' })).toBeTruthy()
-  })
-
-  it('shows an Effort control for effort-capable models', () => {
+describe('ModelSelectorRow chip', () => {
+  it('renders a single chip trigger labelled with the model + effort', () => {
     renderRow(<ModelSelectorRow mode="new" value={{ engine: 'claude', model: 'opus', effortLevel: 'high' }} onChange={() => {}} />)
-    expect(screen.getByRole('button', { name: 'Effort' })).toBeTruthy()
+    const chip = screen.getByRole('button', { name: /model and effort/i })
+    expect(chip).toBeTruthy()
+    // Model label is always visible on the chip surface (effort is responsive).
+    expect(screen.getByText('Opus 4.8')).toBeTruthy()
+    expect(chip.getAttribute('aria-label')).toContain('Opus 4.8')
+    expect(chip.getAttribute('aria-label')).toContain('High')
   })
 
-  it('hides Effort entirely for effort-less engines (antigravity)', () => {
+  it('reflects the selected model on the chip', () => {
+    renderRow(<ModelSelectorRow mode="new" value={{ engine: 'claude', model: 'claude-sonnet-4-6', effortLevel: 'medium' }} onChange={() => {}} />)
+    expect(screen.getByText('Sonnet 4.6')).toBeTruthy()
+  })
+
+  it('omits effort from the chip label for effort-less engines (antigravity)', () => {
     renderRow(<ModelSelectorRow mode="new" value={{ engine: 'antigravity', model: 'gemini-3-flash-preview' }} onChange={() => {}} />)
-    expect(screen.queryByRole('button', { name: 'Effort' })).toBeNull()
+    const chip = screen.getByRole('button', { name: /model and effort/i })
+    expect(chip.getAttribute('aria-label')).toBe('Model and effort: Gemini 3 Flash')
   })
 
-  it('shows the "applies next message" note in existing mode when pending', () => {
-    renderRow(<ModelSelectorRow mode="existing" value={{ engine: 'claude', model: 'opus' }} onChange={() => {}} pendingNote />)
-    expect(screen.getByText(/applies next message/i)).toBeTruthy()
-  })
-
-  it('renders context tokens when a context window is known', () => {
-    renderRow(<ModelSelectorRow mode="existing" value={{ engine: 'codex', model: 'gpt-5.5' }} onChange={() => {}} contextTokens={50000} />)
-    expect(screen.getByText('50k/258k')).toBeTruthy()
-  })
-
-  it('shows over-window context as capped instead of hiding it', () => {
-    renderRow(<ModelSelectorRow mode="existing" value={{ engine: 'codex', model: 'gpt-5.5' }} onChange={() => {}} contextTokens={494290} />)
-    expect(screen.getByText('>258k/258k')).toBeTruthy()
+  it('renders nothing extra (one trigger) — engine/model/effort all live in one dropdown', () => {
+    renderRow(<ModelSelectorRow mode="existing" value={{ engine: 'claude', model: 'opus' }} onChange={() => {}} />)
+    // The old inline Engine/Model/Effort buttons are gone; just the chip remains.
+    expect(screen.queryByRole('button', { name: 'Engine' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Model' })).toBeNull()
+    expect(screen.getAllByRole('button')).toHaveLength(1)
   })
 })

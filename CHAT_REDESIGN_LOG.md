@@ -177,3 +177,64 @@ class to pad cleanly without touching chat-pane). Chat view is correct.
 - [x] preview screenshots — header top + scrolled, desktop 1440 + mobile 390
 - [ ] report → STOP for final review  ← HERE
 - nothing merged/deployed
+
+---
+
+## Phase 3 — Composer + message simplicity (Claude-app aesthetic)
+
+Mockup: `/tmp/jinn-mockups/out-composer.png` (+ `composer.html`, Ledger dark).
+Scope: composer restyle, model dropdown redesign + context usage, message action row.
+
+### Files
+- `packages/web/src/components/chat/chat-input.tsx` — composer → rounded card
+  (`bg-secondary`, 22px radius, `shadow-card`); textarea on top, a toolbar row
+  below: `[+ attach]` · `[model chip]` · spacer · `[lang?]` · `[mic]` ·
+  `[send/stop]`. Send is the accent circle (stop = red while streaming, which
+  preserves interrupt; the disabled send is hidden during a turn). Ghost buttons
+  are round/bordered. ALL existing behaviour preserved: slash + @mention + skills
+  autocomplete, STT/whisper dictation + waveform + language picker, drag-drop
+  attach, paste-image, interrupt, terminal/CLI slots, `selectorSlot`.
+  The old meta strip lost the selector (now in-toolbar) and the `/`-commands /
+  `@name` text hints (discoverable by typing); it keeps only the quiet `?`
+  shortcuts button + terminal slots, right-aligned.
+- `packages/web/src/components/chat/model-selector-row.tsx` — was 3–4 inline
+  metadata triggers; now ONE chip trigger (`✦ Opus 4.8 · High ▾`, effort hidden
+  < sm) opening ONE consolidated dropdown (opens upward, `side="top"`): engine
+  header (`Engine · Claude`, `(locked)` mid-chat), model radio list with accent
+  ✓, effort pill row (Low/Medium/High; hidden for effort-less models), a
+  **context-usage footer** (`Context · 170k / 1000k` + accent bar; orange ≥75%,
+  red ≥90%/over; fresh chat shows just the window, no bar), and engine switch —
+  a `Switch engine…` submenu on a NEW chat, "Start a new chat to switch engine"
+  when locked. Cascading + refresh-models preserved.
+  Pure `formatContextUsage(tokens, window)` + `fmtK` exported for testing.
+- `packages/web/src/components/chat/chat-messages.tsx` — subtle action row under
+  each assistant message: **copy** (clipboard, ✓ feedback) + **retry** (resends
+  the prior user message via `onRetry`; disabled while loading). Full-width +
+  no-avatars preserved.
+- `packages/web/src/components/chat/chat-pane.tsx` — wires
+  `onRetry={(t) => void handleSend(t)}`.
+
+### Thumbs / ⋯ decision
+No feedback/rating endpoint exists anywhere in the gateway (grepped jinn + web).
+Wiring a thumbs sink = new API route + storage = non-trivial → **thumbs OMITTED**
+(no dead buttons). The `⋯ more` button is also omitted: no genuinely-distinct
+second-tier per-message action exists to put in it without it being a placeholder.
+Action row ships as copy + retry only — both real. (Follow-up if wanted: add a
+`POST /api/sessions/:id/messages/:mid/feedback` sink, then re-introduce thumbs.)
+
+### Tests
+- New `__tests__/context-usage.test.ts` — `fmtK` + `formatContextUsage`
+  (label, thresholds orange/red, fresh-chat 0, over-window cap). 12 assertions.
+- Rewrote `__tests__/model-selector-row.test.tsx` to the chip surface (old inline
+  Engine/Model/Effort buttons are gone). `pnpm typecheck` clean; full web suite
+  **465 passed**.
+
+### Preview
+Dev `vite --port 5219` (GATEWAY_PORT=7777 proxy) against live API. Headless
+Chromium (Playwright) screenshots in `/tmp/chat-redesign/`:
+`desktop-1-composer-closed.png`, `desktop-2-model-dropdown.png` +
+`desktop-2b-dropdown-zoom.png`, `desktop-3-assistant-actions.png`,
+`mobile-1-composer-closed.png`, `mobile-2-model-dropdown.png`.
+
+Minor cosmetic note (not changed): a 1M window renders as `1000k` via `fmtK`;
+could special-case `M` later if desired.
