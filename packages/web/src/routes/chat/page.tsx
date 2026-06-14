@@ -14,7 +14,6 @@ import { useChatTabs } from '@/hooks/use-chat-tabs'
 import { useKeyboardShortcuts, type ShortcutDef } from '@/hooks/use-keyboard-shortcuts'
 import { useDeleteSession, useDuplicateSession, useSessions } from '@/hooks/use-sessions'
 import { clearIntermediateMessages } from '@/lib/conversations'
-import { cleanPreview } from '@/lib/clean-preview'
 import type { Message } from '@/lib/conversations'
 import { useSettings } from '@/routes/settings-provider'
 import { useQueryClient } from '@tanstack/react-query'
@@ -103,10 +102,8 @@ function ChatPage() {
       })
     }
   }, [])
-  // Frosted-pill header: mobile global-nav drawer + thread scroll state (the
-  // left pill sheds its title and shrinks to an avatar once the thread scrolls).
+  // Frosted-pill header: global-nav drawer (opened from the chat-list header).
   const [navDrawerOpen, setNavDrawerOpen] = useState(false)
-  const [threadScrolled, setThreadScrolled] = useState(false)
   const paneScrollRef = useRef<HTMLDivElement>(null)
   const [viewMode, setViewMode] = useState<ViewMode>('chat')
   // Pending user message from new-chat send — passed to the new ChatPane so the user bubble appears before loadSession resolves
@@ -273,23 +270,6 @@ function ChatPage() {
   useEffect(() => {
     setFocusTrigger(prev => prev + 1)
   }, [selectedId])
-
-  // Thread-scroll → pill collapse. The thread's scroll container lives inside
-  // ChatPane (which we don't modify), so listen in the CAPTURE phase on the pane
-  // wrapper — scroll doesn't bubble, but capture catches descendant scrolls.
-  useEffect(() => {
-    const el = paneScrollRef.current
-    if (!el) return
-    const onScroll = (e: Event) => {
-      const t = e.target as HTMLElement | null
-      if (!t || typeof t.scrollTop !== 'number') return
-      setThreadScrolled(t.scrollTop > 24)
-    }
-    el.addEventListener('scroll', onScroll, true)
-    return () => el.removeEventListener('scroll', onScroll, true)
-  }, [])
-  // New thread / switch starts at the top → reset the collapsed pill.
-  useEffect(() => { setThreadScrolled(false) }, [selectedId])
 
   const handleNewChat = useCallback(() => {
     newChatIntentRef.current = true
@@ -634,19 +614,10 @@ function ChatPage() {
     </div>
   ) : null
 
-  // Left-pill breadcrumb: employee crumb + chat title (or "New chat").
-  const titleCase = (s: string) => s.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+  // Left-pill identity: employee for the avatar slug (avatar is always shown;
+  // the pill no longer renders a title/breadcrumb).
   const headerEmployee = sessionMeta?.employee || (selectedId ? undefined : pendingEmployee || undefined)
-  const headerTitle = selectedId
-    ? (sessionMeta?.title || (activeSessionTab?.label && cleanPreview(activeSessionTab.label)) || 'Chat')
-    : 'New chat'
-  const headerCrumb = headerEmployee ? titleCase(headerEmployee) : (selectedId ? portalName : undefined)
   const headerAvatar = headerEmployee || portalName.toLowerCase()
-
-  // Search pill → reuse the existing global search (⌘K) without modifying it.
-  const openGlobalSearch = useCallback(() => {
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, ctrlKey: true, bubbles: true }))
-  }, [])
 
   const onMobileList = mobileView === 'sidebar'
 
@@ -672,6 +643,7 @@ function ChatPage() {
               onEmployeeSessionsAvailable={handleEmployeeSessionsAvailable}
               onOrderComputed={handleOrderComputed}
               onContactEmployee={contactEmployee}
+              onOpenNav={() => setNavDrawerOpen(true)}
             />
           </div>
         </div>
@@ -684,7 +656,7 @@ function ChatPage() {
               "pointer-events-none absolute inset-x-0 top-0 z-[5] h-[92px]",
               onMobileList && "hidden lg:block",
             )}
-            style={{ background: 'linear-gradient(to bottom, rgba(20,18,15,0.92), rgba(20,18,15,0.55) 45%, rgba(20,18,15,0))' }}
+            style={{ background: 'linear-gradient(to bottom, var(--bg), color-mix(in srgb, var(--bg) 55%, transparent) 45%, transparent)' }}
           />
 
           {/* Frosted corner pills replace the solid header. Hidden over the mobile
@@ -693,18 +665,13 @@ function ChatPage() {
             hideOnMobile={onMobileList}
             sidebarCollapsed={mobileView === 'chat' || sidebarCollapsed}
             onToggleSidebar={toggleSidebar}
-            onOpenNav={() => setNavDrawerOpen(true)}
             employeeName={headerEmployee}
-            crumbLabel={headerCrumb}
-            title={headerTitle}
             avatarName={headerAvatar}
-            scrolled={threadScrolled}
             tabs={chatTabs.tabs}
             activeIndex={chatTabs.activeIndex}
             onSwitch={chatTabs.switchTab}
             onClose={chatTabs.closeTab}
             onNew={handleNewChat}
-            onSearch={openGlobalSearch}
             moreMenu={moreMenu}
           />
 
@@ -727,6 +694,7 @@ function ChatPage() {
               onEmployeeSessionsAvailable={handleEmployeeSessionsAvailable}
               onOrderComputed={handleOrderComputed}
               onContactEmployee={contactEmployee}
+              onOpenNav={() => setNavDrawerOpen(true)}
             />
           </div>
 

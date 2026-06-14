@@ -25,7 +25,10 @@ export function MobileNavDrawer({ open, onClose }: { open: boolean; onClose: () 
   const portalName = settings.portalName ?? "Jinn"
   if (!open) return null
   return (
-    <div className="fixed inset-0 z-[120] lg:hidden">
+    // Not lg:hidden: the chat route opens this drawer from the chat-list header
+    // on desktop too (the 56px rail covers default pages, but the chat list's
+    // nav button reuses this drawer at all breakpoints).
+    <div className="fixed inset-0 z-[120]">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-[1px]" onClick={onClose} />
       <nav className="absolute inset-y-0 left-0 flex w-[260px] animate-slide-in flex-col border-r border-border bg-[var(--bg-secondary)]">
         <div className="flex items-center justify-between border-b border-border px-3.5 py-3">

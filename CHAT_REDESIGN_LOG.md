@@ -280,3 +280,101 @@ mention autocomplete popovers still use a separator hairline.
   shadow (does not collapse/flat-merge). Screenshots `/tmp/chat-redesign/`:
   `borderless-{dark,light}-{desktop,mobile}-{1-rest,2-focused-streaming,3-dropdown}.png`
   + `borderless-{dark,light}-composer-zoom.png`.
+
+---
+
+## Phase 4 — Claude-app polish pass (7 items)
+
+Done on `main` directly (live :7777, COO rebuilds/restarts after review). Two
+file-disjoint workstreams run in parallel via agent teams; integrated centrally.
+Reference: operator screenshots IMG_3981 (Anthropic composer target), IMG_3982
+(our light composer), IMG_3983 (light-mobile dark-pill bug).
+
+### Item 1 — Light-theme fix (pills + scrim were rendering DARK in light mode)
+- `globals.css`: new theme-aware token pair `--pill-bg` / `--pill-border`, added
+  to ALL four theme blocks (dark-root, light, system-light, system-dark).
+  Dark: `rgba(30,28,22,0.55)` / `rgba(255,255,255,0.10)`.
+  Light: `rgba(251,249,242,0.72)` / `rgba(33,30,22,0.10)`.
+- `chat-tabs.tsx` `PILL_CLASS`: hardcoded `bg-[rgba(30,28,22,0.55)]` /
+  `border-white/10` → `bg-[var(--pill-bg)] border-[var(--pill-border)]`
+  (backdrop-blur+saturate kept).
+- `page.tsx` top scrim: hardcoded `rgba(20,18,15,…)` gradient → fades from
+  `var(--bg)` → `color-mix(in srgb, var(--bg) 55%, transparent)` → transparent.
+- Verified light pills + scrim now read light; dark unchanged.
+
+### Item 2 — Composer breathing room
+- `chat-input.tsx` card padding `px-space-3/pt-space-2/pb-1.5` →
+  `px-space-4/pt-space-3/pb-space-2`. Placeholder sits with more air, matching
+  IMG_3981. Tasteful, both themes.
+
+### Item 3 — Full click-to-focus
+- `chat-input.tsx`: `onPointerDown` on the composer card wrapper →
+  `preventDefault()` + focus the textarea, so clicking anywhere (incl. gaps
+  between toolbar buttons) lands the caret in the input. Every real control
+  (textarea, attach, selectorSlot wrapper, language picker, mic, stop, send)
+  `stopPropagation`s so they keep working. Runtime-confirmed: clicking empty
+  composer space sets `document.activeElement` = `chat-textarea`.
+
+### Item 4 — Mic: two gestures + integrated waveform
+- `chat-input.tsx`: exported pure `classifyMicGesture(downAt, upAt, threshold=250)`
+  → 'hold' | 'tap'. Pointer-driven `handleMicPointerDown`/`handleMicPointerUp`
+  (refs, pointer capture, `touch-none`): TAP-AND-HOLD = push-to-talk
+  (release stops+transcribes); QUICK TAP = toggle (tap on / tap off). transcribing
+  / no-model / error states preserved; transcript still inserted via fillTextarea.
+- New `mic-waveform.tsx`: compact DPR-scaled canvas (4 bars, currentColor) reacting
+  to `analyser` audio level; crisp, ~20×16 inside the 34px button footprint. While
+  recording the mic BUTTON ITSELF morphs into the waveform (red state), morphs back
+  to the glyph on stop. Replaced the separate 64px `<SttWaveform>` strip.
+- `stt-waveform.tsx` DELETED (dead after the above; no remaining imports).
+
+### Item 5 — Right pill trim
+- `chat-tabs.tsx`: removed the Search button AND the LayoutGrid "open tabs"
+  TabSwitcher (+ its PillSep). Right pill = `+` and `⋯` only. Deleted the unused
+  `TabSwitcher`, `onSearch` prop, and now-dead imports. `tabs/activeIndex/onSwitch/
+  onClose` kept in the props type — tab STATE untouched, only the UI entry point is
+  gone. `page.tsx` stops passing `onSearch`; removed dead `openGlobalSearch`.
+  ⚠️ FLAG: this removes the ONLY header entry point to the tabs popover (intended
+  per operator). ⌘W / ⌥⌘1-9 / ⌘⇧[ ] tab nav still work; no replacement entry point
+  added.
+
+### Item 6 — Right-pill `+` color
+- `chat-tabs.tsx`: dropped the `accent` styling on `+` (was `text-[var(--accent)]`,
+  red/tinted) → neutral `text-[var(--text-secondary)]`, matching `⋯`. Removed the
+  now-unused `accent` capability from `PillButton`.
+
+### Item 7 — Left pill + nav restructure
+- `chat-tabs.tsx` left pill now renders ONLY `[Menu hamburger → onToggleSidebar]`
+  + `[employee avatar, always]`. Removed the breadcrumb title (`crumbLabel`/`title`/
+  scroll-to-avatar) and the PanelLeft expand/collapse toggle (+ those props).
+- Hamburger takes over "show the list" (desktop = collapse toggle, mobile = chat
+  list overlay) via existing `toggleSidebar`.
+- Global NAV moved off the pill INTO the chat list: `chat-sidebar.tsx` gains an
+  `onOpenNav` prop + a `Compass` icon button in the list header (next to "+ New").
+  `page.tsx` wires `onOpenNav={() => setNavDrawerOpen(true)}` on both ChatSidebar
+  instances. `page-layout.tsx` `MobileNavDrawer` lost its `lg:hidden` so the list
+  nav button works on desktop too (drawer only renders when `open`).
+- `page.tsx`: removed now-dead `threadScrolled` state + scroll listeners +
+  `titleCase`/`headerCrumb`/`headerTitle`; kept `headerEmployee`/`headerAvatar`.
+- Desktop 56px icon rail (`sidebar.tsx`) untouched → desktop has BOTH rail + list
+  nav button.
+  ⚠️ FLAG: left pill is now hamburger+avatar only; nav relocated into the chat list.
+
+### Verification
+- `pnpm --filter @jinn/web typecheck` — clean.
+- Full web suite: **473 passed (43 files)** — was 465 baseline + 8 new in
+  `__tests__/mic-gesture.test.ts` (classifyMicGesture hold/tap thresholds +
+  waveform bar-height/DPR-scale helpers).
+- Dev preview `vite --port 5266` (GATEWAY_PORT=7777 proxy) against live API;
+  headless Chromium (fake media) screenshots in `/tmp/chat-redesign/polish-*.png`:
+  desktop+mobile × dark+light — composer at rest, composer recording (integrated
+  waveform), trimmed right pill, simplified left pill, hamburger→chat-list→nav
+  drawer flow. Light pills/scrim confirmed light (IMG_3983 bug fixed); click-to-
+  focus confirmed at runtime.
+- Pre-existing (NOT introduced, dev-only, stripped in prod): React "button cannot
+  be nested in button" warning from the clickable session ROW containing its ⋮
+  menu trigger (chat-sidebar row markup, present at HEAD, out of scope).
+
+### Files (scoped commit)
+chat-input.tsx, mic-waveform.tsx (new), __tests__/mic-gesture.test.ts (new),
+stt-waveform.tsx (deleted), chat-tabs.tsx, chat-sidebar.tsx, page-layout.tsx,
+routes/chat/page.tsx, routes/globals.css. Nothing merged to remote / no restart.

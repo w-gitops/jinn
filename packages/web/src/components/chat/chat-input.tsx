@@ -4,8 +4,26 @@ import type { MediaAttachment } from '@/lib/conversations'
 import { MediaPreview } from './media-preview'
 import { useStt } from '@/hooks/use-stt'
 import { WhisperDownloadModal } from '@/components/stt/whisper-download-modal'
-import { SttWaveform } from './stt-waveform'
+import { MicWaveform } from './mic-waveform'
 import { EmployeeAvatar } from '@/components/ui/employee-avatar'
+
+/** Hold threshold (ms) that separates a quick tap from a tap-and-hold. */
+export const MIC_HOLD_THRESHOLD_MS = 250
+
+export type MicGesture = 'hold' | 'tap'
+
+/**
+ * Pure classifier for the mic button gesture. A press held for at least
+ * `threshold` ms is a push-to-talk hold; anything shorter is a quick tap.
+ * Exported for unit testing.
+ */
+export function classifyMicGesture(
+  downAt: number,
+  upAt: number,
+  threshold: number = MIC_HOLD_THRESHOLD_MS,
+): MicGesture {
+  return upAt - downAt >= threshold ? 'hold' : 'tap'
+}
 
 interface Employee {
   name: string
@@ -428,15 +446,64 @@ export function ChatInput({
     }
   }, [value, resize])
 
-  async function handleMicClick() {
-    if (stt.state === 'recording') {
-      const text = await stt.stopRecording()
-      fillTextarea(text ?? '')
-      textareaRef.current?.focus()
-    } else if (stt.state === 'transcribing') {
-      // Do nothing while transcribing
+  // Stop the current recording, transcribe, and drop the text into the input.
+  const transcribeAndFill = useCallback(async () => {
+    const text = await stt.stopRecording()
+    fillTextarea(text ?? '')
+    textareaRef.current?.focus()
+  }, [stt, fillTextarea])
+
+  /* ── Mic gestures: tap-and-hold (push-to-talk) + quick-tap (toggle) ──── */
+  // Refs avoid stale-closure races between pointerdown and pointerup.
+  const micDownAtRef = useRef<number | null>(null)   // timestamp of an active press
+  const micHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const micToggleActiveRef = useRef(false)           // recording left on by a quick tap
+
+  useEffect(() => {
+    return () => {
+      if (micHoldTimerRef.current) clearTimeout(micHoldTimerRef.current)
+    }
+  }, [])
+
+  function handleMicPointerDown(e: React.PointerEvent<HTMLButtonElement>) {
+    // Keep the card click-to-focus handler from also firing.
+    e.stopPropagation()
+    if (stt.state === 'transcribing') return
+
+    // Already recording from a previous quick tap → this press toggles it off.
+    if (micToggleActiveRef.current || stt.state === 'recording') {
+      micToggleActiveRef.current = false
+      micDownAtRef.current = null
+      if (micHoldTimerRef.current) { clearTimeout(micHoldTimerRef.current); micHoldTimerRef.current = null }
+      void transcribeAndFill()
+      return
+    }
+
+    // Begin a fresh press: start recording and arm the hold detector.
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* noop */ }
+    micDownAtRef.current = Date.now()
+    if (micHoldTimerRef.current) clearTimeout(micHoldTimerRef.current)
+    micHoldTimerRef.current = setTimeout(() => { micHoldTimerRef.current = null }, MIC_HOLD_THRESHOLD_MS)
+    // handleMicClick() starts recording, or opens the download modal if no model.
+    stt.handleMicClick()
+  }
+
+  function handleMicPointerUp() {
+    const downAt = micDownAtRef.current
+    if (downAt == null) return // no active press (e.g. toggle-off already handled)
+    micDownAtRef.current = null
+    if (micHoldTimerRef.current) { clearTimeout(micHoldTimerRef.current); micHoldTimerRef.current = null }
+
+    // If the model wasn't ready, recording never started — leave the modal alone.
+    if (stt.state === 'no-model' || stt.state === 'transcribing') return
+
+    const gesture = classifyMicGesture(downAt, Date.now())
+    if (gesture === 'hold') {
+      // Push-to-talk release → stop + transcribe.
+      void transcribeAndFill()
     } else {
-      stt.handleMicClick()
+      // Quick tap that started recording → leave it running; next tap stops it.
+      micToggleActiveRef.current = true
     }
   }
 
@@ -530,11 +597,19 @@ export function ChatInput({
           hairline at rest. A low-opacity accent ring (not a 1px border) marks
           the streaming state. */}
       <div
-        className="rounded-[22px] bg-[var(--bg-secondary)] px-[var(--space-3)] pt-[var(--space-2)] pb-1.5 transition-shadow duration-200 ease-in-out"
+        className="rounded-[22px] bg-[var(--bg-secondary)] px-[var(--space-4)] pt-[var(--space-3)] pb-[var(--space-2)] transition-shadow duration-200 ease-in-out"
         style={{
           boxShadow: loading
             ? 'var(--shadow-card), 0 0 0 1.5px color-mix(in srgb, var(--accent) 38%, transparent)'
             : 'var(--shadow-card)',
+        }}
+        onPointerDown={(e) => {
+          // Click-to-focus: tapping anywhere in the card (including the gaps
+          // between toolbar buttons) lands the caret in the textarea. Real
+          // controls stopPropagation so this never fires for them.
+          if (disabled) return
+          e.preventDefault() // don't steal/blur an existing selection
+          textareaRef.current?.focus()
         }}
       >
         {/* Textarea */}
@@ -545,6 +620,7 @@ export function ChatInput({
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
+          onPointerDown={(e) => e.stopPropagation()}
           placeholder={
             disabled
               ? 'Waiting for response...'
@@ -572,6 +648,7 @@ export function ChatInput({
           <button
             aria-label="Attach file"
             title="Attach file"
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={() => fileInputRef.current?.click()}
             className="w-[34px] h-[34px] shrink-0 rounded-full flex items-center justify-center bg-transparent border-none cursor-pointer text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] transition-colors"
           >
@@ -580,9 +657,14 @@ export function ChatInput({
             </svg>
           </button>
 
-          {/* Model chip — the restyled selector trigger */}
+          {/* Model chip — the restyled selector trigger. Wrapped so clicks on
+              the trigger (and its inline popover) don't re-trigger card focus,
+              while the trigger's own behavior is preserved. */}
           {selectorSlot && (
-            <div className="min-w-0 flex items-center overflow-hidden">
+            <div
+              className="min-w-0 flex items-center overflow-hidden"
+              onPointerDown={(e) => e.stopPropagation()}
+            >
               {selectorSlot}
             </div>
           )}
@@ -593,6 +675,7 @@ export function ChatInput({
           {stt.languages.length > 1 && (
             <button
               aria-label={`STT language: ${stt.selectedLanguage.toUpperCase()}. Click to switch.`}
+              onPointerDown={(e) => e.stopPropagation()}
               onClick={stt.cycleLanguage}
               className="h-7 px-2 shrink-0 rounded-full flex items-center justify-center bg-[var(--fill-tertiary)] border-none cursor-pointer text-[var(--text-secondary)] text-[11px] font-semibold font-[family-name:var(--font-mono)] tracking-[0.5px] uppercase hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] transition-all duration-150 ease-in-out"
               title={`Transcription language: ${stt.selectedLanguage.toUpperCase()}. Click to cycle.`}
@@ -601,28 +684,28 @@ export function ChatInput({
             </button>
           )}
 
-          {/* Live waveform during recording */}
-          {stt.state === 'recording' && stt.analyser && (
-            <SttWaveform analyser={stt.analyser} width={64} height={28} />
-          )}
-
-          {/* Voice input / STT button */}
+          {/* Voice input / STT button — tap-and-hold = push-to-talk, quick tap =
+              toggle. While recording the button morphs into a compact waveform. */}
           <button
             aria-label={
               stt.state === 'recording' ? 'Stop recording'
               : stt.state === 'transcribing' ? 'Transcribing…'
               : 'Voice input'
             }
-            onClick={handleMicClick}
+            onPointerDown={handleMicPointerDown}
+            onPointerUp={handleMicPointerUp}
+            onPointerCancel={handleMicPointerUp}
             disabled={stt.state === 'transcribing'}
-            className={`w-[34px] h-[34px] shrink-0 flex items-center justify-center border-none transition-all duration-150 ease-in-out ${stt.state === 'recording' ? 'rounded-full bg-[var(--system-red)] text-white cursor-pointer' : `rounded-full bg-transparent text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] ${stt.state === 'transcribing' ? 'cursor-wait' : 'cursor-pointer'}`}`}
+            className={`w-[34px] h-[34px] shrink-0 flex items-center justify-center border-none transition-all duration-150 ease-in-out touch-none select-none ${stt.state === 'recording' ? 'rounded-full bg-[var(--system-red)] text-white cursor-pointer' : `rounded-full bg-transparent text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] ${stt.state === 'transcribing' ? 'cursor-wait' : 'cursor-pointer'}`}`}
             title={
               stt.state === 'recording' ? 'Stop recording'
               : stt.state === 'transcribing' ? 'Transcribing…'
               : 'Voice input'
             }
           >
-            {stt.state === 'transcribing' ? (
+            {stt.state === 'recording' && stt.analyser ? (
+              <MicWaveform analyser={stt.analyser} />
+            ) : stt.state === 'transcribing' ? (
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-[stt-spin_1s_linear_infinite]">
                 <path d="M12 2a10 10 0 0 1 10 10" />
               </svg>
@@ -639,6 +722,7 @@ export function ChatInput({
           {/* Stop button — shown when a turn is streaming (interrupts). */}
           {loading && onInterrupt ? (
             <button
+              onPointerDown={(e) => e.stopPropagation()}
               onClick={onInterrupt}
               aria-label="Stop"
               className="w-[38px] h-[38px] rounded-full bg-[var(--system-red)] text-white border-none cursor-pointer flex items-center justify-center shrink-0 transition-all duration-150 ease-in-out"
@@ -650,6 +734,7 @@ export function ChatInput({
           ) : (
             /* Send button — accent circle */
             <button
+              onPointerDown={(e) => e.stopPropagation()}
               onClick={handleSubmit}
               disabled={!hasContent || disabled}
               aria-label="Send message"

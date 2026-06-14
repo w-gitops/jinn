@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo, startTransition } from "react"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useQueryClient } from "@tanstack/react-query"
-import { ChevronDown, Clock3, Copy, EllipsisVertical, Pencil, Pin, Plus, Search, Trash2, X } from "lucide-react"
+import { ChevronDown, Clock3, Compass, Copy, EllipsisVertical, Pencil, Pin, Plus, Search, Trash2, X } from "lucide-react"
 import { api, type BackgroundActivity, type Employee, type SessionsResponse } from "@/lib/api"
 import { useOrg } from "@/hooks/use-employees"
 import { EmployeeAvatar } from "@/components/ui/employee-avatar"
@@ -75,6 +75,8 @@ interface ChatSidebarProps {
   onOrderComputed?: (order: SidebarOrder) => void
   /** Start a new chat with a session-less roster employee (contactable list). */
   onContactEmployee?: (name: string) => void
+  /** Open the global-nav drawer (NAV_ITEMS) from the chat-list header. */
+  onOpenNav?: () => void
 }
 
 interface FlatItem {
@@ -840,6 +842,7 @@ export function ChatSidebar({
   onEmployeeSessionsAvailable,
   onOrderComputed,
   onContactEmployee,
+  onOpenNav,
 }: ChatSidebarProps) {
   const { settings } = useSettings()
   const portalName = settings.portalName ?? "Jinn"
@@ -1572,6 +1575,16 @@ export function ChatSidebar({
         <div className="mb-2 flex items-center justify-between gap-3">
           <h2 className="text-xl font-bold tracking-[-0.03em] text-foreground">Chats</h2>
           <div className="flex items-center gap-1.5">
+            {onOpenNav && (
+              <button
+                onClick={onOpenNav}
+                title="Menu"
+                aria-label="Open navigation"
+                className="inline-flex size-8 items-center justify-center rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-foreground"
+              >
+                <Compass className="size-[18px]" />
+              </button>
+            )}
             <Button size="sm" className="gap-1.5" onClick={onNewChat} title="New chat (N)">
               <Plus className="size-3.5" />
               New
