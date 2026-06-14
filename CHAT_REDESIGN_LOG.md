@@ -238,3 +238,45 @@ Chromium (Playwright) screenshots in `/tmp/chat-redesign/`:
 
 Minor cosmetic note (not changed): a 1M window renders as `1000k` via `fmtK`;
 could special-case `M` later if desired.
+
+---
+
+## Phase 3b — Borderless pass (Claude's calm aesthetic)
+
+Operator feedback: the "light border lines of the input and model selections" looked ugly.
+Removed every 1px hairline from the composer + model selector; separation now
+comes from soft fills + shadow + whitespace (Claude-style). No token-border at rest.
+
+### chat-input.tsx
+- Composer container: dropped `border-t border-t-[var(--separator)]` and the
+  `material-regular` band → `bg-[var(--bg)]` flush with the thread, plus a soft
+  top **scrim gradient** (transparent→bg) instead of a divider line.
+- Composer card: removed the rest-state `border` + the solid `border-[var(--accent)]`
+  streaming border. Separation = `var(--shadow-card)` (already carries a per-theme
+  0.5px ring). Streaming state = a low-opacity **accent ring** via composed
+  box-shadow (`…, 0 0 0 1.5px color-mix(accent 38%))`), not a 1px border.
+- Attach + mic buttons: dropped `border-[var(--border)]` → borderless ghost icons
+  (transparent, hover `fill-secondary`). Red mic-recording state kept.
+- Language picker pill: dropped its border (soft `fill-tertiary` kept).
+- `?` shortcuts + `⌨` terminal: dropped the `fill-tertiary` kbd box → quiet
+  borderless glyphs.
+
+### model-selector-row.tsx
+- Chip trigger: removed `border` + `bg-[var(--fill-tertiary)]` pill → plain text
+  trigger (`✦ Opus 4.8 · High ▾`), `text-secondary` → `text-primary` on hover,
+  subtle hover `fill-secondary` only. No box, no fill at rest.
+- Dropdown content + subcontent: dropped the `border-[var(--border)]` (set
+  `border-0`) → borderless elevated surface on `shadow-overlay` + `bg-tertiary`
+  (the overlay shadow's built-in 0.5px ring is the only, per-theme faint edge).
+- Effort pills + context bar already use soft fills (no hard borders) — unchanged.
+
+Left intact (out of scope, not "input/model selection"): the transient slash/
+mention autocomplete popovers still use a separator hairline.
+
+### Verify
+- `pnpm typecheck` clean; full web suite **465 passed** (no tests asserted the
+  removed border classes).
+- Both DARK + LIGHT verified: light keeps separation via the soft card/overlay
+  shadow (does not collapse/flat-merge). Screenshots `/tmp/chat-redesign/`:
+  `borderless-{dark,light}-{desktop,mobile}-{1-rest,2-focused-streaming,3-dropdown}.png`
+  + `borderless-{dark,light}-composer-zoom.png`.

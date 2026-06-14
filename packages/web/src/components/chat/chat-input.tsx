@@ -453,7 +453,10 @@ export function ChatInput({
   const hasContent = value.trim().length > 0 || pendingAttachments.length > 0
 
   return (
-    <div className="px-3 sm:px-4 pt-[var(--space-3)] pb-[var(--space-3)] border-t border-t-[var(--separator)] bg-[var(--material-regular)] shrink-0 relative">
+    <div className="px-3 sm:px-4 pt-[var(--space-3)] pb-[var(--space-3)] bg-[var(--bg)] shrink-0 relative">
+      {/* Soft top scrim — fades scrolling content into the composer instead of a
+          hard 1px divider. Borderless, readable over the thread in both themes. */}
+      <div aria-hidden className="pointer-events-none absolute -top-5 left-0 right-0 h-5 bg-gradient-to-b from-transparent to-[var(--bg)]" />
       {/* Slash command autocomplete */}
       {showCommands && filteredCommands.length > 0 && (
         <div className="absolute bottom-full left-[var(--space-4)] right-[var(--space-4)] mb-1 bg-[var(--bg)] border border-[var(--separator)] rounded-[var(--radius-md)] shadow-[var(--shadow-lg)] max-h-60 overflow-y-auto z-10">
@@ -523,8 +526,17 @@ export function ChatInput({
         </div>
       )}
 
-      {/* Composer card — textarea on top, a quiet toolbar row below. */}
-      <div className={`rounded-[22px] bg-[var(--bg-secondary)] shadow-[var(--shadow-card)] px-[var(--space-3)] pt-[var(--space-2)] pb-1.5 transition-[border-color] duration-200 ease-in-out border ${loading ? 'border-[var(--accent)]' : 'border-[var(--border)]'}`}>
+      {/* Composer card — borderless: soft fill + shadow do the separating, no
+          hairline at rest. A low-opacity accent ring (not a 1px border) marks
+          the streaming state. */}
+      <div
+        className="rounded-[22px] bg-[var(--bg-secondary)] px-[var(--space-3)] pt-[var(--space-2)] pb-1.5 transition-shadow duration-200 ease-in-out"
+        style={{
+          boxShadow: loading
+            ? 'var(--shadow-card), 0 0 0 1.5px color-mix(in srgb, var(--accent) 38%, transparent)'
+            : 'var(--shadow-card)',
+        }}
+      >
         {/* Textarea */}
         <textarea
           id="chat-textarea"
@@ -561,7 +573,7 @@ export function ChatInput({
             aria-label="Attach file"
             title="Attach file"
             onClick={() => fileInputRef.current?.click()}
-            className="w-[34px] h-[34px] shrink-0 rounded-full flex items-center justify-center bg-transparent border border-[var(--border)] cursor-pointer text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            className="w-[34px] h-[34px] shrink-0 rounded-full flex items-center justify-center bg-transparent border-none cursor-pointer text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] transition-colors"
           >
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 5v14M5 12h14" />
@@ -582,7 +594,7 @@ export function ChatInput({
             <button
               aria-label={`STT language: ${stt.selectedLanguage.toUpperCase()}. Click to switch.`}
               onClick={stt.cycleLanguage}
-              className="h-7 px-2 shrink-0 rounded-full flex items-center justify-center bg-[var(--fill-tertiary)] border border-[var(--border)] cursor-pointer text-[var(--text-secondary)] text-[11px] font-semibold font-[family-name:var(--font-mono)] tracking-[0.5px] uppercase transition-all duration-150 ease-in-out"
+              className="h-7 px-2 shrink-0 rounded-full flex items-center justify-center bg-[var(--fill-tertiary)] border-none cursor-pointer text-[var(--text-secondary)] text-[11px] font-semibold font-[family-name:var(--font-mono)] tracking-[0.5px] uppercase hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] transition-all duration-150 ease-in-out"
               title={`Transcription language: ${stt.selectedLanguage.toUpperCase()}. Click to cycle.`}
             >
               {stt.selectedLanguage}
@@ -603,7 +615,7 @@ export function ChatInput({
             }
             onClick={handleMicClick}
             disabled={stt.state === 'transcribing'}
-            className={`w-[34px] h-[34px] shrink-0 flex items-center justify-center transition-all duration-150 ease-in-out ${stt.state === 'recording' ? 'rounded-full bg-[var(--system-red)] text-white border-none cursor-pointer' : `rounded-full bg-transparent border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] ${stt.state === 'transcribing' ? 'cursor-wait' : 'cursor-pointer'}`}`}
+            className={`w-[34px] h-[34px] shrink-0 flex items-center justify-center border-none transition-all duration-150 ease-in-out ${stt.state === 'recording' ? 'rounded-full bg-[var(--system-red)] text-white cursor-pointer' : `rounded-full bg-transparent text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] ${stt.state === 'transcribing' ? 'cursor-wait' : 'cursor-pointer'}`}`}
             title={
               stt.state === 'recording' ? 'Stop recording'
               : stt.state === 'transcribing' ? 'Transcribing…'
@@ -661,7 +673,7 @@ export function ChatInput({
               onClick={onShortcutsClick}
               className="hidden sm:flex items-center gap-1 text-[length:var(--text-caption2)] text-[var(--text-quaternary)] hover:text-[var(--text-tertiary)] transition-colors bg-transparent border-none cursor-pointer p-0 font-[inherit]"
             >
-              <kbd className="rounded bg-[var(--fill-tertiary)] px-1 py-0.5 font-mono text-[10px] leading-none">?</kbd>
+              <kbd className="font-mono text-[10px] leading-none not-italic">?</kbd>
               <span>shortcuts</span>
             </button>
           )}
@@ -672,7 +684,7 @@ export function ChatInput({
             >
               {terminalActionsSlot ?? (
                 <span className="flex items-center gap-1">
-                  <kbd className="flex size-4 items-center justify-center rounded bg-[var(--fill-tertiary)] text-[10px] leading-none">⌨</kbd>
+                  <kbd className="flex size-4 items-center justify-center text-[10px] leading-none not-italic">⌨</kbd>
                   <span>terminal</span>
                 </span>
               )}

@@ -174,10 +174,10 @@ export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled,
           type="button"
           disabled={disabled}
           aria-label={`Model and effort: ${modelLabel}${effort ? ` · ${effortLabelOf(effort)}` : ''}`}
-          className="group inline-flex max-w-full items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--fill-tertiary)] py-1 pl-2.5 pr-2 text-[length:var(--text-footnote)] transition-colors hover:bg-[var(--fill-secondary)] disabled:cursor-default disabled:opacity-60 cursor-pointer"
+          className="group inline-flex max-w-full items-center gap-1.5 rounded-lg border-none bg-transparent px-1.5 py-1 text-[length:var(--text-footnote)] transition-colors hover:bg-[var(--fill-secondary)] disabled:cursor-default disabled:opacity-60 cursor-pointer"
         >
           <span aria-hidden className="shrink-0 text-[var(--accent)] text-[11px] leading-none">✦</span>
-          <span className="truncate font-[var(--weight-semibold)] tracking-[-0.2px] text-[var(--text-primary)]">{modelLabel}</span>
+          <span className="truncate font-[var(--weight-semibold)] tracking-[-0.2px] text-[var(--text-secondary)] group-hover:text-[var(--text-primary)] transition-colors">{modelLabel}</span>
           {effort && (
             // Effort is the first thing to drop on a narrow composer.
             <span className="hidden shrink-0 text-[var(--text-tertiary)] sm:inline">· {effortLabelOf(effort)}</span>
@@ -190,7 +190,7 @@ export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled,
         side="top"
         align="start"
         sideOffset={8}
-        className="w-64 max-w-[calc(100vw-2rem)] rounded-[var(--radius-lg)] border-[var(--border)] bg-[var(--bg-tertiary)] p-1.5 shadow-[var(--shadow-overlay)]"
+        className="w-64 max-w-[calc(100vw-2rem)] rounded-[var(--radius-lg)] border-0 bg-[var(--bg-tertiary)] p-1.5 shadow-[var(--shadow-overlay)]"
       >
         {/* Engine header — current engine; locked label in an existing chat. */}
         <div className="px-2 pt-1 pb-1.5 text-[length:var(--text-caption2)] font-[var(--weight-bold)] uppercase tracking-[0.4px] text-[var(--text-quaternary)]">
@@ -297,7 +297,7 @@ export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled,
                 {otherEngines.map((e) => engineLabelOf(e.name)).join(' · ')}
               </span>
             </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="rounded-[var(--radius-lg)] border-[var(--border)] bg-[var(--bg-tertiary)] p-1.5 shadow-[var(--shadow-overlay)]">
+            <DropdownMenuSubContent className="rounded-[var(--radius-lg)] border-0 bg-[var(--bg-tertiary)] p-1.5 shadow-[var(--shadow-overlay)]">
               <DropdownMenuRadioGroup value={engine} onValueChange={pickEngine}>
                 {engines.map((e) => (
                   <DropdownMenuRadioItem
