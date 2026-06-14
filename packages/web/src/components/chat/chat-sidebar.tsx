@@ -210,8 +210,26 @@ function saveExpandedState(expanded: Record<string, boolean>) {
   } catch {}
 }
 
-function titleCase(slug: string): string {
+function titleCase(slug: string | null | undefined): string {
+  if (!slug) return ""
   return slug.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")
+}
+
+/** Resolve the avatar slug + human label for a flat session row. Direct/COO
+ *  sessions borrow the portal identity; cron/employee-less sessions fall back to
+ *  it too — they have no org employee, so search (which flattens cron rows that
+ *  the grouped view renders separately) must not `.split()` a null employee.
+ *  The rest use their employee's org profile. */
+export function resolveRowIdentity(
+  s: Pick<Session, "source" | "sourceRef" | "employee">,
+  opts: { portalSlug: string; portalName: string; employeeData: Map<string, Employee> },
+): { avatarName: string; displayName: string } {
+  const { portalSlug, portalName, employeeData } = opts
+  if (isDirectSession(s, portalSlug) || !s.employee) {
+    return { avatarName: portalSlug, displayName: portalName }
+  }
+  const emp = s.employee
+  return { avatarName: emp, displayName: employeeData.get(emp)?.displayName || titleCase(emp) }
 }
 
 function isCronSession(session: Pick<Session, "source" | "sourceRef">): boolean {
@@ -1104,14 +1122,11 @@ export function ChatSidebar({
       ? ((searchResults as Session[] | undefined) ?? []).filter(isVisibleSource)
       : sessions
 
-    // Resolve the avatar slug + human label for a flat row. Direct/COO sessions
-    // borrow the portal identity; the rest use their employee's org profile.
-    const resolveIdentity = (s: Session): { avatarName: string; displayName: string } => {
-      if (isDirectSession(s, portalSlug)) return { avatarName: portalSlug, displayName: portalName }
-      const emp = s.employee!
-      return { avatarName: emp, displayName: employeeData.get(emp)?.displayName || titleCase(emp) }
-    }
-    const toRow = (s: Session): FlatRow => ({ session: s, ...resolveIdentity(s) })
+    // Resolve the avatar slug + human label for a flat row (see resolveRowIdentity).
+    const toRow = (s: Session): FlatRow => ({
+      session: s,
+      ...resolveRowIdentity(s, { portalSlug, portalName, employeeData }),
+    })
 
     // ---- Search mode: one flat list spanning everything matched. ----
     if (searching) {

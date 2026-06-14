@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { hasBackgroundActivity, isDirectSession } from '../chat-sidebar'
+import { hasBackgroundActivity, isDirectSession, resolveRowIdentity } from '../chat-sidebar'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -55,5 +55,62 @@ describe('chat sidebar background activity', () => {
         },
       }),
     ).toBe(true)
+  })
+})
+
+describe('chat sidebar search row identity', () => {
+  const opts = {
+    portalSlug: 'jimbo',
+    portalName: 'Jimbo',
+    employeeData: new Map([
+      [
+        'jinn',
+        {
+          name: 'jinn',
+          displayName: 'Jinn Dev',
+          department: 'platform',
+          rank: 'employee' as const,
+          engine: 'claude',
+          model: 'opus',
+          persona: '',
+        },
+      ],
+    ]),
+  }
+
+  // The API types employee as `string | null`, but the local Session interface
+  // narrows it to `string | undefined`; the server can still send null at
+  // runtime. Cast to reproduce that real-world shape in the test.
+  const cron = { source: 'cron', sourceRef: 'cron:nightly', employee: null } as unknown as Parameters<
+    typeof resolveRowIdentity
+  >[0]
+
+  // Regression: search flattens cron rows (which the grouped view renders in a
+  // separate cron section). isDirectSession returns false for cron sessions, so
+  // the old `s.employee!` assertion fed `null` to titleCase → `null.split('-')`
+  // → "Cannot read properties of null (reading 'split')". Must not throw.
+  it('does not crash on a cron session with a null employee', () => {
+    expect(() => resolveRowIdentity(cron, opts)).not.toThrow()
+    expect(resolveRowIdentity(cron, opts)).toEqual({ avatarName: 'jimbo', displayName: 'Jimbo' })
+  })
+
+  it('does not crash on a session with an undefined employee', () => {
+    expect(() => resolveRowIdentity({ source: 'web', sourceRef: 'web:1' }, opts)).not.toThrow()
+    expect(resolveRowIdentity({ source: 'web', sourceRef: 'web:1' }, opts)).toEqual({
+      avatarName: 'jimbo',
+      displayName: 'Jimbo',
+    })
+  })
+
+  it('resolves a real employee to its org display name', () => {
+    expect(
+      resolveRowIdentity({ source: 'web', sourceRef: 'web:2', employee: 'jinn' }, opts),
+    ).toEqual({ avatarName: 'jinn', displayName: 'Jinn Dev' })
+  })
+
+  it('title-cases an employee with no org profile rather than crashing', () => {
+    expect(
+      resolveRowIdentity({ source: 'web', sourceRef: 'web:3', employee: 'magic-switch-lead' }, opts),
+    ).toEqual({ avatarName: 'magic-switch-lead', displayName: 'Magic Switch Lead' })
   })
 })
