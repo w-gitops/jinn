@@ -1,5 +1,6 @@
 /**
- * createTtsStart — Kokoro-vs-browser fallback selection + markdown stripping.
+ * createTtsStart — gesture-time audio priming, Kokoro-vs-browser fallback
+ * selection, and markdown stripping.
  */
 import { describe, it, expect, vi } from "vitest"
 import { createTtsStart, type TtsEngineDeps } from "../tts-engine"
@@ -11,18 +12,28 @@ function cbs() {
 function deps(over: Partial<TtsEngineDeps> = {}): TtsEngineDeps {
   return {
     checkAvailable: vi.fn().mockResolvedValue(true),
-    fetchAudio: vi.fn().mockResolvedValue(new Blob(["wav"])),
-    playAudio: vi.fn(() => () => {}),
+    fetchAudio: vi.fn().mockResolvedValue(new ArrayBuffer(8)),
+    playAudio: vi.fn().mockResolvedValue(() => {}),
     speak: vi.fn(() => () => {}),
+    primeAudio: vi.fn(),
     ...over,
   } as TtsEngineDeps
 }
 
 describe("createTtsStart", () => {
+  it("primes audio SYNCHRONOUSLY before any await (keeps the gesture window)", () => {
+    const d = deps()
+    const start = createTtsStart(d)
+    void start("hello", cbs()) // intentionally NOT awaited
+    // primeAudio must already have run in the synchronous (gesture) prefix.
+    expect(d.primeAudio).toHaveBeenCalledTimes(1)
+  })
+
   it("uses Kokoro (fetch + playAudio) when available, NOT the browser fallback", async () => {
     const d = deps()
     const start = createTtsStart(d)
-    await start("hello", cbs())
+    const c = cbs()
+    await start("hello", c)
     expect(d.fetchAudio).toHaveBeenCalledTimes(1)
     expect(d.playAudio).toHaveBeenCalledTimes(1)
     expect(d.speak).not.toHaveBeenCalled()
@@ -52,6 +63,14 @@ describe("createTtsStart", () => {
     expect(d.speak).toHaveBeenCalledTimes(1)
   })
 
+  it("falls back to Web Speech when WAV playback fails (e.g. autoplay blocked / decode error)", async () => {
+    const d = deps({ playAudio: vi.fn().mockRejectedValue(new Error("NotAllowedError")) })
+    const start = createTtsStart(d)
+    await start("hello", cbs())
+    expect(d.playAudio).toHaveBeenCalledTimes(1)
+    expect(d.speak).toHaveBeenCalledTimes(1)
+  })
+
   it("falls back to Web Speech when the availability probe throws", async () => {
     const d = deps({ checkAvailable: vi.fn().mockRejectedValue(new Error("net")) })
     const start = createTtsStart(d)
@@ -64,11 +83,8 @@ describe("createTtsStart", () => {
     const d = deps()
     const start = createTtsStart(d)
     const c = cbs()
-    await start("```\ncode only\n```".replace("code only", ""), c)
-    // A purely empty/markdown-stripped string → onEnd, no playback engines touched.
-    const c2 = cbs()
-    await start("   \n  ", c2)
-    expect(c2.onEnd).toHaveBeenCalledTimes(1)
+    await start("   \n  ", c)
+    expect(c.onEnd).toHaveBeenCalledTimes(1)
     expect(d.fetchAudio).not.toHaveBeenCalled()
     expect(d.speak).not.toHaveBeenCalled()
   })

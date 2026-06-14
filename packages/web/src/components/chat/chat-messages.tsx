@@ -480,13 +480,13 @@ function MessageActions({ id, text, onRetry, retryDisabled }: { id: string; text
             <path d="M21 12a9 9 0 1 1-6.219-8.56" />
           </svg>
         ) : speaking ? (
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-            <rect x="6" y="5" width="4" height="14" rx="1" />
-            <rect x="14" y="5" width="4" height="14" rx="1" />
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="6" y="4" width="4" height="16" rx="1" />
+            <rect x="14" y="4" width="4" height="16" rx="1" />
           </svg>
         ) : (
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-            <path d="M8 5.14v13.72a1 1 0 0 0 1.53.85l10.79-6.86a1 1 0 0 0 0-1.7L9.53 4.29A1 1 0 0 0 8 5.14z" />
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polygon points="6 3 20 12 6 21 6 3" />
           </svg>
         )}
       </button>
