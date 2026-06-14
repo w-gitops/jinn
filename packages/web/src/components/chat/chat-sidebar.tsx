@@ -34,7 +34,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
-import { mergeSidebarEmployees } from "@/components/chat/chat-route-helpers"
+import { mergeSidebarEmployees, bucketByDay, summarizeOlder } from "@/components/chat/chat-route-helpers"
 
 interface Session {
   id: string
@@ -89,6 +89,14 @@ interface FlatItem {
   total?: number
 }
 
+// One flat session row (Today / Yesterday / search results), carrying the
+// resolved employee identity so the row can render without re-deriving it.
+interface FlatRow {
+  session: Session
+  avatarName: string
+  displayName: string
+}
+
 // Server-side group sentinels — must match CRON_GROUP/DIRECT_GROUP in the
 // backend registry (sessions are bounded per group; "load more" fetches the rest).
 const DIRECT_GROUP = "__direct__"
@@ -98,6 +106,7 @@ const BACKGROUND_ACTIVITY_STALE_MS = 5 * 60 * 1000
 const COLLAPSE_STORAGE_KEY = "jinn-sidebar-collapsed"
 const EXPANDED_STORAGE_KEY = "jinn-sidebar-expanded"
 const PINNED_STORAGE_KEY = "jinn-pinned-sessions"
+const OLDER_EXPANDED_STORAGE_KEY = "jinn-sidebar-older-expanded"
 
 const formatTimeCache = new Map<string, string>()
 const FORMAT_TIME_CACHE_MAX = 200
@@ -459,6 +468,179 @@ const SessionRow = React.memo(function SessionRow({
   )
 })
 
+interface FlatSessionRowProps {
+  session: Session
+  /** Avatar/identity slug — employee name, or the portal slug for direct chats. */
+  avatarName: string
+  /** Human label shown on line 1 (employee display name or portal name). */
+  displayName: string
+  selectedId: string | null
+  readSessions: Set<string>
+  pinnedSessions: Set<string>
+  renamingSessionId: string | null
+  renameCancelledRef: React.MutableRefObject<boolean>
+  fixTitle: (title: string | undefined, employee: string | undefined) => string
+  onSelect: (id: string) => void
+  onEmployeeSessionsAvailable?: (sessions: Session[]) => void
+  togglePin: (pinKey: string) => void
+  handleDuplicate: (sessionId: string) => void
+  setDeleteTarget: (target: { type: "session" | "employee"; id: string; label: string; sessions?: Session[] } | null) => void
+  setRenamingSessionId: (id: string | null) => void
+  updateSessionTitle: (id: string, title: string) => void
+}
+
+// One CHAT per row (focused Today/Yesterday view): employee avatar + name + time
+// on the first line, the chat title on the second. Distinct from SessionRow
+// (single-line, used for cron + the Older drawer's per-employee children).
+const FlatSessionRow = React.memo(function FlatSessionRow({
+  session,
+  avatarName,
+  displayName,
+  selectedId,
+  readSessions,
+  pinnedSessions,
+  renamingSessionId,
+  renameCancelledRef,
+  fixTitle,
+  onSelect,
+  onEmployeeSessionsAvailable,
+  togglePin,
+  handleDuplicate,
+  setDeleteTarget,
+  setRenamingSessionId,
+  updateSessionTitle,
+}: FlatSessionRowProps) {
+  const isActive = session.id === selectedId
+  const dotColor = getStatusDotColor(session, readSessions)
+  const isRunning = session.status === "running"
+  const sessionHasBackground = hasBackgroundActivity(session)
+  const rawTitle = fixTitle(session.title, session.employee)
+  const displayTitle = cleanPreview(rawTitle) || "Untitled"
+  const time = formatTime(getSessionActivity(session))
+  const isPinned = pinnedSessions.has(session.id)
+  const isRenaming = renamingSessionId === session.id
+  const isUnread =
+    !readSessions.has(session.id) && session.status !== "running" && session.status !== "error"
+
+  const menuItems = (
+    <>
+      <DropdownMenuItem onClick={() => { renameCancelledRef.current = false; setRenamingSessionId(session.id) }}>
+        Rename
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={() => togglePin(session.id)}>
+        {isPinned ? "Unpin" : "Pin"}
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={() => handleDuplicate(session.id)}>
+        Duplicate...
+      </DropdownMenuItem>
+      <DropdownMenuSeparator />
+      <DropdownMenuItem variant="destructive" onClick={() => setDeleteTarget({ type: "session", id: session.id, label: displayTitle })}>
+        Delete session
+      </DropdownMenuItem>
+    </>
+  )
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          className={cn(
+            "group/flat relative flex w-full items-center gap-3 border-l-2 px-4 py-2 text-left transition-colors",
+            isActive
+              ? "border-l-[var(--accent)] bg-[var(--fill-secondary)]"
+              : "border-l-transparent hover:bg-accent"
+          )}
+        >
+          <button
+            onClick={() => {
+              onSelect(session.id)
+              onEmployeeSessionsAvailable?.([session])
+            }}
+            className="flex min-w-0 flex-1 items-center gap-3 text-left"
+          >
+            <div className="relative flex size-9 shrink-0 items-center justify-center">
+              <EmployeeAvatar name={avatarName} size={36} />
+              <StatusDot
+                color={dotColor}
+                pulse={isRunning || sessionHasBackground}
+                title={sessionHasBackground ? "background work running" : undefined}
+                className="absolute -bottom-0.5 -right-0 size-2.5 border-2 border-[var(--sidebar-bg)]"
+              />
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <div className="mb-0.5 flex items-baseline gap-2">
+                <span
+                  className={cn(
+                    "min-w-0 flex-1 truncate text-[13px] tracking-[-0.2px] text-foreground",
+                    isUnread || isActive ? "font-semibold" : "font-medium"
+                  )}
+                >
+                  {displayName}
+                </span>
+                <span className="shrink-0 text-[10px] text-[var(--text-tertiary)]">{time}</span>
+              </div>
+              {isRenaming ? (
+                <input
+                  autoFocus
+                  maxLength={200}
+                  defaultValue={displayTitle}
+                  className="min-w-0 w-full truncate rounded border-none bg-transparent px-0.5 text-[11px] text-[var(--text-secondary)] outline-none ring-1 ring-[var(--accent)]"
+                  onFocus={(e) => e.target.select()}
+                  onClick={(e) => { e.stopPropagation(); e.preventDefault() }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur()
+                    else if (e.key === "Escape") { renameCancelledRef.current = true; setRenamingSessionId(null) }
+                  }}
+                  onBlur={(e) => {
+                    if (renameCancelledRef.current) { renameCancelledRef.current = false; return }
+                    const val = e.target.value.trim()
+                    if (val && val !== displayTitle) updateSessionTitle(session.id, val)
+                    setRenamingSessionId(null)
+                  }}
+                />
+              ) : (
+                <div className="truncate text-[11px] text-[var(--text-tertiary)]">{displayTitle}</div>
+              )}
+            </div>
+          </button>
+
+          {isPinned ? (
+            <Pin className="size-3 shrink-0 text-[var(--accent)] group-hover/flat:lg:hidden group-has-[[data-state=open]]/flat:lg:hidden" />
+          ) : null}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                onClick={(e) => e.stopPropagation()}
+                className="hidden shrink-0 text-muted-foreground transition-colors hover:text-foreground group-hover/flat:lg:block group-has-[[data-state=open]]/flat:lg:block"
+              >
+                <EllipsisVertical className="size-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">{menuItems}</DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onClick={() => { renameCancelledRef.current = false; setRenamingSessionId(session.id) }}>
+          Rename
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => togglePin(session.id)}>
+          {isPinned ? "Unpin" : "Pin"}
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => handleDuplicate(session.id)}>
+          Duplicate...
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem variant="destructive" onClick={() => setDeleteTarget({ type: "session", id: session.id, label: displayTitle })}>
+          <span className="flex-1">Delete session</span>
+          <kbd className="ml-auto pl-3 font-mono text-[10px] text-[var(--text-quaternary)]">⌫</kbd>
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  )
+})
+
 interface EmployeeRowProps {
   item: FlatItem
   selectedId: string | null
@@ -687,6 +869,7 @@ export function ChatSidebar({
   const [pinnedSessions, setPinnedSessions] = useState<Set<string>>(new Set())
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [olderExpanded, setOlderExpanded] = useState(false)
   const [loadingMore, setLoadingMore] = useState<Set<string>>(new Set())
   const [deleteTarget, setDeleteTarget] = useState<{
     type: "session" | "employee"
@@ -722,6 +905,9 @@ export function ChatSidebar({
     setPinnedSessions(getPinnedSessions())
     setCollapsed(loadCollapsedState())
     setExpanded(loadExpandedState())
+    try {
+      setOlderExpanded(localStorage.getItem(OLDER_EXPANDED_STORAGE_KEY) === "true")
+    } catch {}
   }, [])
 
   useEffect(() => {
@@ -735,6 +921,14 @@ export function ChatSidebar({
     }
   }, [selectedId])
 
+
+  const toggleOlderExpanded = useCallback(() => {
+    setOlderExpanded((prev) => {
+      const next = !prev
+      try { localStorage.setItem(OLDER_EXPANDED_STORAGE_KEY, String(next)) } catch {}
+      return next
+    })
+  }, [])
 
   const toggleCronCollapsed = useCallback(() => {
     setCollapsed((prev) => {
@@ -817,27 +1011,9 @@ export function ChatSidebar({
     // Compute next session to select before removing
     let nextSelectId: string | null = null
     if (selectedId === sessionId) {
-      // Build a flat ordered list of all visible session IDs
-      const allVisible: string[] = []
-      const addGroup = (items: FlatItem[]) => {
-        for (const item of items) {
-          const empName = item.employeeName!
-          const empSessions = item.sessions || []
-          // Always add the latest session (employee row click selects it)
-          if (empSessions.length === 1) {
-            allVisible.push(empSessions[0].id)
-          } else if (expanded[empName]) {
-            for (const s of empSessions) allVisible.push(s.id)
-          } else {
-            // Collapsed — only the latest session is reachable
-            if (empSessions.length > 0) allVisible.push(empSessions[0].id)
-          }
-        }
-      }
-      addGroup(pinnedFlat)
-      addGroup(unpinnedFlat)
-      for (const s of sortedCron) allVisible.push(s.id)
-
+      // Pick the neighbour in the current visible order (Today → Yesterday →
+      // Older drawer → Scheduled), already de-duped in allFlatIds.
+      const allVisible = allFlatIds.sessionIds
       const idx = allVisible.indexOf(sessionId)
       if (idx !== -1) {
         // Prefer next item, then previous
@@ -867,7 +1043,20 @@ export function ChatSidebar({
     } catch {}
   }
 
-  const { pinnedFlat, unpinnedFlat, sortedCron, cronSessions, cronTotal } = useMemo(() => {
+  const {
+    searching,
+    searchRows,
+    todayRows,
+    yesterdayRows,
+    olderSummary,
+    olderPinned,
+    olderUnpinned,
+    pinnedFlat,
+    unpinnedFlat,
+    sortedCron,
+    cronSessions,
+    cronTotal,
+  } = useMemo(() => {
     // When searching, use server results (spans all sessions); "load more" is
     // disabled in this mode since totals reflect the search, not each group.
     const searching = search.trim().length > 0
@@ -875,22 +1064,71 @@ export function ChatSidebar({
       ? ((searchResults as Session[] | undefined) ?? []).filter(isVisibleSource)
       : sessions
 
-    const cronSessions: Session[] = []
-    const directSessions: Session[] = []
-    const employeeSessionMap = new Map<string, Session[]>()
+    // Resolve the avatar slug + human label for a flat row. Direct/COO sessions
+    // borrow the portal identity; the rest use their employee's org profile.
+    const resolveIdentity = (s: Session): { avatarName: string; displayName: string } => {
+      if (isDirectSession(s, portalSlug)) return { avatarName: portalSlug, displayName: portalName }
+      const emp = s.employee!
+      return { avatarName: emp, displayName: employeeData.get(emp)?.displayName || titleCase(emp) }
+    }
+    const toRow = (s: Session): FlatRow => ({ session: s, ...resolveIdentity(s) })
 
-    for (const s of displayed) {
-      if (isCronSession(s)) cronSessions.push(s)
-      else if (isDirectSession(s, portalSlug)) directSessions.push(s)
-      else {
-        const emp = s.employee!
-        if (!employeeSessionMap.has(emp)) employeeSessionMap.set(emp, [])
-        employeeSessionMap.get(emp)!.push(s)
+    // ---- Search mode: one flat list spanning everything matched. ----
+    if (searching) {
+      const searchRows = sortSessionsByActivity(displayed).map(toRow)
+      return {
+        searching,
+        searchRows,
+        todayRows: [] as FlatRow[],
+        yesterdayRows: [] as FlatRow[],
+        olderSummary: { chats: 0, employees: 0 },
+        olderPinned: [] as FlatItem[],
+        olderUnpinned: [] as FlatItem[],
+        pinnedFlat: [] as FlatItem[],
+        unpinnedFlat: [] as FlatItem[],
+        sortedCron: [] as Session[],
+        cronSessions: [] as Session[],
+        cronTotal: 0,
       }
     }
 
-    const flatItems: FlatItem[] = []
+    // ---- Default mode: recency buckets + per-employee Older drawer. ----
+    const now = new Date()
+    const cronSessions: Session[] = []
+    const directSessions: Session[] = []
+    const employeeSessionMap = new Map<string, Session[]>()
+    const todayRows: FlatRow[] = []
+    const yesterdayRows: FlatRow[] = []
+    // today+yesterday sessions surfaced per group — drives the Older summary math.
+    const recentByGroup: Record<string, number> = {}
 
+    for (const s of displayed) {
+      if (isCronSession(s)) {
+        cronSessions.push(s)
+        continue
+      }
+      const isDirect = isDirectSession(s, portalSlug)
+      const groupKey = isDirect ? DIRECT_GROUP : s.employee!
+      if (isDirect) directSessions.push(s)
+      else {
+        if (!employeeSessionMap.has(groupKey)) employeeSessionMap.set(groupKey, [])
+        employeeSessionMap.get(groupKey)!.push(s)
+      }
+      const bucket = bucketByDay(getSessionActivity(s), now)
+      if (bucket === "today") {
+        todayRows.push(toRow(s))
+        recentByGroup[groupKey] = (recentByGroup[groupKey] ?? 0) + 1
+      } else if (bucket === "yesterday") {
+        yesterdayRows.push(toRow(s))
+        recentByGroup[groupKey] = (recentByGroup[groupKey] ?? 0) + 1
+      }
+    }
+
+    todayRows.sort((a, b) => getSessionActivity(b.session).localeCompare(getSessionActivity(a.session)))
+    yesterdayRows.sort((a, b) => getSessionActivity(b.session).localeCompare(getSessionActivity(a.session)))
+
+    // Per-employee groups (full history) — used by the Older drawer + keyboard nav.
+    const flatItems: FlatItem[] = []
     for (const [empName, empSessions] of employeeSessionMap) {
       const sorted = sortSessionsByActivity(empSessions)
       flatItems.push({
@@ -901,10 +1139,9 @@ export function ChatSidebar({
         sortKey: getSessionActivity(sorted[0]),
         pinKey: `emp:${empName}`,
         groupKey: empName,
-        total: searching ? sorted.length : (counts[empName] ?? sorted.length),
+        total: counts[empName] ?? sorted.length,
       })
     }
-
     if (directSessions.length > 0) {
       const sorted = sortSessionsByActivity(directSessions)
       flatItems.push({
@@ -925,7 +1162,7 @@ export function ChatSidebar({
         sortKey: getSessionActivity(sorted[0]),
         pinKey: `emp:${portalSlug}`,
         groupKey: DIRECT_GROUP,
-        total: searching ? sorted.length : (counts[DIRECT_GROUP] ?? sorted.length),
+        total: counts[DIRECT_GROUP] ?? sorted.length,
       })
     }
 
@@ -936,10 +1173,38 @@ export function ChatSidebar({
       .filter((item) => !pinnedSessions.has(item.pinKey))
       .sort((a, b) => b.sortKey.localeCompare(a.sortKey))
 
-    const sortedCron = sortSessionsByActivity(cronSessions)
-    const cronTotal = searching ? cronSessions.length : (counts[CRON_GROUP] ?? cronSessions.length)
+    // Older drawer = only groups that actually have sessions beyond yesterday.
+    const hasOlder = (item: FlatItem) =>
+      (item.total ?? item.sessions!.length) - (recentByGroup[item.groupKey ?? item.employeeName!] ?? 0) > 0
+    const olderPinned = pinnedFlat.filter(hasOlder)
+    const olderUnpinned = unpinnedFlat.filter(hasOlder)
 
-    return { pinnedFlat, unpinnedFlat, sortedCron, cronSessions, cronTotal }
+    // Authoritative Older count: all non-cron group totals minus what's already
+    // shown in Today/Yesterday. Direct/COO chats count toward "chats" but not
+    // toward the "employees" tally.
+    const nonCronTotals: Record<string, number> = {}
+    for (const [k, v] of Object.entries(counts)) {
+      if (k !== CRON_GROUP) nonCronTotals[k] = v
+    }
+    const olderSummary = summarizeOlder(nonCronTotals, recentByGroup, new Set([DIRECT_GROUP]))
+
+    const sortedCron = sortSessionsByActivity(cronSessions)
+    const cronTotal = counts[CRON_GROUP] ?? cronSessions.length
+
+    return {
+      searching,
+      searchRows: [] as FlatRow[],
+      todayRows,
+      yesterdayRows,
+      olderSummary,
+      olderPinned,
+      olderUnpinned,
+      pinnedFlat,
+      unpinnedFlat,
+      sortedCron,
+      cronSessions,
+      cronTotal,
+    }
   }, [sessions, search, searchResults, employeeData, portalSlug, portalName, pinnedSessions, counts])
 
   const cronCollapsed = collapsed.has("cron")
@@ -963,22 +1228,42 @@ export function ChatSidebar({
       .filter((e): e is Employee => !!e)
   }, [search, pinnedFlat, unpinnedFlat, orgData, employeeData, portalSlug])
 
-  // Emit flat session order for keyboard navigation (J/K/E shortcuts)
+  // Emit flat session order for keyboard navigation (J/K/E shortcuts).
+  // Visual order: Today → Yesterday → (Older drawer, if open) → Scheduled.
+  // De-duped — an employee's older sessions can overlap their Today/Yesterday rows.
   const orderRef = useRef<string>('')
   const allFlatIds = useMemo(() => {
     const ids: string[] = []
+    const seen = new Set<string>()
+    const push = (id: string) => { if (!seen.has(id)) { seen.add(id); ids.push(id) } }
+
+    if (searching) {
+      for (const r of searchRows) push(r.session.id)
+      return { sessionIds: ids, employeeNames: [] as string[], employeeSessionMap: {} as Record<string, string[]> }
+    }
+
+    for (const r of todayRows) push(r.session.id)
+    for (const r of yesterdayRows) push(r.session.id)
+    if (olderExpanded) {
+      for (const item of [...olderPinned, ...olderUnpinned]) {
+        const sessionIds = item.sessions!.map((s) => s.id)
+        // Collapsed employee row reaches only its latest session; expanded reaches all.
+        if (expanded[item.employeeName!]) sessionIds.forEach(push)
+        else if (sessionIds.length) push(sessionIds[0])
+      }
+    }
+    for (const s of sortedCron) push(s.id)
+
+    // E-shortcut cycles every employee with sessions, regardless of Older state.
     const empNames: string[] = []
     const empMap: Record<string, string[]> = {}
     for (const item of [...pinnedFlat, ...unpinnedFlat]) {
       const name = item.employeeName!
       empNames.push(name)
-      const sessionIds = item.sessions!.map(s => s.id)
-      empMap[name] = sessionIds
-      ids.push(...sessionIds)
+      empMap[name] = item.sessions!.map((s) => s.id)
     }
-    for (const s of sortedCron) ids.push(s.id)
     return { sessionIds: ids, employeeNames: empNames, employeeSessionMap: empMap }
-  }, [pinnedFlat, unpinnedFlat, sortedCron])
+  }, [searching, searchRows, todayRows, yesterdayRows, olderExpanded, olderPinned, olderUnpinned, expanded, sortedCron, pinnedFlat, unpinnedFlat])
 
   useEffect(() => {
     const key = allFlatIds.sessionIds.join(',')
@@ -1050,9 +1335,14 @@ export function ChatSidebar({
 
   const scrollContainerRef = useRef<HTMLDivElement>(null)
 
-  // Build flat list of items for virtualization: employee rows + cron header + cron sessions
-  // Each element carries enough info to render either an EmployeeRow or a SessionRow (for cron)
+  // Build one flat list for the (optional) virtualizer. The focused layout is a
+  // sequence of section labels, flat session rows (Today/Yesterday/search), the
+  // collapsible Older summary + its per-employee drawer, and the cron section.
   type VirtualItem =
+    | { kind: "section"; id: string; label: string; count?: number }
+    | { kind: "flat"; row: FlatRow }
+    | { kind: "older-line" }
+    | { kind: "older-header" }
     | { kind: "employee"; item: FlatItem }
     | { kind: "cron-header" }
     | { kind: "cron-session"; session: Session }
@@ -1060,8 +1350,27 @@ export function ChatSidebar({
 
   const virtualItems = useMemo<VirtualItem[]>(() => {
     const list: VirtualItem[] = []
-    for (const item of pinnedFlat) list.push({ kind: "employee", item })
-    for (const item of unpinnedFlat) list.push({ kind: "employee", item })
+    if (searching) {
+      for (const row of searchRows) list.push({ kind: "flat", row })
+      return list
+    }
+    if (todayRows.length > 0) {
+      list.push({ kind: "section", id: "today", label: "Today", count: todayRows.length })
+      for (const row of todayRows) list.push({ kind: "flat", row })
+    }
+    if (yesterdayRows.length > 0) {
+      list.push({ kind: "section", id: "yesterday", label: "Yesterday", count: yesterdayRows.length })
+      for (const row of yesterdayRows) list.push({ kind: "flat", row })
+    }
+    if (olderSummary.chats > 0) {
+      if (!olderExpanded) {
+        list.push({ kind: "older-line" })
+      } else {
+        list.push({ kind: "older-header" })
+        for (const item of olderPinned) list.push({ kind: "employee", item })
+        for (const item of olderUnpinned) list.push({ kind: "employee", item })
+      }
+    }
     if (cronSessions.length > 0) {
       list.push({ kind: "cron-header" })
       if (!cronCollapsed) {
@@ -1070,7 +1379,7 @@ export function ChatSidebar({
       }
     }
     return list
-  }, [pinnedFlat, unpinnedFlat, cronSessions.length, cronCollapsed, sortedCron, cronTotal])
+  }, [searching, searchRows, todayRows, yesterdayRows, olderSummary.chats, olderExpanded, olderPinned, olderUnpinned, cronSessions.length, cronCollapsed, sortedCron, cronTotal])
 
   const VIRTUALIZE_THRESHOLD = 50
   const shouldVirtualize = virtualItems.length >= VIRTUALIZE_THRESHOLD
@@ -1079,16 +1388,127 @@ export function ChatSidebar({
     count: shouldVirtualize ? virtualItems.length : 0,
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: (index) => {
-      if (!shouldVirtualize) return 36
+      if (!shouldVirtualize) return 52
       const vi = virtualItems[index]
-      if (vi.kind === "cron-header") return 36
-      if (vi.kind === "cron-session") return 36
-      // employee row
-      return 64
+      switch (vi.kind) {
+        case "section": return 32
+        case "older-header": return 36
+        case "older-line": return 40
+        case "cron-header": return 36
+        case "cron-session": return 36
+        case "cron-more": return 28
+        case "flat": return 52
+        default: return 64 // employee row (dynamic — measured)
+      }
     },
     overscan: 5,
     enabled: shouldVirtualize,
   })
+
+  const olderLineLabel = useMemo(() => {
+    const { chats, employees } = olderSummary
+    const chatWord = chats === 1 ? "chat" : "chats"
+    if (employees <= 0) return `Older · ${chats} ${chatWord}`
+    const empWord = employees === 1 ? "employee" : "employees"
+    return `Older · ${chats} ${chatWord} across ${employees} ${empWord}`
+  }, [olderSummary])
+
+  const cronHeader = (
+    <button
+      onClick={toggleCronCollapsed}
+      className="flex w-full items-center gap-2 px-4 py-2 text-left transition-colors hover:bg-accent"
+    >
+      <Clock3 className="size-3.5 text-muted-foreground" />
+      <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+        Scheduled
+      </span>
+      <span className="ml-auto rounded bg-[var(--fill-tertiary)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
+        {cronTotal}
+      </span>
+      <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", cronCollapsed && "-rotate-90")} />
+    </button>
+  )
+
+  // Single source of truth for rendering a VirtualItem — shared by the
+  // virtualized and plain render paths so they can never drift apart.
+  const renderItem = (vi: VirtualItem): React.ReactNode => {
+    switch (vi.kind) {
+      case "section":
+        return (
+          <div className="flex items-center gap-2 px-4 pb-1 pt-3">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              {vi.label}
+            </span>
+            {typeof vi.count === "number" && (
+              <span className="text-[10px] text-[var(--text-quaternary)]">{vi.count}</span>
+            )}
+          </div>
+        )
+      case "flat":
+        return (
+          <FlatSessionRow
+            session={vi.row.session}
+            avatarName={vi.row.avatarName}
+            displayName={vi.row.displayName}
+            {...sharedRowProps}
+          />
+        )
+      case "older-line":
+        return (
+          <button
+            onClick={toggleOlderExpanded}
+            className="mt-1 flex w-full items-center gap-2 px-4 py-2.5 text-left text-[12px] text-[var(--text-tertiary)] transition-colors hover:bg-accent hover:text-[var(--text-secondary)]"
+          >
+            <Clock3 className="size-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate">{olderLineLabel}</span>
+            <ChevronDown className="size-3.5 shrink-0 -rotate-90" />
+          </button>
+        )
+      case "older-header":
+        return (
+          <button
+            onClick={toggleOlderExpanded}
+            className="mt-1 flex w-full items-center gap-2 px-4 py-2 text-left transition-colors hover:bg-accent"
+          >
+            <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              Older
+            </span>
+            <span className="ml-auto rounded bg-[var(--fill-tertiary)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
+              {olderSummary.chats}
+            </span>
+            <ChevronDown className="size-3.5 text-muted-foreground" />
+          </button>
+        )
+      case "employee":
+        return (
+          <EmployeeRow
+            item={vi.item}
+            expanded={expanded}
+            handleEmployeeClick={handleEmployeeClick}
+            handleMarkAllRead={handleMarkAllRead}
+            onLoadMore={handleLoadMore}
+            loadingMore={loadingMore}
+            {...sharedRowProps}
+          />
+        )
+      case "cron-header":
+        return <div className={cn(virtualItems[0]?.kind === "cron-header" && "mt-0")}>{cronHeader}</div>
+      case "cron-session":
+        return <SessionRow session={vi.session} {...sharedRowProps} />
+      case "cron-more":
+        return (
+          <button
+            onClick={() => handleLoadMore(CRON_GROUP, cronSessions.length)}
+            disabled={loadingMore.has(CRON_GROUP)}
+            className="w-full cursor-pointer px-4 pb-2 pl-11 text-left text-[10px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--text-secondary)] disabled:opacity-50"
+          >
+            {loadingMore.has(CRON_GROUP) ? "Loading…" : `+${cronTotal - cronSessions.length} more`}
+          </button>
+        )
+      default:
+        return null
+    }
+  }
 
   return (
     <div className="flex h-full flex-col border-r border-border bg-[var(--sidebar-bg)]">
@@ -1134,7 +1554,7 @@ export function ChatSidebar({
           <div className="px-4 py-8 text-center text-xs text-[var(--text-quaternary)]">
             Loading sessions...
           </div>
-        ) : pinnedFlat.length === 0 && unpinnedFlat.length === 0 && cronSessions.length === 0 ? (
+        ) : virtualItems.length === 0 ? (
           <div className="px-4 py-8 text-center text-xs text-[var(--text-quaternary)]">
             {search.trim() ? "No matching chats" : "No conversations yet"}
           </div>
@@ -1149,104 +1569,24 @@ export function ChatSidebar({
                   data-index={vr.index}
                   style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${vr.start}px)` }}
                 >
-                  {vi.kind === "employee" ? (
-                    <EmployeeRow
-                      key={vi.item.pinKey}
-                      item={vi.item}
-                      expanded={expanded}
-                      handleEmployeeClick={handleEmployeeClick}
-                      handleMarkAllRead={handleMarkAllRead}
-                      onLoadMore={handleLoadMore}
-                      loadingMore={loadingMore}
-                      {...sharedRowProps}
-                    />
-                  ) : vi.kind === "cron-header" ? (
-                    <div className={cn("mt-2", pinnedFlat.length === 0 && unpinnedFlat.length === 0 && "mt-0")}>
-                      <button
-                        onClick={toggleCronCollapsed}
-                        className="flex w-full items-center gap-2 px-4 py-2 text-left transition-colors hover:bg-accent"
-                      >
-                        <Clock3 className="size-3.5 text-muted-foreground" />
-                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                          Scheduled
-                        </span>
-                        <span className="ml-auto rounded bg-[var(--fill-tertiary)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
-                          {cronTotal}
-                        </span>
-                        <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", cronCollapsed && "-rotate-90")} />
-                      </button>
-                    </div>
-                  ) : vi.kind === "cron-session" ? (
-                    <SessionRow key={vi.session.id} session={vi.session} {...sharedRowProps} />
-                  ) : vi.kind === "cron-more" ? (
-                    <button
-                      onClick={() => handleLoadMore(CRON_GROUP, cronSessions.length)}
-                      disabled={loadingMore.has(CRON_GROUP)}
-                      className="w-full cursor-pointer px-4 pb-2 pl-11 text-left text-[10px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--text-secondary)] disabled:opacity-50"
-                    >
-                      {loadingMore.has(CRON_GROUP) ? "Loading…" : `+${cronTotal - cronSessions.length} more`}
-                    </button>
-                  ) : null}
+                  {renderItem(vi)}
                 </div>
               )
             })}
           </div>
         ) : (
           <>
-            {pinnedFlat.map((item) => (
-              <EmployeeRow
-                key={item.pinKey}
-                item={item}
-                expanded={expanded}
-                handleEmployeeClick={handleEmployeeClick}
-                handleMarkAllRead={handleMarkAllRead}
-                onLoadMore={handleLoadMore}
-                loadingMore={loadingMore}
-                {...sharedRowProps}
-              />
+            {virtualItems.map((vi, i) => (
+              <React.Fragment key={
+                vi.kind === "flat" ? vi.row.session.id
+                : vi.kind === "employee" ? vi.item.pinKey
+                : vi.kind === "cron-session" ? vi.session.id
+                : vi.kind === "section" ? `section:${vi.id}`
+                : `${vi.kind}:${i}`
+              }>
+                {renderItem(vi)}
+              </React.Fragment>
             ))}
-            {unpinnedFlat.map((item) => (
-              <EmployeeRow
-                key={item.pinKey}
-                item={item}
-                expanded={expanded}
-                handleEmployeeClick={handleEmployeeClick}
-                handleMarkAllRead={handleMarkAllRead}
-                onLoadMore={handleLoadMore}
-                loadingMore={loadingMore}
-                {...sharedRowProps}
-              />
-            ))}
-
-            {cronSessions.length > 0 ? (
-              <div className={cn("mt-2", pinnedFlat.length === 0 && unpinnedFlat.length === 0 && "mt-0")}>
-                <button
-                  onClick={toggleCronCollapsed}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left transition-colors hover:bg-accent"
-                >
-                  <Clock3 className="size-3.5 text-muted-foreground" />
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                    Scheduled
-                  </span>
-                  <span className="ml-auto rounded bg-[var(--fill-tertiary)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
-                    {cronTotal}
-                  </span>
-                  <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", cronCollapsed && "-rotate-90")} />
-                </button>
-                {!cronCollapsed ? sortedCron.map((session) => (
-                  <SessionRow key={session.id} session={session} {...sharedRowProps} />
-                )) : null}
-                {!cronCollapsed && cronSessions.length < cronTotal ? (
-                  <button
-                    onClick={() => handleLoadMore(CRON_GROUP, cronSessions.length)}
-                    disabled={loadingMore.has(CRON_GROUP)}
-                    className="w-full cursor-pointer px-4 pb-2 pl-11 text-left text-[10px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--text-secondary)] disabled:opacity-50"
-                  >
-                    {loadingMore.has(CRON_GROUP) ? "Loading…" : `+${cronTotal - cronSessions.length} more`}
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
           </>
         )}
 

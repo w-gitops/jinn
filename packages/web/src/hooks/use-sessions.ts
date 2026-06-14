@@ -7,10 +7,10 @@ import { api, type BackgroundActivity, type SessionsResponse } from '@/lib/api'
 // "load more" appends pages into `sessions` via queryClient.setQueryData.
 //
 // The default payload is only the top-N most-recent sessions per group (server
-// PER_GROUP=8). The sidebar augments it client-side via "load more" + live WS
-// patches. A plain refetch would REPLACE that augmented cache with the bare
-// top-N again, silently trimming everything the user paged in (and, in a busy
-// org where session events fire every second, snapping the list back to the 8
+// SESSION_LIST_PER_GROUP=50). The sidebar augments it client-side via "load more"
+// + live WS patches. A plain refetch would REPLACE that augmented cache with the
+// bare top-N again, silently trimming everything the user paged in (and, in a busy
+// org where session events fire every second, snapping the list back to the 50
 // newest on a ~1s debounce). So every refetch MERGES the fresh top-N with the
 // sessions already in cache, keyed by id — fresh rows win (newest status /
 // activity), previously-loaded extras are preserved. Render-time sorting in the

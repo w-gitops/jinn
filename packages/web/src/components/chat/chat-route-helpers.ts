@@ -54,3 +54,67 @@ export function mergeSidebarEmployees(
   }
   return result
 }
+
+// ---------------------------------------------------------------------------
+// Focused-sidebar recency bucketing
+//
+// The chat sidebar groups sessions by *when they were last active* relative to
+// the local day: Today, Yesterday, or Older. Pulled out as pure functions so
+// the date math (the only fiddly bit) is unit-tested without a DOM/render.
+// ---------------------------------------------------------------------------
+
+export type DayBucket = 'today' | 'yesterday' | 'older'
+
+/** Local wall-clock midnight for the given date (drops the time component). */
+export function startOfLocalDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate())
+}
+
+/**
+ * Bucket a session's last-activity ISO timestamp into today / yesterday / older,
+ * using LOCAL day boundaries. DST-safe: "yesterday" is the previous wall-clock
+ * day (via date-component math), not "now − 24h", so a 23h/25h DST day still maps
+ * correctly. Missing / unparseable timestamps fall into `older` (they sort last).
+ */
+export function bucketByDay(activityIso: string | undefined, now: Date): DayBucket {
+  if (!activityIso) return 'older'
+  const t = new Date(activityIso).getTime()
+  if (Number.isNaN(t)) return 'older'
+  const today = startOfLocalDay(now)
+  const todayStart = today.getTime()
+  if (t >= todayStart) return 'today'
+  const yesterdayStart = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate() - 1,
+  ).getTime()
+  if (t >= yesterdayStart) return 'yesterday'
+  return 'older'
+}
+
+/**
+ * Summarize the "Older · N chats across M employees" line from the authoritative
+ * per-group totals plus how many of each group's sessions are already surfaced in
+ * the Today/Yesterday buckets.
+ *
+ * `groupTotals` is the server `counts` map (all-time total per group). `recentByGroup`
+ * is the count of today+yesterday sessions currently shown for each group. Older =
+ * total − recent (clamped at 0). `chats` sums older across every group; `employees`
+ * counts groups that have any older sessions, excluding keys in `excludeFromEmployeeCount`
+ * (the direct/COO bucket isn't an "employee").
+ */
+export function summarizeOlder(
+  groupTotals: Record<string, number>,
+  recentByGroup: Record<string, number>,
+  excludeFromEmployeeCount?: Set<string>,
+): { chats: number; employees: number } {
+  let chats = 0
+  let employees = 0
+  for (const [group, total] of Object.entries(groupTotals)) {
+    const older = Math.max(0, total - (recentByGroup[group] ?? 0))
+    if (older <= 0) continue
+    chats += older
+    if (!excludeFromEmployeeCount?.has(group)) employees += 1
+  }
+  return { chats, employees }
+}

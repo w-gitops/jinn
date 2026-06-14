@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveDeepLink, mergeSidebarEmployees } from '../chat-route-helpers'
+import { resolveDeepLink, mergeSidebarEmployees, bucketByDay, summarizeOlder } from '../chat-route-helpers'
 
 describe('resolveDeepLink', () => {
   const link = (qs: string) => resolveDeepLink(new URLSearchParams(qs))
@@ -67,5 +67,82 @@ describe('mergeSidebarEmployees', () => {
     mergeSidebarEmployees(sessionful, roster)
     expect(sessionful).toEqual(['a'])
     expect(roster).toEqual(['b'])
+  })
+})
+
+describe('bucketByDay', () => {
+  // Mid-afternoon "now" so today has room on both sides of the boundary.
+  const now = new Date(2026, 5, 14, 15, 30, 0) // 2026-06-14 15:30 local
+
+  const at = (y: number, mo: number, d: number, h = 12, mi = 0) =>
+    new Date(y, mo, d, h, mi).toISOString()
+
+  it('buckets a timestamp earlier today as "today"', () => {
+    expect(bucketByDay(at(2026, 5, 14, 0, 1), now)).toBe('today')
+    expect(bucketByDay(at(2026, 5, 14, 15, 29), now)).toBe('today')
+  })
+
+  it('treats exactly local midnight today as "today" (inclusive boundary)', () => {
+    expect(bucketByDay(at(2026, 5, 14, 0, 0), now)).toBe('today')
+  })
+
+  it('buckets yesterday as "yesterday"', () => {
+    expect(bucketByDay(at(2026, 5, 13, 0, 0), now)).toBe('yesterday')
+    expect(bucketByDay(at(2026, 5, 13, 23, 59), now)).toBe('yesterday')
+  })
+
+  it('buckets two-plus days ago as "older"', () => {
+    expect(bucketByDay(at(2026, 5, 12, 23, 59), now)).toBe('older')
+    expect(bucketByDay(at(2026, 5, 1), now)).toBe('older')
+    expect(bucketByDay(at(2025, 11, 31), now)).toBe('older')
+  })
+
+  it('treats a future timestamp (clock skew) as "today"', () => {
+    expect(bucketByDay(at(2026, 5, 14, 23, 59), now)).toBe('today')
+    expect(bucketByDay(at(2026, 5, 20), now)).toBe('today')
+  })
+
+  it('falls back to "older" for empty / unparseable input', () => {
+    expect(bucketByDay(undefined, now)).toBe('older')
+    expect(bucketByDay('', now)).toBe('older')
+    expect(bucketByDay('not-a-date', now)).toBe('older')
+  })
+
+  it('handles the month boundary (1st of month → prior month is older)', () => {
+    const firstOfMonth = new Date(2026, 5, 1, 9, 0, 0) // 2026-06-01 09:00
+    expect(bucketByDay(at(2026, 5, 1, 0, 0), firstOfMonth)).toBe('today')
+    expect(bucketByDay(at(2026, 4, 31, 12, 0), firstOfMonth)).toBe('yesterday') // May 31
+    expect(bucketByDay(at(2026, 4, 30, 12, 0), firstOfMonth)).toBe('older')
+  })
+})
+
+describe('summarizeOlder', () => {
+  it('older = total − recent, summed across groups; employees = groups with any older', () => {
+    const totals = { 'a-dev': 10, 'b-lead': 4, 'c-ops': 2 }
+    const recent = { 'a-dev': 3, 'b-lead': 4, 'c-ops': 0 }
+    // older: a=7, b=0, c=2 → 9 chats across 2 employees (a, c)
+    expect(summarizeOlder(totals, recent)).toEqual({ chats: 9, employees: 2 })
+  })
+
+  it('clamps negatives (recent can momentarily exceed a stale total)', () => {
+    expect(summarizeOlder({ x: 2 }, { x: 5 })).toEqual({ chats: 0, employees: 0 })
+  })
+
+  it('treats a missing recent entry as zero recent', () => {
+    expect(summarizeOlder({ x: 3 }, {})).toEqual({ chats: 3, employees: 1 })
+  })
+
+  it('excludes the direct/COO bucket from the employee count but keeps its chats', () => {
+    const totals = { 'a-dev': 5, __direct__: 6 }
+    const recent = { 'a-dev': 1, __direct__: 2 }
+    // older: a-dev=4, direct=4 → 8 chats; only a-dev counts as an employee
+    expect(summarizeOlder(totals, recent, new Set(['__direct__']))).toEqual({
+      chats: 8,
+      employees: 1,
+    })
+  })
+
+  it('is empty when nothing is older', () => {
+    expect(summarizeOlder({ a: 2, b: 1 }, { a: 2, b: 1 })).toEqual({ chats: 0, employees: 0 })
   })
 })
