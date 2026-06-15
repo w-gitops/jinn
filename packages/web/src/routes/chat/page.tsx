@@ -660,8 +660,10 @@ function ChatPage() {
       <div className="flex overflow-hidden h-full">
         {/* Left region (desktop): the permanent slim nav ribbon + the foldable
             280px chat list. The ribbon's top toggle folds the list to 0; the
-            ribbon persists and the thread reflows wider. */}
-        <div className="hidden h-full shrink-0 overflow-hidden lg:flex">
+            ribbon persists and the thread reflows wider. No overflow-hidden here
+            so the ribbon's per-icon label pills can escape to the right over the
+            list/thread (the list column clips its own fold). */}
+        <div className="hidden h-full shrink-0 lg:flex">
           <NavRibbon listOpen={listOpen} onToggleList={toggleList} />
           {/* Fold the list by animating its width; the inner column keeps a fixed
               280px so its contents don't reflow mid-fold. */}

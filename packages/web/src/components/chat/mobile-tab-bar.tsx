@@ -7,8 +7,12 @@ import { cn } from "@/lib/utils"
 // MobileTabBar — the iOS-style bottom tab bar for the curated 5 (MOBILE_TAB_ITEMS).
 // Mobile only (lg:hidden); the parent decides when to mount it. Frosted material
 // over content with the single 0.5px top hairline iOS tab bars are allowed (the
-// one exception to "no hairlines at rest"). Active state uses --fill-secondary
-// behind the icon only — never --accent.
+// one exception to "no hairlines at rest").
+//
+// Icons-only (no text labels): "you are here" reads from a strong, accent-
+// independent active state — a soft --fill-secondary pill behind the icon plus a
+// --text-primary tint. Every tab keeps an aria-label, and the tap target stays
+// ≥49px tall so a label-free bar is still fully accessible and thumb-friendly.
 // ---------------------------------------------------------------------------
 
 export function MobileTabBar() {
@@ -22,7 +26,7 @@ export function MobileTabBar() {
         "flex items-stretch",
         "border-t-[0.5px] border-[var(--separator)] bg-[var(--material-thick)]",
         "[backdrop-filter:blur(20px)_saturate(1.3)] [-webkit-backdrop-filter:blur(20px)_saturate(1.3)]",
-        "pt-1 pb-[var(--safe-bottom)]",
+        "py-1.5 pb-[max(var(--safe-bottom),6px)]",
       )}
     >
       {MOBILE_TAB_ITEMS.map((item) => {
@@ -35,7 +39,7 @@ export function MobileTabBar() {
             aria-label={item.label}
             aria-current={isActive ? "page" : undefined}
             className={cn(
-              "min-h-[49px] flex-1 flex flex-col items-center justify-center gap-0.5",
+              "min-h-[49px] flex-1 flex items-center justify-center",
               "transition-colors",
               isActive
                 ? "text-[var(--text-primary)]"
@@ -44,13 +48,12 @@ export function MobileTabBar() {
           >
             <span
               className={cn(
-                "flex h-7 w-12 items-center justify-center rounded-full transition-colors",
+                "flex h-9 w-14 items-center justify-center rounded-full transition-colors",
                 isActive && "bg-[var(--fill-secondary)]",
               )}
             >
-              <Icon size={22} className="shrink-0" />
+              <Icon size={24} className="shrink-0" />
             </span>
-            <span className="text-[10px] font-medium leading-none">{item.label}</span>
           </Link>
         )
       })}

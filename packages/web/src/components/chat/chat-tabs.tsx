@@ -28,6 +28,15 @@ export interface ChatHeaderPillsProps {
   onClose?: (index: number) => void
 }
 
+// Split a leading "#NNNN - " id prefix off a session title so the desktop title
+// can render the id quietly (--text-tertiary) ahead of the name. Titles without
+// the prefix (e.g. employee chats) fall through unchanged.
+function splitTitleId(title?: string): { id?: string; rest: string } {
+  if (!title) return { rest: "" }
+  const m = title.match(/^(#\d+)\s*[-–—]\s*(.+)$/)
+  return m ? { id: m[1], rest: m[2] } : { rest: title }
+}
+
 // The chat thread chrome. The old left toggle pill is gone — the sidebar toggle
 // now lives at the top of the nav ribbon, and the conversation title relocates to
 // a slim inline title (desktop) / a centered nav-bar title (mobile thread). The
@@ -41,13 +50,20 @@ export function ChatHeaderPills({
 }: ChatHeaderPillsProps) {
   return (
     <>
-      {/* DESKTOP — slim inline thread title (top-left, plain text, no pill). */}
-      <div className="pointer-events-none absolute left-6 top-4 z-10 hidden h-9 max-w-[42vw] items-center lg:flex xl:max-w-[48vw]">
-        {title && (
-          <span className="truncate text-[length:var(--text-title3)] font-[var(--weight-semibold)] tracking-[-0.01em] text-[var(--text-primary)]">
-            {title}
-          </span>
-        )}
+      {/* DESKTOP — slim inline thread title (top-left, plain text, no pill).
+          Understated by design: 15px subheadline, semibold, single line, ellipsis.
+          h-10 + top-4 puts its vertical center on the same y as the right actions
+          pill and the ribbon's logo/toggle slot — one clean horizontal row. */}
+      <div className="pointer-events-none absolute left-6 top-4 z-10 hidden h-10 max-w-[42vw] items-center lg:flex xl:max-w-[48vw]">
+        {title && (() => {
+          const { id, rest } = splitTitleId(title)
+          return (
+            <span className="truncate text-[length:var(--text-subheadline)] font-[var(--weight-semibold)] tracking-[-0.01em] text-[var(--text-primary)]">
+              {id && <span className="font-[var(--weight-medium)] text-[var(--text-tertiary)]">{id} </span>}
+              {rest}
+            </span>
+          )
+        })()}
       </div>
 
       {/* DESKTOP — right actions pill: compose · more. */}

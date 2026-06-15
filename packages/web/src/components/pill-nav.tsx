@@ -2,6 +2,7 @@ import { useEffect, useState, type ComponentType, type ReactNode } from "react"
 import { Link, useLocation } from "react-router-dom"
 import { Menu, Sun, Moon, Palette, ArrowLeftRight, PanelLeft } from "lucide-react"
 import { useTheme } from "@/routes/providers"
+import { useSettings } from "@/routes/settings-provider"
 import { THEMES, type ThemeId } from "@/lib/themes"
 import { NAV_ITEMS } from "@/lib/nav"
 import { useBreadcrumbs } from "@/context/breadcrumb-context"
@@ -189,15 +190,29 @@ export function NavFooter() {
 
 // ---------------------------------------------------------------------------
 // NavRibbon — the chat route's permanent slim icon rail (~56px). Always mounted
-// (desktop only); the toggle at its top folds/unfolds the 280px chat list, so
-// nav never leaves the rail. Icons-only at rest with tooltips; on hover/focus
-// the rail widens to reveal labels (an overlay — it floats over the list rather
-// than reflowing it). Active item = soft --fill-secondary, NEVER --accent.
+// (desktop only). Icons-only at rest; the rail NEVER widens, so the chat list is
+// never covered. Hovering/focusing a single icon springs ONLY that icon's label
+// out as a small frosted pill to its right — a per-key "piano" reveal — while the
+// icon itself lifts a touch (Dock-style). The top slot shows the Jinn logo at
+// rest and cross-fades to the sidebar toggle on hover (ChatGPT-style). Active
+// item = soft --fill-secondary, NEVER --accent.
 // ---------------------------------------------------------------------------
 
-/** One ribbon entry: a 44px icon square at rest that grows to a full labeled row
- *  when the rail expands. Icon x-position is identical in both states (the label
- *  area is simply clipped at rest), so expanding reads as the rail breathing. */
+// The floating label that springs out beside a hovered/focused icon. It reuses
+// the header-pill material (--pill-bg / --pill-border / overlay shadow) — fully
+// theme-aware, never neon. The icon carries the real aria-label, so the pill is
+// decorative (aria-hidden). Under reduced motion it fades only (no slide).
+const RIBBON_LABEL_PILL =
+  "whitespace-nowrap rounded-full border-[0.5px] border-[var(--pill-border)] bg-[var(--pill-bg)] " +
+  "px-2.5 py-1 text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-primary)] " +
+  "shadow-[var(--shadow-overlay)] [backdrop-filter:blur(20px)_saturate(1.3)] [-webkit-backdrop-filter:blur(20px)_saturate(1.3)] " +
+  "opacity-0 transition-[opacity,transform] duration-150 [transition-timing-function:var(--ease-snappy)] " +
+  "motion-safe:-translate-x-1.5 group-hover/row:opacity-100 group-hover/row:translate-x-0 " +
+  "group-focus-within/row:opacity-100 group-focus-within/row:translate-x-0 motion-reduce:transition-opacity"
+
+/** One ribbon entry — a fixed 44px icon square. It never resizes; the label is a
+ *  floating pill that escapes to the right on hover/focus (the piano reveal), and
+ *  the icon lifts/scales a touch like a pressed Dock key. */
 function RibbonRow({
   Icon,
   label,
@@ -212,19 +227,20 @@ function RibbonRow({
   onClick?: () => void
 }) {
   const cls = cn(
-    "flex h-11 w-11 shrink-0 items-center overflow-hidden rounded-[12px] transition-[width,color,background-color] duration-200 [transition-timing-function:var(--ease-smooth)] motion-reduce:transition-none",
-    "group-hover/ribbon:w-[224px] group-focus-within/ribbon:w-[224px]",
+    "group/row relative flex size-11 shrink-0 items-center justify-center rounded-[12px] transition-colors duration-150 [transition-timing-function:var(--ease-smooth)]",
     isActive
       ? "bg-[var(--fill-secondary)] text-[var(--text-primary)]"
       : "text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)]",
   )
   const inner = (
     <>
-      <span className="flex size-11 shrink-0 items-center justify-center">
+      <span className="flex items-center justify-center transition-transform duration-150 [transition-timing-function:var(--ease-snappy)] motion-safe:group-hover/row:-translate-y-px motion-safe:group-hover/row:scale-110 motion-safe:group-active/row:scale-95 motion-reduce:transform-none">
         <Icon size={20} className="shrink-0" />
       </span>
-      <span className="truncate pr-3 text-[length:var(--text-subheadline)] font-[var(--weight-medium)] opacity-0 transition-opacity duration-150 group-hover/ribbon:opacity-100 group-focus-within/ribbon:opacity-100 motion-reduce:transition-none">
-        {label}
+      {/* Piano reveal — floats past the rail edge; flex-centers vertically so the
+          inner pill is free to animate on the X axis. */}
+      <span aria-hidden className="pointer-events-none absolute inset-y-0 left-full z-50 ml-2 flex items-center">
+        <span className={RIBBON_LABEL_PILL}>{label}</span>
       </span>
     </>
   )
@@ -235,7 +251,6 @@ function RibbonRow({
         onClick={onClick}
         aria-label={label}
         aria-current={isActive ? "page" : undefined}
-        title={label}
         className={cls}
       >
         {inner}
@@ -243,7 +258,7 @@ function RibbonRow({
     )
   }
   return (
-    <button type="button" onClick={onClick} aria-label={label} title={label} className={cls}>
+    <button type="button" onClick={onClick} aria-label={label} className={cls}>
       {inner}
     </button>
   )
@@ -259,50 +274,62 @@ export function NavRibbon({
 }) {
   const pathname = useLocation().pathname
   const { theme, setTheme } = useTheme()
+  const { settings } = useSettings()
+  const emoji = settings.portalEmoji ?? "\u{1F9DE}"
   const cycleTheme = () => {
     const ids = THEMES.map((t) => t.id)
     setTheme(ids[(ids.indexOf(theme) + 1) % ids.length])
   }
   return (
-    // The placeholder reserves the collapsed width (w-14 = 56px) in the flex row;
-    // the real rail floats above it and expands over the list on hover/focus.
+    // The placeholder reserves the rail width (w-14 = 56px) in the flex row; the
+    // real rail floats above it so the per-icon label pills can escape to the
+    // right (over the list / thread) without widening the rail or reflowing it.
     <div className="relative hidden h-full w-14 shrink-0 lg:block">
-      <div
-        className="group/ribbon absolute inset-y-0 left-0 z-30 flex w-14 flex-col overflow-hidden bg-[var(--sidebar-bg)] py-2.5 transition-[width,background-color,box-shadow] duration-200 [transition-timing-function:var(--ease-smooth)] hover:w-[236px] hover:bg-[var(--bg-secondary)] hover:shadow-[var(--shadow-overlay)] focus-within:w-[236px] focus-within:bg-[var(--bg-secondary)] focus-within:shadow-[var(--shadow-overlay)] motion-reduce:transition-none"
+      <nav
+        aria-label="Primary"
+        className="absolute inset-y-0 left-0 z-30 flex w-14 flex-col items-center gap-0.5 bg-[var(--sidebar-bg)] px-1.5 pb-2.5 pt-4"
       >
-        {/* Toggle — same frosted pill material as the header pills, pinned to the
-            rail top so it is always in-rail and never floats over the thread. */}
-        <div className="px-1.5">
-          <span className={cn(PILL_CLASS, "w-fit")}>
-            <PillButton
-              onClick={onToggleList}
-              title={listOpen ? "Hide chats" : "Show chats"}
-              ariaLabel={listOpen ? "Hide chats" : "Show chats"}
-              ariaExpanded={listOpen}
-            >
-              <PanelLeft size={18} />
-            </PillButton>
-          </span>
-        </div>
+        {/* Top slot — Jinn logo at rest, sidebar toggle on hover (ChatGPT-style).
+            Same frosted pill material + same top baseline (pt-4 → y=16) as the
+            thread's right actions pill, so rail-top and header read as one row. */}
+        <span className={cn(PILL_CLASS, "group/logo mb-1 w-fit")}>
+          <PillButton
+            onClick={onToggleList}
+            title={listOpen ? "Hide chats" : "Show chats"}
+            ariaLabel={listOpen ? "Hide chats" : "Show chats"}
+            ariaExpanded={listOpen}
+          >
+            <span className="relative flex size-[18px] items-center justify-center">
+              <span
+                aria-hidden
+                className="absolute inset-0 flex items-center justify-center text-[15px] leading-none transition-opacity duration-150 group-hover/logo:opacity-0 group-focus-within/logo:opacity-0"
+              >
+                {emoji}
+              </span>
+              <PanelLeft
+                size={18}
+                className="absolute inset-0 m-auto opacity-0 transition-opacity duration-150 group-hover/logo:opacity-100 group-focus-within/logo:opacity-100"
+              />
+            </span>
+          </PillButton>
+        </span>
 
-        {/* Nav icons — icon-only at rest, labeled on hover/focus. */}
-        <nav aria-label="Primary" className="mt-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1.5">
-          {NAV_ITEMS.map((item) => (
-            <RibbonRow
-              key={item.href}
-              Icon={item.icon}
-              label={item.label}
-              href={item.href}
-              isActive={isNavItemActive(item.href, pathname)}
-            />
-          ))}
-        </nav>
+        {/* Nav icons — per-icon piano reveal. */}
+        {NAV_ITEMS.map((item) => (
+          <RibbonRow
+            key={item.href}
+            Icon={item.icon}
+            label={item.label}
+            href={item.href}
+            isActive={isNavItemActive(item.href, pathname)}
+          />
+        ))}
 
         {/* Footer — theme toggle, pinned to the bottom. */}
-        <div className="px-1.5 pt-1">
+        <div className="mt-auto pt-1">
           <RibbonRow Icon={themeGlyph(theme)} label={`Theme: ${theme}`} onClick={cycleTheme} />
         </div>
-      </div>
+      </nav>
     </div>
   )
 }
@@ -354,6 +381,8 @@ export function NavPopover({ open, onClose }: { open: boolean; onClose: () => vo
 export function PillNav({ actions }: { actions?: ReactNode }) {
   const pathname = useLocation().pathname
   const { items } = useBreadcrumbs()
+  const { settings } = useSettings()
+  const emoji = settings.portalEmoji ?? "\u{1F9DE}"
   const [navOpen, setNavOpen] = useState(false)
 
   const title = items[0]?.label ?? ""
@@ -364,14 +393,29 @@ export function PillNav({ actions }: { actions?: ReactNode }) {
     <>
       {/* LEFT pill — nav button + route icon + page title. */}
       <div className="pointer-events-none absolute left-[max(var(--safe-left),12px)] top-[max(var(--safe-top),12px)] z-40 lg:left-4 lg:top-4">
-        <div className={PILL_CLASS}>
+        <div className={cn(PILL_CLASS, "group/brand")}>
           <PillButton
             onClick={() => setNavOpen((o) => !o)}
             title="Menu"
             ariaLabel="Open navigation"
             ariaExpanded={navOpen}
           >
-            <Menu size={17} />
+            {/* Brand-anchor: the portal logo is the constant at rest on desktop,
+                cross-fading to the hamburger on hover (mirrors the chat ribbon's
+                logo→toggle top slot). Mobile has no hover, so it always shows the
+                hamburger — the nav popover must stay one tap away. */}
+            <span className="relative flex size-[17px] items-center justify-center">
+              <span
+                aria-hidden
+                className="absolute inset-0 hidden items-center justify-center text-[14px] leading-none transition-opacity duration-150 lg:flex lg:group-hover/brand:opacity-0"
+              >
+                {emoji}
+              </span>
+              <Menu
+                size={17}
+                className="transition-opacity duration-150 lg:opacity-0 lg:group-hover/brand:opacity-100"
+              />
+            </span>
           </PillButton>
           {title && (
             <span className="flex select-none items-center gap-1.5 pl-0.5 pr-2.5 text-[length:var(--text-subheadline)] font-[var(--weight-semibold)] text-[var(--text-primary)]">
