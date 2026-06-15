@@ -1,6 +1,22 @@
 import { useState, useRef, useCallback, useEffect } from "react"
 import { api } from "@/lib/api"
 
+type AudioSessionType =
+  | "auto"
+  | "playback"
+  | "transient"
+  | "transient-solo"
+  | "ambient"
+  | "play-and-record"
+
+interface AudioSessionLike {
+  type: AudioSessionType
+}
+
+interface NavigatorWithAudioSession extends Navigator {
+  audioSession?: AudioSessionLike
+}
+
 export type SttState =
   | "idle"           // mic not active
   | "no-model"       // model not downloaded, need to show download modal
@@ -32,6 +48,37 @@ export interface UseSttReturn {
 
 const MAX_RECORDING_MS = 30 * 60_000 // 30 minutes max
 
+function setAudioSessionType(type: AudioSessionType): AudioSessionLike | null {
+  if (typeof navigator === "undefined") return null
+  const audioSession = (navigator as NavigatorWithAudioSession).audioSession
+  if (!audioSession) return null
+  try {
+    audioSession.type = type
+    return audioSession
+  } catch {
+    return null
+  }
+}
+
+function releaseCaptureAudioSession() {
+  const audioSession = setAudioSessionType("ambient")
+  if (!audioSession) return
+  queueMicrotask(() => {
+    try {
+      audioSession.type = "auto"
+    } catch {
+      /* noop */
+    }
+  })
+}
+
+function createAudioContext(): AudioContext {
+  const Ctor: typeof AudioContext =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+  return new Ctor()
+}
+
 export function useStt(
   wsEvents?: Array<{ event: string; payload: unknown }>,
   onAutoTranscript?: (text: string) => void,
@@ -57,6 +104,7 @@ export function useStt(
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Resolve function for the stop promise — allows timeout to also trigger transcription
   const stopResolveRef = useRef<((text: string | null) => void) | null>(null)
+  const mountedRef = useRef(true)
   const onAutoTranscriptRef = useRef(onAutoTranscript)
   onAutoTranscriptRef.current = onAutoTranscript
 
@@ -81,26 +129,46 @@ export function useStt(
     }
   }, [wsEvents])
 
-  const cleanup = useCallback(() => {
+  const cleanup = useCallback((opts?: { updateAnalyser?: boolean }) => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current)
+      timeoutRef.current = null
+    }
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
-    audioContextRef.current?.close().catch(() => {})
+    const audioContext = audioContextRef.current
+    let closePromise: Promise<void> | null = null
+    if (audioContext && audioContext.state !== "closed") {
+      closePromise = audioContext.close().catch(() => {})
+    }
     audioContextRef.current = null
-    setAnalyser(null)
+    if (opts?.updateAnalyser !== false && mountedRef.current) setAnalyser(null)
     mediaRecorderRef.current = null
+    if (closePromise) {
+      void closePromise.finally(releaseCaptureAudioSession)
+    } else {
+      releaseCaptureAudioSession()
+    }
   }, [])
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current)
-      if (mediaRecorderRef.current?.state === "recording") {
-        mediaRecorderRef.current.stop()
+      mountedRef.current = false
+      const recorder = mediaRecorderRef.current
+      if (recorder) {
+        recorder.ondataavailable = null
+        recorder.onstop = null
+        if (recorder.state === "recording") {
+          try { recorder.stop() } catch { /* noop */ }
+        }
       }
-      streamRef.current?.getTracks().forEach((t) => t.stop())
-      audioContextRef.current?.close().catch(() => {})
+      cleanup({ updateAnalyser: false })
+      chunksRef.current = []
+      stopResolveRef.current?.(null)
+      stopResolveRef.current = null
     }
-  }, [])
+  }, [cleanup])
 
   const checkStatus = useCallback(async () => {
     try {
@@ -130,10 +198,11 @@ export function useStt(
 
   const startRecordingInner = useCallback(async () => {
     try {
+      setAudioSessionType("play-and-record")
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
 
-      const audioCtx = new AudioContext()
+      const audioCtx = createAudioContext()
       audioContextRef.current = audioCtx
       const source = audioCtx.createMediaStreamSource(stream)
       const analyserNode = audioCtx.createAnalyser()
@@ -158,6 +227,12 @@ export function useStt(
       // by user click, timeout, or any other reason
       recorder.onstop = async () => {
         cleanup()
+        if (!mountedRef.current) {
+          chunksRef.current = []
+          stopResolveRef.current?.(null)
+          stopResolveRef.current = null
+          return
+        }
         setState("transcribing")
 
         const blob = new Blob(chunksRef.current, {
@@ -254,15 +329,18 @@ export function useStt(
   }, [cleanup])
 
   const cancelRecording = useCallback(() => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current)
-      timeoutRef.current = null
-    }
-    if (mediaRecorderRef.current?.state === "recording") {
-      mediaRecorderRef.current.stop()
+    const recorder = mediaRecorderRef.current
+    if (recorder) {
+      recorder.ondataavailable = null
+      recorder.onstop = null
+      if (recorder.state === "recording") {
+        try { recorder.stop() } catch { /* noop */ }
+      }
     }
     cleanup()
     chunksRef.current = []
+    stopResolveRef.current?.(null)
+    stopResolveRef.current = null
     setState("idle")
   }, [cleanup])
 
