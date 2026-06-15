@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
@@ -60,11 +60,16 @@ describe("messages partial (mid-turn streaming) blocks", () => {
 
   it("orders blocks by seq even when timestamps collide", () => {
     newSession("p2");
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
     // Insert out of seq order; getMessages must return them seq-ascending.
-    reg.insertPartialMessage("p2", "assistant", "third", 2);
-    reg.insertPartialMessage("p2", "assistant", "first", 0);
-    reg.insertPartialMessage("p2", "assistant", "second", 1);
-    expect(reg.getMessages("p2").map((m) => m.content)).toEqual(["first", "second", "third"]);
+    try {
+      reg.insertPartialMessage("p2", "assistant", "third", 2);
+      reg.insertPartialMessage("p2", "assistant", "first", 0);
+      reg.insertPartialMessage("p2", "assistant", "second", 1);
+      expect(reg.getMessages("p2").map((m) => m.content)).toEqual(["first", "second", "third"]);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it("deletePartialMessages leaves final (non-partial) rows untouched", () => {

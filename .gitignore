@@ -2,6 +2,8 @@ node_modules/
 dist/
 .next/
 .turbo/
+coverage/
+test-results/
 *.tsbuildinfo
 .env
 .env.local
