@@ -198,14 +198,16 @@ export function NavFooter() {
 // item = soft --fill-secondary, NEVER --accent.
 // ---------------------------------------------------------------------------
 
-// The floating label that springs out beside a hovered/focused icon. It reuses
-// the header-pill material (--pill-bg / --pill-border / overlay shadow) — fully
-// theme-aware, never neon. The icon carries the real aria-label, so the pill is
-// decorative (aria-hidden). Under reduced motion it fades only (no slide).
+// The floating label that springs out beside a hovered/focused icon. Calm and
+// crisp: a flat opaque --bg-tertiary surface with a 0.5px --separator hairline
+// and a subtle drop shadow — NO backdrop saturate (no colored halo) and NOT the
+// heavy overlay shadow (no glow). Theme-aware, quiet, readable over the list.
+// The icon carries the real aria-label, so the pill is decorative (aria-hidden).
+// Under reduced motion it fades only (no slide).
 const RIBBON_LABEL_PILL =
-  "whitespace-nowrap rounded-full border-[0.5px] border-[var(--pill-border)] bg-[var(--pill-bg)] " +
+  "whitespace-nowrap rounded-full border-[0.5px] border-[var(--separator)] bg-[var(--bg-tertiary)] " +
   "px-2.5 py-1 text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-primary)] " +
-  "shadow-[var(--shadow-overlay)] [backdrop-filter:blur(20px)_saturate(1.3)] [-webkit-backdrop-filter:blur(20px)_saturate(1.3)] " +
+  "shadow-[var(--shadow-subtle)] " +
   "opacity-0 transition-[opacity,transform] duration-150 [transition-timing-function:var(--ease-snappy)] " +
   "motion-safe:-translate-x-1.5 group-hover/row:opacity-100 group-hover/row:translate-x-0 " +
   "group-focus-within/row:opacity-100 group-focus-within/row:translate-x-0 motion-reduce:transition-opacity"
@@ -287,32 +289,38 @@ export function NavRibbon({
     <div className="relative hidden h-full w-14 shrink-0 lg:block">
       <nav
         aria-label="Primary"
-        className="absolute inset-y-0 left-0 z-30 flex w-14 flex-col items-center gap-0.5 bg-[var(--sidebar-bg)] px-1.5 pb-2.5 pt-4"
+        className="absolute inset-y-0 left-0 z-30 flex w-14 flex-col items-center gap-0.5 bg-[var(--sidebar-bg)] px-1.5 pb-2.5 pt-3.5"
       >
-        {/* Top slot — Jinn logo at rest, sidebar toggle on hover (ChatGPT-style).
-            Same frosted pill material + same top baseline (pt-4 → y=16) as the
-            thread's right actions pill, so rail-top and header read as one row. */}
-        <span className={cn(PILL_CLASS, "group/logo mb-1 w-fit")}>
-          <PillButton
+        {/* Top slot — a plain, button-sized Jinn brand mark that fills the rail
+            top (no frosted-pill chrome). It morphs to the sidebar.left toggle
+            while the pointer is anywhere over the LEFT region — the rail AND the
+            chat-list column (ChatGPT-style, via group/sidebar on the region
+            wrapper in chat/page.tsx) — or while the button is focused after a
+            click; it reverts to the logo on mouse-leave. The thread/main content
+            sits outside that group, so hovering it never triggers the morph.
+            pt-3.5 centers the 44px button on the same y (~36px) as the thread's
+            right actions pill, so rail-top and header read as one row. */}
+        <div className="group/logo mb-1">
+          <button
+            type="button"
             onClick={onToggleList}
             title={listOpen ? "Hide chats" : "Show chats"}
-            ariaLabel={listOpen ? "Hide chats" : "Show chats"}
-            ariaExpanded={listOpen}
+            aria-label={listOpen ? "Hide chats" : "Show chats"}
+            aria-expanded={listOpen}
+            className="relative flex size-11 items-center justify-center rounded-[12px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)]"
           >
-            <span className="relative flex size-[18px] items-center justify-center">
-              <span
-                aria-hidden
-                className="absolute inset-0 flex items-center justify-center text-[15px] leading-none transition-opacity duration-150 group-hover/logo:opacity-0 group-focus-within/logo:opacity-0"
-              >
-                {emoji}
-              </span>
-              <PanelLeft
-                size={18}
-                className="absolute inset-0 m-auto opacity-0 transition-opacity duration-150 group-hover/logo:opacity-100 group-focus-within/logo:opacity-100"
-              />
+            <span
+              aria-hidden
+              className="absolute inset-0 flex items-center justify-center text-[26px] leading-none transition-opacity duration-150 group-hover/sidebar:opacity-0 group-focus-within/logo:opacity-0"
+            >
+              {emoji}
             </span>
-          </PillButton>
-        </span>
+            <PanelLeft
+              size={22}
+              className="opacity-0 transition-opacity duration-150 group-hover/sidebar:opacity-100 group-focus-within/logo:opacity-100"
+            />
+          </button>
+        </div>
 
         {/* Nav icons — per-icon piano reveal. */}
         {NAV_ITEMS.map((item) => (
