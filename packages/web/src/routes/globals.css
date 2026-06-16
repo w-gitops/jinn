@@ -155,7 +155,11 @@
   --code-bg: rgba(255,255,255,0.05);
   --code-border: rgba(255,255,255,0.09);
   --code-text: #E8E4D8;
-  --sidebar-bg: rgba(26,24,19,0.92);
+  /* Tonal staircase (chrome recedes, content leads): Ribbon (lightest chrome)
+     > Chat List (mid) > Thread (--bg, deepest). Quiet ~8 L* steps; no rest
+     hairlines — the only line is the list's scroll-activated header separator. */
+  --ribbon-bg: #232019;
+  --sidebar-bg: #1C1A14;
   --sidebar-backdrop: blur(40px) saturate(160%);
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -209,7 +213,10 @@
   --code-bg: rgba(33,30,22,0.05);
   --code-border: rgba(33,30,22,0.10);
   --code-text: #4A4030;
-  --sidebar-bg: #EFEBE0;
+  /* Tonal staircase (light): Ribbon (greyest chrome) > Chat List (mid) >
+     Thread (--bg, paper-white). Steps step DOWN from the content. */
+  --ribbon-bg: #E4DFD0;
+  --sidebar-bg: #ECE8DC;
   --sidebar-backdrop: blur(20px) saturate(150%);
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -264,7 +271,9 @@
     --code-bg: rgba(33,30,22,0.05);
     --code-border: rgba(33,30,22,0.10);
     --code-text: #4A4030;
-    --sidebar-bg: #EFEBE0;
+    /* Tonal staircase (system → light): mirror [data-theme="light"]. */
+    --ribbon-bg: #E4DFD0;
+    --sidebar-bg: #ECE8DC;
     --sidebar-backdrop: blur(20px) saturate(150%);
     --radius-sm: 6px;
     --radius-md: 10px;
@@ -318,7 +327,9 @@
     --code-bg: rgba(255,255,255,0.05);
     --code-border: rgba(255,255,255,0.09);
     --code-text: #E8E4D8;
-    --sidebar-bg: rgba(26,24,19,0.92);
+    /* Tonal staircase (system → dark): mirror [data-theme="dark"]. */
+    --ribbon-bg: #232019;
+    --sidebar-bg: #1C1A14;
     --sidebar-backdrop: blur(40px) saturate(160%);
     --radius-sm: 6px;
     --radius-md: 10px;

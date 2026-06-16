@@ -1462,6 +1462,13 @@ export function ChatSidebar({
   }), [selectedId, readSessions, pinnedSessions, renamingSessionId, fixTitleCb, onSelect, onEmployeeSessionsAvailable, togglePin, handleDuplicateCb, updateSessionTitle])
 
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  // Apple nav-bar pattern: the control band carries NO line at rest, and a
+  // single --separator hairline appears under it only once rows scroll beneath.
+  const [listScrolled, setListScrolled] = useState(false)
+  const handleListScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const next = e.currentTarget.scrollTop > 2
+    setListScrolled((prev) => (prev === next ? prev : next))
+  }, [])
 
   // Build one flat list for the (optional) virtualizer. The focused layout is a
   // sequence of section labels, flat session rows (Today/Yesterday/search), the
@@ -1638,7 +1645,15 @@ export function ChatSidebar({
           morphs the whole row into an inline search field. The page title and
           "+ New" affordance now live in the header pill, so neither lives here.
           Separation is fills only — no hairlines at rest. */}
-      <div className="shrink-0 bg-[var(--material-thick)] px-3 py-2">
+      {/* Control band — part of the List surface (--sidebar-bg), not the
+          Thread. A scroll-activated separator (below) is the only line; at rest
+          it's borderless. */}
+      <div
+        className={cn(
+          "shrink-0 bg-[var(--sidebar-bg)] px-3 py-2 transition-shadow duration-150",
+          listScrolled && "shadow-[0_1px_0_0_var(--separator)]",
+        )}
+      >
         <div className="relative flex h-9 items-center">
           {/* Resting controls — fade/disable while the search field is open. */}
           <div
@@ -1727,7 +1742,7 @@ export function ChatSidebar({
           className="pointer-events-none absolute inset-x-0 top-0 z-10 h-3"
           style={{ background: "linear-gradient(to bottom, var(--sidebar-bg), transparent)" }}
         />
-        <div ref={scrollContainerRef} className="h-full overflow-y-auto pb-[calc(49px+var(--safe-bottom))] lg:pb-0">
+        <div ref={scrollContainerRef} onScroll={handleListScroll} className="h-full overflow-y-auto pb-[calc(49px+var(--safe-bottom))] lg:pb-0">
         {loading ? (
           <div className="px-4 py-8 text-center text-xs text-[var(--text-quaternary)]">
             Loading sessions...
