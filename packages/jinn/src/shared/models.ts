@@ -9,14 +9,20 @@ import type {
 import { logger } from "./logger.js";
 import { resolveBin, isInstalled } from "./resolve-bin.js";
 import { discoverPiModels } from "./pi-models.js";
+import {
+  discoverGrokModels,
+  GROK_EFFORT_LEVELS,
+  knownGrokModels,
+  type GrokModelDiscovery,
+} from "./grok-models.js";
 
 /**
  * Model + capability registry — the single source of truth for which engines and
  * models exist and what they support (effort levels, availability).
  *
  * Sources, in precedence order per engine:
- *   1. Dynamic discovery (pi only) — `pi --list-models`, refreshed at boot and on
- *      config reload into a snapshot that the (synchronous) registry reads.
+ *   1. Dynamic discovery (pi/grok), refreshed at boot and on config reload into
+ *      snapshots that the (synchronous) registry reads.
  *   2. The optional `models:` block in config.yaml.
  *   3. Synthesis from `engines.<name>.model` (back-compat default).
  *
@@ -41,7 +47,7 @@ const EFFORT_MECHANISM: Record<EngineName, EffortMechanism> = {
   claude: "claude-flag",
   codex: "codex-config",
   antigravity: "none",
-  grok: "none",
+  grok: "grok-flag",
   pi: "pi-flag",
 };
 
@@ -52,7 +58,7 @@ const SYNTH_DEFAULTS: Record<EngineName, { supportsEffort: boolean; effortLevels
   claude: { supportsEffort: true, effortLevels: ["low", "medium", "high"], fallbackModel: "opus" },
   codex: { supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"], fallbackModel: CODEX_DEFAULT_MODEL },
   antigravity: { supportsEffort: false, effortLevels: [], fallbackModel: "Gemini 3.5 Flash (Medium)" },
-  grok: { supportsEffort: false, effortLevels: [], fallbackModel: "grok-build" },
+  grok: { supportsEffort: true, effortLevels: GROK_EFFORT_LEVELS, fallbackModel: "grok-build" },
   // Placeholder shown only in the brief window before pi discovery completes; the
   // provider/id form keeps it well-typed for the engine's split.
   pi: { supportsEffort: false, effortLevels: [], fallbackModel: "ollama/gemma4:12b" },
@@ -71,7 +77,7 @@ export function engineAvailable(config: JinnConfig, name: EngineName): boolean {
   return isInstalled(bin, engineBinOverride(config, name));
 }
 
-/** Type guard: is `name` one of the four known engines? */
+/** Type guard: is `name` one of the known engines? */
 export function isKnownEngine(name: string): name is EngineName {
   return (ENGINE_NAMES as readonly string[]).includes(name);
 }
@@ -93,6 +99,8 @@ export function engineUnavailableMessage(config: JinnConfig, name: EngineName): 
 
 /** Snapshot of dynamically-discovered Pi models (null until first discovery). */
 let discoveredPiModels: ModelInfo[] | null = null;
+/** Snapshot of dynamically-discovered Grok models (null until first discovery). */
+let discoveredGrokModels: GrokModelDiscovery | null = null;
 
 /**
  * Discover Pi's local/custom models (`pi --list-models`) and refresh the registry.
@@ -112,6 +120,29 @@ export async function refreshPiModels(config: JinnConfig): Promise<void> {
   } catch (err) {
     logger.warn(`Pi model discovery failed: ${err instanceof Error ? err.message : err}`);
     discoveredPiModels = null;
+  } finally {
+    invalidateModelRegistry();
+  }
+}
+
+/**
+ * Discover Grok's authenticated model list (`grok models`) and refresh the registry.
+ * Never throws; until discovery succeeds the registry uses Jinn's known Grok model
+ * catalog so the UI still shows the public Grok choices.
+ */
+export async function refreshGrokModels(config: JinnConfig): Promise<void> {
+  if (!engineAvailable(config, "grok")) {
+    discoveredGrokModels = null;
+    invalidateModelRegistry();
+    return;
+  }
+  try {
+    const bin = resolveBin("grok", engineBinOverride(config, "grok"));
+    discoveredGrokModels = await discoverGrokModels(bin);
+    logger.info(`Grok model discovery: ${discoveredGrokModels.models.length} model(s)`);
+  } catch (err) {
+    logger.warn(`Grok model discovery failed: ${err instanceof Error ? err.message : err}`);
+    discoveredGrokModels = null;
   } finally {
     invalidateModelRegistry();
   }
@@ -165,10 +196,14 @@ export function buildRegistry(config: JinnConfig): ModelRegistry {
   const registry: ModelRegistry = {};
   for (const name of ENGINE_NAMES) {
     const available = engineAvailable(config, name);
-    // Pi's models are discovered dynamically when available; discovery overrides
+    // Dynamic engine model discovery overrides
     // both the config block and synthesis.
     if (name === "pi") {
       registry[name] = buildPiEntry(config, block?.pi, synthesized[name], available);
+      continue;
+    }
+    if (name === "grok") {
+      registry[name] = buildGrokEntry(config, block?.grok, synthesized[name], available);
       continue;
     }
     const engineBlock = block?.[name];
@@ -177,6 +212,36 @@ export function buildRegistry(config: JinnConfig): ModelRegistry {
       : synthesized[name]; // engine omitted from the block → keep the synthesized entry
   }
   return registry;
+}
+
+/** Grok registry entry: discovered models > config `models.grok` block > known catalog. */
+function buildGrokEntry(
+  config: JinnConfig,
+  grokBlock: EngineModelsConfig | undefined,
+  synthEntry: EngineRegistryEntry,
+  available: boolean,
+): EngineRegistryEntry {
+  if (discoveredGrokModels && discoveredGrokModels.models.length > 0) {
+    const models = discoveredGrokModels.models;
+    const pinned = config.engines.grok?.model;
+    const discoveredDefault = discoveredGrokModels.defaultModel;
+    const defaultModel =
+      (pinned && models.some((m) => m.id === pinned) ? pinned : undefined) ??
+      (discoveredDefault && models.some((m) => m.id === discoveredDefault) ? discoveredDefault : undefined) ??
+      models[0].id;
+    return { name: "grok", available, defaultModel, effortMechanism: "grok-flag", models };
+  }
+  if (grokBlock) return fromEngineModelsConfig("grok", grokBlock, available);
+
+  const known = knownGrokModels(config.engines.grok?.model);
+  const defaultModel = known.defaultModel || synthEntry.defaultModel;
+  return {
+    name: "grok",
+    available,
+    defaultModel,
+    effortMechanism: "grok-flag",
+    models: known.models,
+  };
 }
 
 /** Pi registry entry: discovered models > config `models.pi` block > synthesized. */
@@ -203,6 +268,17 @@ export function synthesizeFromEngineConfig(config: JinnConfig): ModelRegistry {
     const defaults = SYNTH_DEFAULTS[name];
     const engineCfg = (config.engines as unknown as Record<string, { model?: string } | undefined>)[name];
     const modelId = engineCfg?.model || defaults.fallbackModel;
+    if (name === "grok") {
+      const known = knownGrokModels(modelId);
+      registry[name] = {
+        name,
+        available: engineAvailable(config, name),
+        defaultModel: known.defaultModel || modelId,
+        effortMechanism: EFFORT_MECHANISM[name],
+        models: known.models,
+      };
+      continue;
+    }
     const model: ModelInfo = {
       id: modelId,
       label: modelId,

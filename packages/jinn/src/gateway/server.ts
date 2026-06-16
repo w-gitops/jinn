@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee, Engine } from "../shared/types.js";
 import { loadConfig, normalizeClaudeEngineConfig } from "../shared/config.js";
-import { invalidateModelRegistry, refreshPiModels } from "../shared/models.js";
+import { invalidateModelRegistry, refreshGrokModels, refreshPiModels } from "../shared/models.js";
 import { configureLogger, logger } from "../shared/logger.js";
 import { initDb, recoverStaleSessions, recoverStaleQueueItems, clearAllPartialMessages, getInterruptedSessions, listSessions, updateSession, getSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
@@ -344,9 +344,10 @@ export async function startGateway(
   engines.set("grok", grokEngine);
   engines.set("pi", piEngine);
 
-  // Discover Pi's local models in the background (pi --list-models). Fire-and-forget:
-  // the registry serves the synthesized fallback until the snapshot lands.
+  // Discover dynamic engine models in the background. Fire-and-forget: the
+  // registry serves known/synthesized fallbacks until the snapshots land.
   void refreshPiModels(config);
+  void refreshGrokModels(config);
 
   // PTY-capable engines, keyed by engine name — the /ws/pty handler routes by
   // session.engine so the xterm view attaches to the right engine.
@@ -812,6 +813,7 @@ export async function startGateway(
       apiContext.config = currentConfig;
       invalidateModelRegistry(); // rebuild the model/capability registry from the new config
       void refreshPiModels(currentConfig); // re-discover pi models (engines.pi.bin may have changed)
+      void refreshGrokModels(currentConfig); // re-discover grok models (engines.grok.bin/auth may have changed)
       logger.info("Config reloaded successfully");
       emit("config:reloaded", {});
     } catch (err) {

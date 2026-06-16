@@ -117,6 +117,7 @@ describe("GrokEngine args", () => {
       prompt: "ignored",
       cwd: "/workspace",
       model: "grok-build",
+      effortLevel: "high",
       cliFlags: ["--chrome", "--some-grok-flag"],
     } as any, "do work", "sess-1");
 
@@ -125,12 +126,22 @@ describe("GrokEngine args", () => {
     expect(args).toContain("--output-format");
     expect(args[args.indexOf("--output-format") + 1]).toBe("streaming-json");
     expect(args[args.indexOf("--model") + 1]).toBe("grok-build");
+    expect(args[args.indexOf("--effort") + 1]).toBe("high");
     expect(args[args.indexOf("--cwd") + 1]).toBe("/workspace");
     expect(args).not.toContain("--session-id");
     expect(args).not.toContain("--resume");
     expect(args).not.toContain("--chrome");
     expect(args).toContain("--some-grok-flag");
     expect(args.slice(-2)).toEqual(["-p", "do work"]);
+  });
+
+  it("omits --effort for the default effort", () => {
+    const args = buildGrokHeadlessArgs({
+      prompt: "ignored",
+      effortLevel: "default",
+    } as any, "do work", "sess-1");
+
+    expect(args).not.toContain("--effort");
   });
 
   it("uses --resume for headless follow-up turns", () => {

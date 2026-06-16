@@ -25,17 +25,28 @@ describe("synthesizeFromEngineConfig (backward-compat fallback)", () => {
     expect(reg.claude.defaultModel).toBe("opus");
     expect(reg.codex.models[0].id).toBe("gpt-5.5");
     expect(reg.antigravity.models[0].id).toBe("Gemini 3.5 Flash (Medium)");
+    expect(reg.grok.defaultModel).toBe("grok-build");
+    expect(reg.grok.models.map((m) => m.id)).toEqual(["grok-build", "grok-composer-2.5-fast"]);
+    expect(reg.grok.models.map((m) => m.label)).toEqual(["Grok Build", "Grok Composer 2.5 Fast"]);
   });
 
-  it("uses per-engine effort semantics: claude flag (low/med/high), codex config (incl xhigh), antigravity none", () => {
+  it("uses per-engine effort semantics: claude flag, codex config, grok flag, antigravity none", () => {
     const reg = synthesizeFromEngineConfig(cfg({}));
     expect(reg.claude.effortMechanism).toBe("claude-flag");
     expect(reg.claude.models[0].effortLevels).toEqual(["low", "medium", "high"]);
     expect(reg.codex.effortMechanism).toBe("codex-config");
     expect(reg.codex.models[0].effortLevels).toContain("xhigh");
+    expect(reg.grok.effortMechanism).toBe("grok-flag");
+    expect(reg.grok.models[0].effortLevels).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(reg.antigravity.effortMechanism).toBe("none");
     expect(reg.antigravity.models[0].supportsEffort).toBe(false);
     expect(reg.antigravity.models[0].effortLevels).toEqual([]);
+  });
+
+  it("uses the pinned Grok model as default while keeping the known Grok catalog", () => {
+    const reg = synthesizeFromEngineConfig(cfg({ grok: { bin: "grok", model: "grok-composer-2.5-fast" } }));
+    expect(reg.grok.defaultModel).toBe("grok-composer-2.5-fast");
+    expect(reg.grok.models.map((m) => m.id)).toEqual(["grok-build", "grok-composer-2.5-fast"]);
   });
 });
 

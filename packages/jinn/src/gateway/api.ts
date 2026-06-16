@@ -6,7 +6,7 @@ import path from "node:path";
 import yaml from "js-yaml";
 import type { CronJob, Engine, IncomingMessage, JinnConfig, JsonObject, Session, StreamDelta, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
-import { getModelRegistry, invalidateModelRegistry, effortLevelsForModel, refreshPiModels, engineAvailable, isKnownEngine, engineUnavailableMessage } from "../shared/models.js";
+import { getModelRegistry, invalidateModelRegistry, effortLevelsForModel, refreshGrokModels, refreshPiModels, engineAvailable, isKnownEngine, engineUnavailableMessage } from "../shared/models.js";
 import { validateSessionPatch } from "../sessions/session-patch.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
@@ -1399,12 +1399,13 @@ export async function handleApiRequest(
       return json(res, { default: config.engines.default, engines: registry });
     }
 
-    // POST /api/engines/refresh — re-run dynamic model discovery (pi --list-models)
-    // and return the rebuilt registry. Lets the UI pick up models added to Pi
-    // without restarting the gateway.
+    // POST /api/engines/refresh — re-run dynamic model discovery and return the
+    // rebuilt registry. Lets the UI pick up models added to dynamic CLIs without
+    // restarting the gateway.
     if (method === "POST" && pathname === "/api/engines/refresh") {
       const config = context.getConfig();
       await refreshPiModels(config);
+      await refreshGrokModels(config);
       return json(res, { default: config.engines.default, engines: getModelRegistry(config) });
     }
 

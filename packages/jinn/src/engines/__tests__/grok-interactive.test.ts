@@ -75,6 +75,7 @@ describe("Grok interactive protocol helpers", () => {
       prompt: "",
       cwd: "/workspace",
       model: "grok-build",
+      effortLevel: "xhigh",
       cliFlags: ["--chrome", "--custom"],
     } as any);
 
@@ -82,6 +83,7 @@ describe("Grok interactive protocol helpers", () => {
     expect(args).toContain("--no-alt-screen");
     expect(args).toContain("--always-approve");
     expect(args[args.indexOf("--model") + 1]).toBe("grok-build");
+    expect(args[args.indexOf("--effort") + 1]).toBe("xhigh");
     expect(args[args.indexOf("--cwd") + 1]).toBe("/workspace");
     expect(args).not.toContain("--session-id");
     expect(args).not.toContain("--resume");

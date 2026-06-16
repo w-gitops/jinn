@@ -25,10 +25,10 @@ function cfg(): JinnConfig {
       antigravity: { models: [{ id: "gemini-3-flash-preview", supportsEffort: false, effortLevels: [] }] },
       grok: {
         default: "grok-build",
-        effortMechanism: "none",
+        effortMechanism: "grok-flag",
         models: [
-          { id: "grok-build", label: "Grok", supportsEffort: false, effortLevels: [] },
-          { id: "grok-composer-2.5-fast", label: "Grok Composer 2.5 Fast", supportsEffort: false, effortLevels: [] },
+          { id: "grok-build", label: "Grok Build", supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh", "max"] },
+          { id: "grok-composer-2.5-fast", label: "Grok Composer 2.5 Fast", supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh", "max"] },
         ],
       },
     },
@@ -49,6 +49,12 @@ describe("validateSessionPatch", () => {
     const r = validateSessionPatch(cfg(), "codex", "gpt-5.4", { effortLevel: "xhigh" });
     expect(r.ok).toBe(true);
     expect(r.updates).toEqual({ effortLevel: "xhigh" });
+  });
+
+  it("accepts a valid Grok effort switch", () => {
+    const r = validateSessionPatch(cfg(), "grok", "grok-build", { effortLevel: "max" });
+    expect(r.ok).toBe(true);
+    expect(r.updates).toEqual({ effortLevel: "max" });
   });
 
   it("accepts model + effort together, validating effort against the NEW model", () => {

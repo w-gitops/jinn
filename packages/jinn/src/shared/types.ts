@@ -407,7 +407,7 @@ export interface PortalConfig {
  */
 
 /** How an engine conveys reasoning-effort to its CLI. */
-export type EffortMechanism = "claude-flag" | "codex-config" | "pi-flag" | "none";
+export type EffortMechanism = "claude-flag" | "codex-config" | "grok-flag" | "pi-flag" | "none";
 
 /** A single model and its capabilities, as exposed to the UI / validation. */
 export interface ModelInfo {
@@ -515,7 +515,7 @@ export interface EngineModelsConfig {
   models: ModelConfigEntry[];
 }
 
-/** `models:` block keyed by engine name (claude | codex | antigravity). */
+/** `models:` block keyed by engine name (claude | codex | antigravity | grok | pi). */
 export type ModelsConfig = Record<string, EngineModelsConfig>;
 
 export interface JinnConfig {

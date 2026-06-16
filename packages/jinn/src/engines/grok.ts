@@ -37,6 +37,7 @@ export function grokCliFlags(flags: string[] | undefined): string[] {
 export function buildGrokHeadlessArgs(opts: EngineRunOpts, prompt: string, sessionId: string): string[] {
   const args = ["--no-auto-update"];
   if (opts.model) args.push("--model", opts.model);
+  if (opts.effortLevel && opts.effortLevel !== "default") args.push("--effort", opts.effortLevel);
   if (opts.cwd) args.push("--cwd", opts.cwd);
   if (opts.resumeSessionId) args.push("--resume", sessionId);
   args.push("--always-approve", "--output-format", "streaming-json");

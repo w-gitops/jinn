@@ -123,6 +123,7 @@ export function buildGrokInteractiveArgs(
 ): string[] {
   const args = ["--no-auto-update", "--no-alt-screen", "--always-approve"];
   if (opts.model) args.push("--model", opts.model);
+  if (opts.effortLevel && opts.effortLevel !== "default") args.push("--effort", opts.effortLevel);
   if (opts.cwd) args.push("--cwd", opts.cwd);
   if (sessionId) args.push("--resume", sessionId);
   if (systemPromptOverride) args.push("--system-prompt-override", systemPromptOverride);

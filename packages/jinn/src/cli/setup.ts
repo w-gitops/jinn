@@ -274,10 +274,10 @@ models:
       - { id: gpt-5.5, label: "GPT-5.5 Codex", supportsEffort: true, effortLevels: [low, medium, high, xhigh], contextWindow: 258400 }
   grok:
     default: grok-build
-    effortMechanism: none
+    effortMechanism: grok-flag
     models:
-      - { id: grok-build, label: "Grok Build", supportsEffort: false, effortLevels: [], contextWindow: 256000 }
-      - { id: grok-composer-2.5-fast, label: "Grok Composer 2.5 Fast", supportsEffort: false, effortLevels: [], contextWindow: 256000 }
+      - { id: grok-build, label: "Grok Build", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max], contextWindow: 256000 }
+      - { id: grok-composer-2.5-fast, label: "Grok Composer 2.5 Fast", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max], contextWindow: 256000 }
   antigravity:
     default: "Gemini 3.5 Flash (Medium)"
     effortMechanism: none
