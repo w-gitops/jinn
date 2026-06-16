@@ -26,8 +26,8 @@ describe("CORS origin policy", () => {
     // Origin host equals the request's Host header, so it is genuinely same-origin.
     expect(
       isAllowedCorsOrigin(
-        "https://jimmys-mac-mini.tail0b18b3.ts.net",
-        "jimmys-mac-mini.tail0b18b3.ts.net",
+        "https://operator-mac-mini.tail0b18b3.ts.net",
+        "operator-mac-mini.tail0b18b3.ts.net",
       ),
     ).toBe(true);
     // LAN access by IP with an explicit port on the Host header.
@@ -36,7 +36,7 @@ describe("CORS origin policy", () => {
 
   it("still rejects cross-origin requests even when a Host header is present", () => {
     expect(
-      isAllowedCorsOrigin("https://evil.example", "jimmys-mac-mini.tail0b18b3.ts.net"),
+      isAllowedCorsOrigin("https://evil.example", "operator-mac-mini.tail0b18b3.ts.net"),
     ).toBe(false);
   });
 });
