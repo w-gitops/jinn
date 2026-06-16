@@ -7,7 +7,7 @@ import yaml from "js-yaml";
 import type { CronJob, Engine, IncomingMessage, JinnConfig, JsonObject, Session, StreamDelta, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import { getModelRegistry, invalidateModelRegistry, effortLevelsForModel, refreshGrokModels, refreshPiModels, engineAvailable, isKnownEngine, engineUnavailableMessage } from "../shared/models.js";
-import { validateSessionPatch } from "../sessions/session-patch.js";
+import { validateNewSessionSelection, validateSessionPatch } from "../sessions/session-patch.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
 import {
@@ -120,6 +120,18 @@ export interface ApiContext {
    *  maintained in server.ts from the interactive engine's onBackgroundActivity
    *  callback. lastActivityAt is epoch ms; serializeSession converts to ISO. */
   backgroundActivity?: Map<string, { activeStreams: number; lastActivityAt: number }>;
+}
+
+function killSessionEngines(context: ApiContext, session: Session, reason: string): void {
+  const engines = new Set<Engine>();
+  const primary = context.sessionManager.getEngine(session.engine);
+  const pty = context.ptyViewEngines?.[session.engine];
+  if (primary) engines.add(primary);
+  if (pty) engines.add(pty);
+
+  for (const engine of engines) {
+    if (isInterruptibleEngine(engine)) engine.kill(session.id, reason);
+  }
 }
 
 export function resumePendingWebQueueItems(context: ApiContext): void {
@@ -683,13 +695,10 @@ export async function handleApiRequest(
       const session = getSession(params.id);
       if (!session) return notFound(res);
 
-      // Tear down any live/warm engine process for this session before deleting it.
+      // Tear down any live/warm engine processes for this session before deleting it.
       // kill() is safe to call unconditionally — it's a no-op when nothing is running.
-      const engine = context.sessionManager.getEngine(session.engine);
-      if (engine && isInterruptibleEngine(engine)) {
-        logger.info(`Killing engine process for deleted session ${params.id}`);
-        engine.kill(params.id, "Interrupted: session deleted");
-      }
+      logger.info(`Killing engine process for deleted session ${params.id}`);
+      killSessionEngines(context, session, "Interrupted: session deleted");
 
       maybeEmitTalkGraph(params.id, "removed", { getSession, emit: context.emit });
       const deleted = deleteSession(params.id);
@@ -704,10 +713,7 @@ export async function handleApiRequest(
     if (method === "POST" && params) {
       const session = getSession(params.id);
       if (!session) return notFound(res);
-      const engine = context.sessionManager.getEngine(session.engine);
-      if (engine && isInterruptibleEngine(engine)) {
-        engine.kill(params.id, "Interrupted by user");
-      }
+      killSessionEngines(context, session, "Interrupted by user");
       context.sessionManager.getQueue().clearQueue(session.sessionKey || session.sourceRef || session.id);
       updateSession(params.id, { status: "idle", lastActivity: new Date().toISOString(), lastError: null });
       context.emit("session:stopped", { sessionId: params.id });
@@ -719,10 +725,7 @@ export async function handleApiRequest(
     if (method === "POST" && params) {
       const session = getSession(params.id);
       if (!session) return notFound(res);
-      const engine = context.sessionManager.getEngine(session.engine);
-      if (engine && isInterruptibleEngine(engine)) {
-        engine.kill(params.id, "Interrupted: session reset");
-      }
+      killSessionEngines(context, session, "Interrupted: session reset");
       context.sessionManager.getQueue().clearQueue(session.sessionKey || session.sourceRef || session.id);
       const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
       delete meta["engineSessions"];
@@ -860,10 +863,7 @@ export async function handleApiRequest(
       for (const id of ids) {
         const session = getSession(id);
         if (!session) continue;
-        const engine = context.sessionManager.getEngine(session.engine);
-        if (engine && isInterruptibleEngine(engine)) {
-          engine.kill(id, "Interrupted: session deleted");
-        }
+        killSessionEngines(context, session, "Interrupted: session deleted");
       }
 
       for (const id of ids) {
@@ -903,7 +903,13 @@ export async function handleApiRequest(
       const prompt = body.prompt || body.message;
       if (!prompt) return badRequest(res, "prompt or message is required");
       const config = context.getConfig();
-      const engineName = body.engine || config.engines.default;
+      const selection = validateNewSessionSelection(config, {
+        engine: body.engine,
+        model: body.model,
+        effortLevel: body.effortLevel,
+      });
+      if (!selection.ok) return badRequest(res, selection.error || "invalid engine/model/effort");
+      const engineName = selection.engine || config.engines.default;
       const sessionKey = `web:${Date.now()}`;
       // Opt-in SSO identity capture: when an auth proxy fronts the gateway and
       // `gateway.userHeader` is configured, persist the forwarded identity on the
@@ -923,20 +929,20 @@ export async function handleApiRequest(
         // spawning a phantom group that renders with the portal's own title.
         employee: coercePortalEmployee(body.employee, config.portal?.portalName),
         parentSessionId: body.parentSessionId,
-        effortLevel: body.effortLevel,
+        effortLevel: selection.effortLevel,
         // Honor body.model so API clients can pin per-employee models
         // (e.g. MCP servers that look up org/<employee>.yaml and pass the
         // employee's configured model). Without this, runWebSession falls
         // back to config.engines.claude.model, breaking per-employee routing.
         // Fixes #38.
-        model: body.model,
+        model: selection.model,
         prompt,
         // Optional excerpt override (talk delegation passes the operator's
         // verbatim ask so list UIs don't show the scaffolded prompt).
         promptExcerpt: typeof body.promptExcerpt === "string" ? body.promptExcerpt : undefined,
         portalName: config.portal?.portalName,
       });
-      logger.info(`Web session created: ${session.id} (model=${body.model || "default"})`);
+      logger.info(`Web session created: ${session.id} (model=${selection.model || "default"})`);
       // Voice mode: when the hands-free orchestrator (source:"talk") spawns a COO
       // child, tell the Talk UI which channel to animate to. Auto-derived here so
       // the orchestrator persona carries zero focus-signalling burden.
@@ -1406,6 +1412,7 @@ export async function handleApiRequest(
       const config = context.getConfig();
       await refreshPiModels(config);
       await refreshGrokModels(config);
+      context.emit("engines:updated", {});
       return json(res, { default: config.engines.default, engines: getModelRegistry(config) });
     }
 

@@ -23,7 +23,6 @@ const RAW_KEY_INPUTS = new Set(["\r", "\x1b", "\t", "\x03", "\x1b[A", "\x1b[B", 
  */
 export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: PtyViewEngine): void {
   const spawnIfNeeded = (cols: number, rows: number) => {
-    if (engine.hasWarmPty(sessionId)) return;
     const session = getSession(sessionId);
     engine.ensureIdleSpawn(sessionId, {
       engineSessionId: session?.engineSessionId ?? undefined,

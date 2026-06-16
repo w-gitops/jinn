@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import type { JinnConfig } from "../../shared/types.js";
-import { validateSessionPatch } from "../session-patch.js";
+import { validateNewSessionSelection, validateSessionPatch } from "../session-patch.js";
 import { invalidateModelRegistry } from "../../shared/models.js";
 
 function cfg(): JinnConfig {
@@ -37,6 +37,46 @@ function cfg(): JinnConfig {
 }
 
 beforeEach(() => invalidateModelRegistry());
+
+describe("validateNewSessionSelection", () => {
+  it("accepts a valid engine/model/effort selection", () => {
+    const r = validateNewSessionSelection(cfg(), {
+      engine: "grok",
+      model: "grok-composer-2.5-fast",
+      effortLevel: "max",
+    });
+    expect(r).toEqual({
+      ok: true,
+      engine: "grok",
+      model: "grok-composer-2.5-fast",
+      effortLevel: "max",
+    });
+  });
+
+  it("rejects an unknown engine before persisting a session", () => {
+    const r = validateNewSessionSelection(cfg(), { engine: "not-real", model: "opus" });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/unknown engine/i);
+  });
+
+  it("rejects an unknown model before persisting a session", () => {
+    const r = validateNewSessionSelection(cfg(), { engine: "grok", model: "grok-not-real" });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/unknown model/i);
+  });
+
+  it("rejects an effort level not valid for the selected model", () => {
+    const r = validateNewSessionSelection(cfg(), { engine: "claude", model: "opus", effortLevel: "xhigh" });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/invalid effortLevel/i);
+  });
+
+  it("rejects effort for an engine/model with no effort support", () => {
+    const r = validateNewSessionSelection(cfg(), { engine: "antigravity", model: "gemini-3-flash-preview", effortLevel: "high" });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/does not support effort/i);
+  });
+});
 
 describe("validateSessionPatch", () => {
   it("accepts a valid model switch for the engine", () => {

@@ -20,9 +20,71 @@ export interface SessionPatchResult {
   error?: string;
 }
 
+export interface NewSessionSelectionResult {
+  ok: boolean;
+  engine?: string;
+  model?: string;
+  effortLevel?: string;
+  error?: string;
+}
+
 export interface SessionPatchContext {
   engineSessionId?: string | null;
   defaultModel?: string | null;
+}
+
+export function validateNewSessionSelection(
+  config: JinnConfig,
+  body: { engine?: unknown; model?: unknown; effortLevel?: unknown },
+): NewSessionSelectionResult {
+  const registry = getModelRegistry(config);
+  let engine: string = config.engines.default;
+
+  if (body.engine !== undefined) {
+    if (typeof body.engine !== "string" || !body.engine.trim()) {
+      return { ok: false, error: "engine must be a non-empty string" };
+    }
+    engine = body.engine.trim();
+  }
+
+  const entry = registry[engine];
+  if (!entry) return { ok: false, error: `unknown engine "${engine}"` };
+
+  let model: string | undefined;
+  if (body.model !== undefined) {
+    if (typeof body.model !== "string" || !body.model.trim()) {
+      return { ok: false, error: "model must be a non-empty string" };
+    }
+    model = body.model.trim();
+    if (!entry.models.some((m) => m.id === model)) {
+      if (engine === "pi") {
+        // Pi models are discovered dynamically; tolerate an id the snapshot hasn't
+        // caught yet (e.g. just after a restart, before discovery completes).
+        logger.warn(`pi model "${model}" not in discovered set yet — allowing`);
+      } else {
+        const known = entry.models.map((m) => m.id).join(", ");
+        return { ok: false, error: `unknown model "${model}" for engine "${engine}" (known: ${known || "none"})` };
+      }
+    }
+  }
+
+  let effortLevel: string | undefined;
+  if (body.effortLevel !== undefined) {
+    if (typeof body.effortLevel !== "string" || !body.effortLevel.trim()) {
+      return { ok: false, error: "effortLevel must be a non-empty string" };
+    }
+    effortLevel = body.effortLevel.trim();
+    const effectiveModel = model ?? undefined;
+    const valid = effortLevelsForModel(config, engine, effectiveModel);
+    if (valid.length === 0) {
+      return { ok: false, error: `engine "${engine}"${effectiveModel ? ` model "${effectiveModel}"` : ""} does not support effort levels` };
+    }
+    if (!valid.includes(effortLevel)) {
+      return { ok: false, error: `invalid effortLevel "${effortLevel}" (valid: ${valid.join(", ")})` };
+    }
+  }
+
+  return { ok: true, engine, model, effortLevel };
 }
 
 export function validateSessionPatch(

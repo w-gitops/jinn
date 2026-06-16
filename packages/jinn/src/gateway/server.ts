@@ -344,11 +344,6 @@ export async function startGateway(
   engines.set("grok", grokEngine);
   engines.set("pi", piEngine);
 
-  // Discover dynamic engine models in the background. Fire-and-forget: the
-  // registry serves known/synthesized fallbacks until the snapshots land.
-  void refreshPiModels(config);
-  void refreshGrokModels(config);
-
   // PTY-capable engines, keyed by engine name — the /ws/pty handler routes by
   // session.engine so the xterm view attaches to the right engine.
   const ptyViewEngines: Record<string, Engine & PtyViewEngine> = {
@@ -745,6 +740,15 @@ export async function startGateway(
     }
   };
 
+  // Discover dynamic engine models in the background. Fire-and-forget: the
+  // registry serves known/synthesized fallbacks until the snapshots land, then
+  // the web UI invalidates its model registry cache via engines:updated.
+  const refreshDynamicModels = (cfg: JinnConfig): void => {
+    void Promise.all([refreshPiModels(cfg), refreshGrokModels(cfg)])
+      .finally(() => emit("engines:updated", {}));
+  };
+  refreshDynamicModels(currentConfig);
+
   // Synchronously re-scan org/ into the in-memory registry and drop warm PTYs so the
   // next turn respawns with a fresh system prompt. Shared by the API employee-update
   // handler (immediate refresh, no watcher lag) and the chokidar onOrgChange watcher.
@@ -755,6 +759,7 @@ export async function startGateway(
     interactiveClaudeEngine.killAll();
     codexInteractiveEngine.killAll();
     antigravityEngine.killAll();
+    grokInteractiveEngine.killAll();
     emit("org:changed", {});
   };
 
@@ -811,9 +816,9 @@ export async function startGateway(
     try {
       currentConfig = loadConfig();
       apiContext.config = currentConfig;
+      sessionManager.setConfig(currentConfig);
       invalidateModelRegistry(); // rebuild the model/capability registry from the new config
-      void refreshPiModels(currentConfig); // re-discover pi models (engines.pi.bin may have changed)
-      void refreshGrokModels(currentConfig); // re-discover grok models (engines.grok.bin/auth may have changed)
+      refreshDynamicModels(currentConfig); // re-discover dynamic models (engine bins/auth may have changed)
       logger.info("Config reloaded successfully");
       emit("config:reloaded", {});
     } catch (err) {

@@ -358,6 +358,7 @@ describe("GrokEngine run", () => {
     await flush();
     const call = spawnCalls[spawnCalls.length - 1];
     expect(call).toBeDefined();
+    call.proc.emitStdout(JSON.stringify({ session_id: "tool-session" }) + "\n");
 
     const file = path.join(osMockState.home, ".grok", "sessions", "tool-session", "updates.jsonl");
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -415,5 +416,78 @@ describe("GrokEngine run", () => {
       toolName: "read_file",
       toolId: "tool-1",
     });
+  });
+
+  it("ignores changed transcript files that belong to another Grok session", async () => {
+    const deltas: StreamDelta[] = [];
+    const engine = new GrokEngine();
+    const promise = engine.run({
+      prompt: "read the right file",
+      cwd: "/tmp",
+      sessionId: "jinn-session-filter",
+      model: "grok-build",
+      onStream: (d: StreamDelta) => deltas.push(d),
+    } as any);
+
+    await flush();
+    const call = spawnCalls[spawnCalls.length - 1];
+    expect(call).toBeDefined();
+    call.proc.emitStdout(JSON.stringify({ session_id: "right-session" }) + "\n");
+
+    const wrongFile = path.join(osMockState.home, ".grok", "sessions", "wrong-session", "updates.jsonl");
+    fs.mkdirSync(path.dirname(wrongFile), { recursive: true });
+    fs.writeFileSync(wrongFile, [
+      JSON.stringify({ session_id: "wrong-session" }),
+      JSON.stringify({
+        method: "session/update",
+        params: {
+          sessionId: "wrong-session",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "wrong-tool",
+            title: "read_file",
+            rawInput: { target_file: "WRONG.md" },
+          },
+        },
+      }),
+      "",
+    ].join("\n"));
+
+    const rightFile = path.join(osMockState.home, ".grok", "sessions", "right-session", "updates.jsonl");
+    fs.mkdirSync(path.dirname(rightFile), { recursive: true });
+    fs.writeFileSync(rightFile, [
+      JSON.stringify({ session_id: "right-session" }),
+      JSON.stringify({
+        method: "session/update",
+        params: {
+          sessionId: "right-session",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "right-tool",
+            title: "read_file",
+            rawInput: { target_file: "RIGHT.md" },
+          },
+        },
+      }),
+      "",
+    ].join("\n"));
+
+    await sleep(350);
+    call.proc.emitStdout([
+      JSON.stringify({ type: "text", data: "done" }),
+      JSON.stringify({ type: "result", result: "done", done: true }),
+      "",
+    ].join("\n"));
+    call.proc.close(0);
+
+    await promise;
+    expect(deltas).toContainEqual({
+      type: "tool_use",
+      content: "Using read_file",
+      toolName: "read_file",
+      toolId: "right-tool",
+      input: "{\"target_file\":\"RIGHT.md\"}",
+    });
+    expect(deltas).not.toContainEqual(expect.objectContaining({ toolId: "wrong-tool" }));
   });
 });

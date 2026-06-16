@@ -89,6 +89,29 @@ function listTranscriptStats(root = GROK_SESSIONS_DIR): Map<string, TranscriptSt
   return files;
 }
 
+function parseSessionIdFromFile(filePath: string): string | undefined {
+  try {
+    const fd = fs.openSync(filePath, "r");
+    try {
+      const buf = Buffer.alloc(64 * 1024);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      for (const line of buf.subarray(0, n).toString("utf-8").split("\n")) {
+        const parsed = parseGrokJsonLine(line);
+        if (parsed?.sessionId) return parsed.sessionId;
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function transcriptMatchesSession(filePath: string, sessionId: string): boolean {
+  return filePath.includes(sessionId) || parseSessionIdFromFile(filePath) === sessionId;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -458,8 +481,12 @@ export class GrokEngine implements InterruptibleEngine {
       let lastContextTokens: number | undefined;
       let settled = false;
       let resolvedSessionId = grokSessionId;
+      let resolvedSessionFromStdout = Boolean(opts.resumeSessionId);
       let transcriptTailer: TranscriptTailer | undefined;
       let transcriptDiscover: NodeJS.Timeout | undefined;
+
+      const expectedTranscriptSessionId = () =>
+        opts.resumeSessionId || (resolvedSessionFromStdout ? resolvedSessionId : undefined);
 
       const stopTranscriptWatch = () => {
         if (transcriptDiscover) {
@@ -472,7 +499,10 @@ export class GrokEngine implements InterruptibleEngine {
 
       const handleParsed = (parsed: GrokParsedLine | null) => {
         if (!parsed) return;
-        if (parsed.sessionId) resolvedSessionId = parsed.sessionId;
+        if (parsed.sessionId) {
+          resolvedSessionId = parsed.sessionId;
+          resolvedSessionFromStdout = true;
+        }
         if (parsed.contextTokens) lastContextTokens = parsed.contextTokens;
         if (parsed.error) turnError = parsed.error;
         for (const delta of parsed.deltas) {
@@ -485,7 +515,12 @@ export class GrokEngine implements InterruptibleEngine {
 
       const handleTranscriptParsed = (parsed: GrokParsedLine | null) => {
         if (!parsed) return;
-        if (parsed.sessionId) resolvedSessionId = parsed.sessionId;
+        const expected = expectedTranscriptSessionId();
+        if (parsed.sessionId && expected && parsed.sessionId !== expected) {
+          logger.warn(`Ignoring Grok transcript event for session ${parsed.sessionId}; expected ${expected}`);
+          return;
+        }
+        if (parsed.sessionId && !expected) return;
         if (parsed.contextTokens) lastContextTokens = parsed.contextTokens;
         for (const delta of parsed.deltas) {
           // Grok headless stdout currently carries thought/text chunks, but tool
@@ -510,12 +545,15 @@ export class GrokEngine implements InterruptibleEngine {
 
       transcriptDiscover = setInterval(() => {
         if (transcriptTailer) return;
+        const expected = expectedTranscriptSessionId();
+        if (!expected) return;
         const current = listTranscriptStats();
         const candidates = sortGrokTranscriptFiles(
           [...current.entries()]
             .filter(([file, stat]) => {
               const prev = transcriptBaseline.get(file);
-              return !prev || stat.mtimeMs > prev.mtimeMs || stat.size > prev.size;
+              return (!prev || stat.mtimeMs > prev.mtimeMs || stat.size > prev.size) &&
+                transcriptMatchesSession(file, expected);
             })
             .map(([file]) => file),
         );

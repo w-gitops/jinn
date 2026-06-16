@@ -518,7 +518,7 @@ function ChatPage() {
     // instead of ChatPane, but the underlying session selection is preserved.
   }, [chatTabs.activeTab, selectedId])
 
-  const cliModeAvailable = !sessionMeta?.engine || ['claude', 'codex', 'antigravity'].includes(sessionMeta.engine)
+  const cliModeAvailable = !sessionMeta?.engine || ['claude', 'codex', 'antigravity', 'grok'].includes(sessionMeta.engine)
   const activeSessionTab = chatTabs.activeTab?.kind === 'session' ? chatTabs.activeTab : null
   const viewSwitchLocked = sessionMeta?.engine === 'codex' && activeSessionTab?.sessionId === selectedId && activeSessionTab.status === 'running'
   const cliTitle = viewSwitchLocked

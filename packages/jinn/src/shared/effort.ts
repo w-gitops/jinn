@@ -18,8 +18,8 @@ const DEFAULT_EFFORT = "medium";
  *   3. employee.effortLevel — employee YAML default
  *   4. config.engines.<engine>.effortLevel — engine fallback
  *
- * For non-child sessions (COO's own), session.effortLevel wins when the user
- * selected it in the composer, then engine effortLevel is the fallback.
+ * For non-child sessions, session.effortLevel wins when the user selected it in
+ * the composer, then an assigned employee's default, then engine effortLevel.
  *
  * When the engine/model has no effort concept (validLevels empty, e.g.
  * Antigravity), returns the default without warnings — effort is just ignored.
@@ -32,35 +32,42 @@ export function resolveEffort(
 ): string {
   if (validLevels.length === 0) return DEFAULT_EFFORT;
   const isValid = (level: string) => validLevels.includes(level);
+  const clean = (level: string | null | undefined) => level && level !== "default" ? level : undefined;
 
   if (session.parentSessionId) {
-    const override = engineConfig.childEffortOverride;
+    const override = clean(engineConfig.childEffortOverride);
     if (override) {
       if (isValid(override)) return override;
       logger.warn(`Invalid childEffortOverride "${override}" (valid: ${validLevels.join(", ")}), skipping`);
     }
 
-    const requested = session.effortLevel;
+    const requested = clean(session.effortLevel);
     if (requested) {
       if (isValid(requested)) return requested;
       logger.warn(`Invalid effortLevel "${requested}" on session (valid: ${validLevels.join(", ")}), skipping`);
     }
 
-    const empDefault = employee?.effortLevel;
+    const empDefault = clean(employee?.effortLevel);
     if (empDefault) {
       if (isValid(empDefault)) return empDefault;
       logger.warn(`Invalid effortLevel "${empDefault}" on employee (valid: ${validLevels.join(", ")}), skipping`);
     }
   } else {
-    const requested = session.effortLevel;
+    const requested = clean(session.effortLevel);
     if (requested) {
       if (isValid(requested)) return requested;
       logger.warn(`Invalid effortLevel "${requested}" on session (valid: ${validLevels.join(", ")}), skipping`);
     }
+
+    const empDefault = clean(employee?.effortLevel);
+    if (empDefault) {
+      if (isValid(empDefault)) return empDefault;
+      logger.warn(`Invalid effortLevel "${empDefault}" on employee (valid: ${validLevels.join(", ")}), skipping`);
+    }
   }
 
   // Non-child sessions (COO) or fallback
-  const engineDefault = engineConfig.effortLevel;
+  const engineDefault = clean(engineConfig.effortLevel);
   if (engineDefault && isValid(engineDefault)) return engineDefault;
   if (engineDefault) {
     logger.warn(`Invalid effortLevel "${engineDefault}" in engine config (valid: ${validLevels.join(", ")}), defaulting to "${DEFAULT_EFFORT}"`);

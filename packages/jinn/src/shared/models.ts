@@ -222,16 +222,19 @@ function buildGrokEntry(
   available: boolean,
 ): EngineRegistryEntry {
   if (discoveredGrokModels && discoveredGrokModels.models.length > 0) {
-    const models = discoveredGrokModels.models;
+    const models = mergeDiscoveredGrokModels(discoveredGrokModels.models, grokBlock);
     const pinned = config.engines.grok?.model;
+    const configuredDefault = grokBlock?.default;
     const discoveredDefault = discoveredGrokModels.defaultModel;
+    const validDefault = (id: string | undefined) => id && models.some((m) => m.id === id) ? id : undefined;
     const defaultModel =
-      (pinned && models.some((m) => m.id === pinned) ? pinned : undefined) ??
-      (discoveredDefault && models.some((m) => m.id === discoveredDefault) ? discoveredDefault : undefined) ??
+      validDefault(pinned) ??
+      validDefault(configuredDefault) ??
+      validDefault(discoveredDefault) ??
       models[0].id;
     return { name: "grok", available, defaultModel, effortMechanism: "grok-flag", models };
   }
-  if (grokBlock) return fromEngineModelsConfig("grok", grokBlock, available);
+  if (grokBlock) return fromEngineModelsConfig("grok", grokBlock, available, config.engines.grok?.model);
 
   const known = knownGrokModels(config.engines.grok?.model);
   const defaultModel = known.defaultModel || synthEntry.defaultModel;
@@ -257,7 +260,7 @@ function buildPiEntry(
     const defaultModel = pinned && models.some((m) => m.id === pinned) ? pinned : models[0].id;
     return { name: "pi", available, defaultModel, effortMechanism: "pi-flag", models };
   }
-  if (piBlock) return fromEngineModelsConfig("pi", piBlock, available);
+  if (piBlock) return fromEngineModelsConfig("pi", piBlock, available, config.engines.pi?.model);
   return { ...synthEntry, available };
 }
 
@@ -296,18 +299,28 @@ export function synthesizeFromEngineConfig(config: JinnConfig): ModelRegistry {
   return registry;
 }
 
-function fromEngineModelsConfig(name: EngineName, block: EngineModelsConfig, available: boolean): EngineRegistryEntry {
+function modelInfoFromConfigEntry(m: EngineModelsConfig["models"][number]): ModelInfo {
+  const supportsEffort = m.supportsEffort ?? false;
+  return {
+    id: m.id,
+    label: m.label || m.id,
+    supportsEffort,
+    effortLevels: supportsEffort ? (m.effortLevels ?? []) : [],
+    ...(typeof m.contextWindow === "number" ? { contextWindow: m.contextWindow } : {}),
+  };
+}
+
+function fromEngineModelsConfig(
+  name: EngineName,
+  block: EngineModelsConfig,
+  available: boolean,
+  pinnedModel?: string,
+): EngineRegistryEntry {
   const models: ModelInfo[] = (block.models ?? []).map((m) => {
-    const supportsEffort = m.supportsEffort ?? false;
-    return {
-      id: m.id,
-      label: m.label || m.id,
-      supportsEffort,
-      effortLevels: supportsEffort ? (m.effortLevels ?? []) : [],
-      ...(typeof m.contextWindow === "number" ? { contextWindow: m.contextWindow } : {}),
-    };
+    return modelInfoFromConfigEntry(m);
   });
-  const defaultModel = block.default || models[0]?.id || SYNTH_DEFAULTS[name].fallbackModel;
+  const validDefault = (id: string | undefined) => id && models.some((m) => m.id === id) ? id : undefined;
+  const defaultModel = validDefault(pinnedModel) ?? validDefault(block.default) ?? models[0]?.id ?? SYNTH_DEFAULTS[name].fallbackModel;
   return {
     name,
     available,
@@ -315,4 +328,35 @@ function fromEngineModelsConfig(name: EngineName, block: EngineModelsConfig, ava
     effortMechanism: block.effortMechanism ?? EFFORT_MECHANISM[name],
     models,
   };
+}
+
+function mergeDiscoveredGrokModels(discovered: ModelInfo[], block: EngineModelsConfig | undefined): ModelInfo[] {
+  if (!block) return discovered;
+
+  const configured = new Map(block.models.map((m) => [m.id, m]));
+  const seen = new Set<string>();
+  const merged = discovered.map((model) => {
+    seen.add(model.id);
+    const configuredModel = configured.get(model.id);
+    if (!configuredModel) return model;
+
+    const supportsEffort = configuredModel.supportsEffort ?? model.supportsEffort;
+    return {
+      id: model.id,
+      label: configuredModel.label || model.label,
+      supportsEffort,
+      effortLevels: supportsEffort ? (configuredModel.effortLevels ?? model.effortLevels) : [],
+      ...(typeof configuredModel.contextWindow === "number"
+        ? { contextWindow: configuredModel.contextWindow }
+        : typeof model.contextWindow === "number"
+          ? { contextWindow: model.contextWindow }
+          : {}),
+    };
+  });
+
+  for (const configuredModel of block.models) {
+    if (!seen.has(configuredModel.id)) merged.push(modelInfoFromConfigEntry(configuredModel));
+  }
+
+  return merged;
 }

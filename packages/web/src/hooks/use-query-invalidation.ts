@@ -64,6 +64,14 @@ export function useQueryInvalidation() {
         case 'skills:changed':
           pendingRef.current.add('skills')
           break
+        case 'config:reloaded':
+          pendingRef.current.add('config')
+          pendingRef.current.add('engines')
+          pendingRef.current.add('status')
+          break
+        case 'engines:updated':
+          pendingRef.current.add('engines')
+          break
         default:
           return // No invalidation for unknown events
       }
@@ -81,6 +89,15 @@ export function useQueryInvalidation() {
               break
             case 'skills':
               qc.invalidateQueries({ queryKey: queryKeys.skills.all })
+              break
+            case 'engines':
+              qc.invalidateQueries({ queryKey: queryKeys.engines.all })
+              break
+            case 'config':
+              qc.invalidateQueries({ queryKey: queryKeys.config })
+              break
+            case 'status':
+              qc.invalidateQueries({ queryKey: queryKeys.status })
               break
           }
         }

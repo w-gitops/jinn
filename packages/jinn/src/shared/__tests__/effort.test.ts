@@ -57,8 +57,21 @@ describe("resolveEffort (registry-driven validation)", () => {
     expect(resolveEffort({ effortLevel: "high" }, { parentSessionId: null, effortLevel: "low" }, { effortLevel: "low" }, CLAUDE)).toBe("low");
   });
 
-  it("non-child sessions fall back to engine default when no session effort is set", () => {
-    expect(resolveEffort({ effortLevel: "high" }, { parentSessionId: null, effortLevel: null }, { effortLevel: "low" }, CLAUDE)).toBe("high");
+  it("non-child assigned sessions use employee default before the engine default", () => {
+    expect(resolveEffort({ effortLevel: "high" }, { parentSessionId: null, effortLevel: null }, { effortLevel: "low" }, CLAUDE)).toBe("low");
+  });
+
+  it("non-child sessions fall back to engine default when no session or employee effort is set", () => {
+    expect(resolveEffort({ effortLevel: "high" }, { parentSessionId: null, effortLevel: null }, null, CLAUDE)).toBe("high");
+  });
+
+  it('treats "default" as unset without warning through the resolution chain', () => {
+    expect(resolveEffort(
+      { effortLevel: "default", childEffortOverride: "default" },
+      { parentSessionId: "p", effortLevel: "default" },
+      { effortLevel: "default" },
+      CLAUDE,
+    )).toBe("medium");
   });
 });
 

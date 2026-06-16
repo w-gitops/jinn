@@ -67,6 +67,8 @@ interface ModelSelectorRowProps {
   onChange: (next: SelectorValue) => void
   /** Shown in 'existing' mode to hint the change applies on the next message. */
   pendingNote?: boolean
+  /** Shown in 'existing' mode when a model/effort update is rejected. */
+  errorNote?: string
   disabled?: boolean
   /** Most recent turn's input-context token count (session.lastContextTokens),
    *  for the in-dropdown context meter. Omitted/0 → fresh chat (window-only). */
@@ -139,7 +141,7 @@ function SlidePanel({ dir, reduceMotion, children }: { dir: 1 | -1; reduceMotion
  * Model/Effort panel; choosing an engine sets it and auto-returns to that panel,
  * now reflecting the new engine's models.
  */
-export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled, contextTokens, onNewChat }: ModelSelectorRowProps) {
+export function ModelSelectorRow({ mode, value, onChange, pendingNote, errorNote, disabled, contextTokens, onNewChat }: ModelSelectorRowProps) {
   const { data: registry, isLoading } = useModelRegistry()
   const queryClient = useQueryClient()
 
@@ -330,12 +332,18 @@ export function ModelSelectorRow({ mode, value, onChange, pendingNote, disabled,
               )
             })}
           </div>
-          {mode === 'existing' && pendingNote && (
-            <div className="px-2 pb-1 text-[length:var(--text-caption2)] italic text-[var(--text-quaternary)]">
-              Applies to your next message
-            </div>
-          )}
         </>
+      )}
+
+      {mode === 'existing' && errorNote && (
+        <div className="px-2 pb-1 text-[length:var(--text-caption2)] text-[var(--system-red)]">
+          {errorNote}
+        </div>
+      )}
+      {mode === 'existing' && !errorNote && pendingNote && (
+        <div className="px-2 pb-1 text-[length:var(--text-caption2)] italic text-[var(--text-quaternary)]">
+          Applies to your next message
+        </div>
       )}
 
       {/* Context usage — how full the window is on the most recent turn.

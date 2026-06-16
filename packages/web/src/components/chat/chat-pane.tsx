@@ -137,6 +137,7 @@ export function ChatPane({
   // Kept local for handleSelectorChange so it stays a stable ([]) callback that
   // reads the current session id at call time (mirrors the previous behaviour).
   const sessionIdRef = useRef(sessionId)
+  const selectorPatchSeq = useRef(0)
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
 
   // CLI → chat view switch: turns typed directly into the xterm may never have
@@ -174,6 +175,7 @@ export function ChatPane({
   // chat only; model + effort are editable in existing chats too.
   const [selector, setSelector] = useState<SelectorValue>(() => readNewSessionSelector())
   const [effortPendingNote, setEffortPendingNote] = useState(false)
+  const [selectorError, setSelectorError] = useState<string | null>(null)
   const cliTerminalRef = useRef<CliTerminalHandle | null>(null)
 
   // Pre-fill for a NEW chat. Explicit employee selection uses employee config;
@@ -185,6 +187,7 @@ export function ChatPane({
       : undefined
     setSelector(emp ? { engine: emp.engine, model: emp.model } : readNewSessionSelector())
     setEffortPendingNote(false)
+    setSelectorError(null)
   }, [selectedEmployee, sessionId, orgData])
 
   // Pre-fill for an EXISTING chat from the loaded session.
@@ -196,19 +199,48 @@ export function ChatPane({
       effortLevel: (currentSession.effortLevel ?? currentSession.effort_level) as string | undefined,
     })
     setEffortPendingNote(false)
+    setSelectorError(null)
   }, [sessionId, currentSession])
 
   // Apply a selector change. New chat: just track it (sent on first message).
   // Existing chat: persist model/effort via PATCH (engine is fixed mid-chat).
   const handleSelectorChange = useCallback((next: SelectorValue) => {
-    setSelector(next)
-    if (sessionIdRef.current) {
-      api.updateSession(sessionIdRef.current, { model: next.model, effortLevel: next.effortLevel }).catch(() => {})
-      setEffortPendingNote(true)
+    const sid = sessionIdRef.current
+    if (sid) {
+      const previous = selector
+      const lockedGrokModel =
+        currentSession?.engine === 'grok' &&
+        Boolean(currentSession.engineSessionId) &&
+        Boolean(next.model) &&
+        Boolean(previous.model) &&
+        next.model !== previous.model
+
+      if (lockedGrokModel) {
+        setSelectorError('Grok model changes require a new session.')
+        setEffortPendingNote(false)
+        return
+      }
+
+      const seq = ++selectorPatchSeq.current
+      setSelector(next)
+      setSelectorError(null)
+      setEffortPendingNote(false)
+      api.updateSession(sid, { model: next.model, effortLevel: next.effortLevel })
+        .then(() => {
+          if (selectorPatchSeq.current === seq) setEffortPendingNote(true)
+        })
+        .catch((err) => {
+          if (selectorPatchSeq.current !== seq) return
+          setSelector(previous)
+          setEffortPendingNote(false)
+          setSelectorError(err instanceof Error ? err.message : 'Model/effort update failed')
+        })
     } else {
+      setSelector(next)
+      setSelectorError(null)
       writeNewSessionSelector(next)
     }
-  }, [])
+  }, [selector, currentSession?.engine, currentSession?.engineSessionId])
 
 
   const handleInterrupt = useCallback(async () => {
@@ -477,6 +509,7 @@ export function ChatPane({
             value={selector}
             onChange={handleSelectorChange}
             pendingNote={effortPendingNote}
+            errorNote={selectorError ?? undefined}
             disabled={loading}
             contextTokens={liveContextTokens ?? (currentSession?.lastContextTokens as number | null | undefined) ?? undefined}
             onNewChat={handleNewSession}

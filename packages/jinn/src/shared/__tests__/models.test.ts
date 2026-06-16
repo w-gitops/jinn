@@ -82,6 +82,26 @@ describe("getModelRegistry with a models: block", () => {
     expect(reg.claude.defaultModel).toBe("claude-opus-4-8");
     expect(reg.antigravity.defaultModel).toBe("gemini-3-flash-preview"); // no default → first
   });
+
+  it("lets engines.grok.model pin the Grok default when models.grok is configured", () => {
+    const reg = getModelRegistry(cfg(
+      { grok: { bin: "grok", model: "grok-composer-2.5-fast" } },
+      {
+        grok: {
+          default: "grok-build",
+          effortMechanism: "grok-flag",
+          models: [
+            { id: "grok-build", label: "Grok Build", supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh", "max"], contextWindow: 256000 },
+            { id: "grok-composer-2.5-fast", label: "Grok Composer 2.5 Fast", supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh", "max"], contextWindow: 256000 },
+          ],
+        },
+      },
+    ));
+
+    expect(reg.grok.defaultModel).toBe("grok-composer-2.5-fast");
+    expect(reg.grok.models[0].label).toBe("Grok Build");
+    expect(reg.grok.models[0].contextWindow).toBe(256000);
+  });
 });
 
 describe("cache + invalidate", () => {

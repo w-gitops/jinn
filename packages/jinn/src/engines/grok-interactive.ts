@@ -140,7 +140,7 @@ export class GrokInteractiveEngine implements InterruptibleEngine, PtyViewEngine
   private active = new Map<string, ActiveTurn>();
   private streams: PtyStreamManager;
   private lastGeom = new Map<string, { cols: number; rows: number }>();
-  private spawnParams = new Map<string, { model?: string; sessionId?: string }>();
+  private spawnParams = new Map<string, { model?: string; effortLevel?: string; sessionId?: string }>();
 
   constructor(private lifecycle: PtyLifecycleManager) {
     this.streams = new PtyStreamManager("Grok PTY", (id) => this.lifecycle.getWarm(id) !== undefined);
@@ -235,7 +235,7 @@ export class GrokInteractiveEngine implements InterruptibleEngine, PtyViewEngine
       if (settled) return;
       if (parsed.sessionId && !grokSessionId) {
         grokSessionId = parsed.sessionId;
-        this.spawnParams.set(jinnSessionId, { model: opts.model, sessionId: grokSessionId });
+        this.spawnParams.set(jinnSessionId, { model: opts.model, effortLevel: opts.effortLevel, sessionId: grokSessionId });
       }
       if (parsed.contextTokens) lastContextTokens = parsed.contextTokens;
       for (const delta of parsed.deltas) {
@@ -258,7 +258,7 @@ export class GrokInteractiveEngine implements InterruptibleEngine, PtyViewEngine
     const attachTail = (filePath: string, fromBeginning = false) => {
       if (turn.tailer) return;
       grokSessionId ||= parseSessionIdFromFile(filePath) ?? parseSessionIdFromPath(filePath);
-      if (grokSessionId) this.spawnParams.set(jinnSessionId, { model: opts.model, sessionId: grokSessionId });
+      if (grokSessionId) this.spawnParams.set(jinnSessionId, { model: opts.model, effortLevel: opts.effortLevel, sessionId: grokSessionId });
       let offset = 0;
       if (!fromBeginning) {
         try { offset = fs.statSync(filePath).size; } catch { /* not created yet */ }
@@ -346,7 +346,7 @@ export class GrokInteractiveEngine implements InterruptibleEngine, PtyViewEngine
     const prev = this.spawnParams.get(jinnSessionId);
     if (!prev) return false;
     const norm = (v: string | undefined) => v && v !== "default" ? v : undefined;
-    return norm(prev.model) !== norm(opts.model) || prev.sessionId !== sessionId;
+    return norm(prev.model) !== norm(opts.model) || norm(prev.effortLevel) !== norm(opts.effortLevel) || prev.sessionId !== sessionId;
   }
 
   private spawn(
@@ -366,7 +366,7 @@ export class GrokInteractiveEngine implements InterruptibleEngine, PtyViewEngine
       cwd: opts.cwd || JINN_HOME,
       env: this.buildEnv(),
     });
-    this.spawnParams.set(jinnSessionId, { model: opts.model, sessionId: grokSessionId });
+    this.spawnParams.set(jinnSessionId, { model: opts.model, effortLevel: opts.effortLevel, sessionId: grokSessionId });
     return this.wireProcToStream(jinnSessionId, proc);
   }
 

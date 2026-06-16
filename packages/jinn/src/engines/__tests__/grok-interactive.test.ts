@@ -176,6 +176,30 @@ describe("GrokInteractiveEngine", () => {
     lifecycle.dispose();
   });
 
+  it("respawns an idle PTY when effort changes", () => {
+    engine.ensureIdleSpawn("jinn-session", {
+      engineSessionId: "grok-session",
+      model: "grok-build",
+      effortLevel: "low",
+      cwd: "/tmp",
+    });
+    expect(spawnCalls).toHaveLength(1);
+    const first = spawnCalls[0]!;
+
+    engine.ensureIdleSpawn("jinn-session", {
+      engineSessionId: "grok-session",
+      model: "grok-build",
+      effortLevel: "high",
+      cwd: "/tmp",
+    });
+
+    expect(spawnCalls).toHaveLength(2);
+    expect(first.proc.killed).toBe(true);
+    const args = spawnCalls[1]!.args;
+    expect(args[args.indexOf("--effort") + 1]).toBe("high");
+    lifecycle.dispose();
+  });
+
   it("disables inherited Claude/Cursor MCP compatibility for PTY launches", () => {
     engine.ensureIdleSpawn("jinn-session", {
       engineSessionId: "grok-session",

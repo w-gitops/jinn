@@ -126,6 +126,10 @@ export class SessionManager {
     this.connectorProvider = provider;
   }
 
+  setConfig(config: JinnConfig): void {
+    this.config = config;
+  }
+
   getEngine(name: string): Engine | undefined {
     return this.engines.get(name);
   }
