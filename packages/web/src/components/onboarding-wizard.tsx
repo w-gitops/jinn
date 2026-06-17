@@ -4,7 +4,6 @@ import { useNavigate } from "react-router-dom"
 import {
   MessageSquare,
   Users,
-  Columns3,
   Clock,
   DollarSign,
   Activity,
@@ -16,7 +15,7 @@ import {
 import { useSettings } from "@/routes/settings-provider"
 import { useTheme } from "@/routes/providers"
 import { THEMES } from "@/lib/themes"
-import { api, type ModelInfo } from "@/lib/api"
+import { api, type ModelInfo, type EnginesResponse } from "@/lib/api"
 import { buildNewSessionParams } from "@/components/chat/new-chat-helpers"
 
 // ---------------------------------------------------------------------------
@@ -45,9 +44,8 @@ const ACCENT_PRESETS = [
 const FEATURES = [
   { icon: MessageSquare, name: "Chat", desc: "Direct conversations with any employee" },
   { icon: Users, name: "Organization", desc: "Visual org chart of your AI team" },
-  { icon: Columns3, name: "Kanban", desc: "Task boards for work management" },
   { icon: Clock, name: "Cron", desc: "Scheduled jobs with status monitoring" },
-  { icon: DollarSign, name: "Costs", desc: "Token usage and cost tracking" },
+  { icon: DollarSign, name: "Limits", desc: "Token usage and rate-limit monitoring" },
   { icon: Activity, name: "Activity", desc: "Real-time logs and event stream" },
 ]
 
@@ -61,6 +59,18 @@ const CLAUDE_EYEBROW: Record<string, string> = {
   opus:                "Smartest",
   "claude-sonnet-4-6": "Balanced",
   "claude-haiku-4-5":  "Fastest",
+}
+
+/** Friendly display names for known engine keys. Falls back to capitalising. */
+const ENGINE_DISPLAY_NAMES: Record<string, string> = {
+  claude:      "Claude",
+  codex:       "Codex",
+  grok:        "Grok",
+  antigravity: "Antigravity",
+}
+
+function engineDisplayName(key: string): string {
+  return ENGINE_DISPLAY_NAMES[key] ?? (key.charAt(0).toUpperCase() + key.slice(1))
 }
 
 // ---------------------------------------------------------------------------
@@ -93,9 +103,10 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
   const [localLanguage, setLocalLanguage] = useState(settings.language ?? "English")
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
-  /** Models for the default engine, loaded from the registry on mount.
-   *  null = still loading; [] = load failed / no models (fallback mode). */
-  const [engineOptions, setEngineOptions] = useState<ModelInfo[] | null>(null)
+  /** Full engine registry from /api/engines.
+   *  null = still loading; non-null empty = load failed / fallback mode. */
+  const [enginesLoading, setEnginesLoading] = useState(true)
+  const [enginesData, setEnginesData] = useState<EnginesResponse | null>(null)
   const [engineChoice, setEngineChoice] = useState<{
     engine: string | undefined
     model: string | undefined
@@ -135,24 +146,24 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
     })
   }, [forceOpen]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load the engine registry so step 3 cards are driven by config, not hardcoded Claude IDs.
+  // Load the full engine registry so step 3 is driven by config, not hardcoded IDs.
   useEffect(() => {
     api.getEngines().then((data) => {
-      const eng = data.default
-      const entry = data.engines?.[eng]
-      const models: ModelInfo[] = entry?.models ?? []
-      setEngineOptions(models)
+      setEnginesData(data)
+      setEnginesLoading(false)
+      // Pre-select the default engine + its default model.
+      const defaultEng = data.default
+      const defaultEntry = data.engines?.[defaultEng]
+      const models: ModelInfo[] = defaultEntry?.models ?? []
       if (models.length > 0) {
-        const defaultModel = entry?.defaultModel ?? models[0]?.id
-        setEngineChoice({ engine: eng, model: defaultModel, effortLevel: "medium" })
-      } else {
-        // No models in registry for the default engine — fallback mode.
-        setEngineOptions([])
+        const defaultModel = defaultEntry?.defaultModel ?? models[0]?.id
+        setEngineChoice({ engine: defaultEng, model: defaultModel, effortLevel: "medium" })
       }
-    }).catch(() => {
-      // API unreachable or registry empty — leave engine undefined so
+      // If no models available, leave engineChoice.engine undefined so
       // applyEngineChoice will no-op and the server default is preserved.
-      setEngineOptions([])
+    }).catch(() => {
+      // API unreachable — leave engine undefined so server default is preserved.
+      setEnginesLoading(false)
     })
   }, []) // run once on mount
 
@@ -186,9 +197,9 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
         if (!forceOpen) {
           localStorage.setItem("jinn-onboarded", "true")
         }
-        setVisible(false)
-        onClose?.()
-        // Launch the COO setup conversation (no employee = COO).
+        // Create the COO session BEFORE closing the wizard so wizard-close and
+        // chat navigation happen in the same synchronous tick — no blank-page gap.
+        let launchSessionId: string | undefined
         try {
           const seed = "Hi! I just finished setup — let's get started. 👋"
           const params = buildNewSessionParams({
@@ -199,14 +210,14 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
             effortLevel: engineChoice.effortLevel,
           })
           const session = (await api.createSession(params)) as { id?: string }
-          if (session?.id) {
-            navigate(`/chat?sessionId=${session.id}`)
-            return
-          }
+          launchSessionId = session?.id
         } catch {
-          // fall through to home
+          // fall through — navigate to home
         }
-        navigate("/")
+        // Close wizard and navigate in the same synchronous tick.
+        setVisible(false)
+        onClose?.()
+        navigate(launchSessionId ? `/chat?sessionId=${launchSessionId}` : "/")
       } catch {
         setSubmitError("Couldn't save your setup — check that the gateway is running, then try again.")
       } finally {
@@ -437,82 +448,143 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
             </div>
           )}
 
-          {/* Step 3: Engine / Model — registry-driven, no hardcoded engine */}
+          {/* Step 3: Engine + Model picker — registry-driven, no hardcoded engine */}
           {step === 3 && (
             <div key="step-3" className="animate-fade-in">
               <h2 className="text-[length:var(--text-title1)] font-[var(--weight-bold)] tracking-[var(--tracking-tight)] text-[var(--text-primary)] mb-[var(--space-1)]">
-                Choose your AI tier
+                Choose your AI engine
               </h2>
               <p className="text-[length:var(--text-subheadline)] text-[var(--text-tertiary)] mb-[var(--space-4)]">
                 Pick how your team thinks. You can change this anytime.
               </p>
 
-              {engineOptions === null ? (
+              {enginesLoading ? (
                 /* Still loading from registry */
                 <div className="text-[length:var(--text-subheadline)] text-[var(--text-tertiary)] py-[var(--space-4)] text-center">
                   Loading engine options…
                 </div>
-              ) : engineOptions.length === 0 ? (
+              ) : !enginesData || Object.values(enginesData.engines ?? {}).every(e => !e.models?.length) ? (
                 /* Registry fetch failed or no models available — safe fallback */
                 <div className="px-[var(--space-4)] py-[var(--space-3)] rounded-[var(--radius-md)] bg-[var(--fill-quaternary)] border border-[var(--separator)] text-[length:var(--text-subheadline)] text-[var(--text-secondary)]">
                   Using your default engine — you can configure models in Settings anytime.
                 </div>
               ) : (
-                <div className="flex flex-col gap-[var(--space-2)]">
-                  {engineOptions.map((m) => {
-                    const isActive = engineChoice.model === m.id
-                    // Show plain-language eyebrow labels only on Claude when all three
-                    // known tier IDs are present in the registry.
+                <>
+                  {/* (a) Engine selector */}
+                  <div className="mb-[var(--space-4)]">
+                    <p className="text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-tertiary)] uppercase tracking-[var(--tracking-wide)] mb-[var(--space-2)]">
+                      Engine
+                    </p>
+                    <div className="flex flex-col gap-[var(--space-2)]">
+                      {Object.entries(enginesData!.engines)
+                        .filter(([, entry]) => entry.models?.length > 0)
+                        .map(([key]) => {
+                          const isActive = engineChoice.engine === key
+                          return (
+                            <button
+                              key={key}
+                              onClick={() => {
+                                const entry = enginesData!.engines[key]
+                                const newModel = entry.defaultModel ?? entry.models[0]?.id
+                                setEngineChoice({ engine: key, model: newModel, effortLevel: "medium" })
+                              }}
+                              className="flex items-center gap-[var(--space-3)] px-[var(--space-4)] py-[var(--space-2)] rounded-[var(--radius-md)] cursor-pointer transition-all duration-150 text-left"
+                              style={{
+                                background: isActive
+                                  ? "color-mix(in srgb, var(--accent) 8%, var(--fill-quaternary))"
+                                  : "var(--fill-quaternary)",
+                                border: isActive
+                                  ? "1.5px solid var(--accent)"
+                                  : "1.5px solid var(--separator)",
+                              }}
+                            >
+                              <div
+                                className="flex-1 text-[length:var(--text-subheadline)]"
+                                style={{
+                                  fontWeight: "var(--weight-semibold)",
+                                  color: isActive ? "var(--accent)" : "var(--text-primary)",
+                                }}
+                              >
+                                {engineDisplayName(key)}
+                              </div>
+                              {isActive && (
+                                <div className="w-5 h-5 rounded-full bg-[var(--accent)] flex items-center justify-center shrink-0">
+                                  <Check size={11} color="var(--accent-contrast)" strokeWidth={3} />
+                                </div>
+                              )}
+                            </button>
+                          )
+                        })}
+                    </div>
+                  </div>
+
+                  {/* (b) Model selector for the selected engine */}
+                  {(() => {
+                    const selectedEntry = enginesData!.engines[engineChoice.engine ?? ""]
+                    const models: ModelInfo[] = selectedEntry?.models ?? []
+                    if (models.length === 0) return null
                     const useEyebrow =
                       engineChoice.engine === "claude" &&
                       ["opus", "claude-sonnet-4-6", "claude-haiku-4-5"].every(
-                        id => engineOptions.some(om => om.id === id)
+                        id => models.some(m => m.id === id)
                       )
-                    const eyebrow = useEyebrow ? CLAUDE_EYEBROW[m.id] : undefined
                     return (
-                      <button
-                        key={m.id}
-                        onClick={() =>
-                          setEngineChoice({ engine: engineChoice.engine, model: m.id, effortLevel: "medium" })
-                        }
-                        className="flex items-center gap-[var(--space-3)] px-[var(--space-4)] py-[var(--space-3)] rounded-[var(--radius-md)] cursor-pointer transition-all duration-150 text-left"
-                        style={{
-                          background: isActive
-                            ? "color-mix(in srgb, var(--accent) 8%, var(--fill-quaternary))"
-                            : "var(--fill-quaternary)",
-                          border: isActive
-                            ? "1.5px solid var(--accent)"
-                            : "1.5px solid var(--separator)",
-                        }}
-                      >
-                        <div className="flex-1 min-w-0">
-                          {eyebrow && (
-                            <div className="text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-tertiary)] uppercase tracking-[var(--tracking-wide)] mb-0.5">
-                              {eyebrow}
-                            </div>
-                          )}
-                          <div
-                            className="text-[length:var(--text-subheadline)]"
-                            style={{
-                              fontWeight: "var(--weight-semibold)",
-                              color: isActive ? "var(--accent)" : "var(--text-primary)",
-                            }}
-                          >
-                            {m.label}
-                          </div>
-                          <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mt-0.5">
-                            {m.id}
-                          </div>
+                      <div>
+                        <p className="text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-tertiary)] uppercase tracking-[var(--tracking-wide)] mb-[var(--space-2)]">
+                          Model
+                        </p>
+                        <div className="flex flex-col gap-[var(--space-2)]">
+                          {models.map((m) => {
+                            const isActive = engineChoice.model === m.id
+                            const eyebrow = useEyebrow ? CLAUDE_EYEBROW[m.id] : undefined
+                            return (
+                              <button
+                                key={m.id}
+                                onClick={() =>
+                                  setEngineChoice({ engine: engineChoice.engine, model: m.id, effortLevel: "medium" })
+                                }
+                                className="flex items-center gap-[var(--space-3)] px-[var(--space-4)] py-[var(--space-3)] rounded-[var(--radius-md)] cursor-pointer transition-all duration-150 text-left"
+                                style={{
+                                  background: isActive
+                                    ? "color-mix(in srgb, var(--accent) 8%, var(--fill-quaternary))"
+                                    : "var(--fill-quaternary)",
+                                  border: isActive
+                                    ? "1.5px solid var(--accent)"
+                                    : "1.5px solid var(--separator)",
+                                }}
+                              >
+                                <div className="flex-1 min-w-0">
+                                  {eyebrow && (
+                                    <div className="text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-tertiary)] uppercase tracking-[var(--tracking-wide)] mb-0.5">
+                                      {eyebrow}
+                                    </div>
+                                  )}
+                                  <div
+                                    className="text-[length:var(--text-subheadline)]"
+                                    style={{
+                                      fontWeight: "var(--weight-semibold)",
+                                      color: isActive ? "var(--accent)" : "var(--text-primary)",
+                                    }}
+                                  >
+                                    {m.label}
+                                  </div>
+                                  <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mt-0.5">
+                                    {m.id}
+                                  </div>
+                                </div>
+                                {isActive && (
+                                  <div className="w-5 h-5 rounded-full bg-[var(--accent)] flex items-center justify-center shrink-0">
+                                    <Check size={11} color="var(--accent-contrast)" strokeWidth={3} />
+                                  </div>
+                                )}
+                              </button>
+                            )
+                          })}
                         </div>
-                        {isActive && (
-                          <div className="w-5 h-5 rounded-full bg-[var(--accent)] flex items-center justify-center shrink-0">
-                            <Check size={11} color="var(--accent-contrast)" strokeWidth={3} />
-                          </div>
-                        )}
-                      </button>
+                      </div>
                     )
-                  })}
-                </div>
+                  })()}
+                </>
               )}
             </div>
           )}
