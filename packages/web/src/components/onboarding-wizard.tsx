@@ -16,7 +16,7 @@ import {
 import { useSettings } from "@/routes/settings-provider"
 import { useTheme } from "@/routes/providers"
 import { THEMES } from "@/lib/themes"
-import { api } from "@/lib/api"
+import { api, type ModelInfo } from "@/lib/api"
 import { buildNewSessionParams } from "@/components/chat/new-chat-helpers"
 
 // ---------------------------------------------------------------------------
@@ -52,14 +52,16 @@ const FEATURES = [
 ]
 
 // ---------------------------------------------------------------------------
-// Engine / model tiers
+// Engine / model tiers — eyebrow labels for Claude only
 // ---------------------------------------------------------------------------
 
-const TIERS = [
-  { label: "Smartest", model: "opus",              sub: "Opus 4.8 — deepest reasoning" },
-  { label: "Balanced", model: "claude-sonnet-4-6", sub: "Sonnet 4.6 — fast & capable" },
-  { label: "Fastest",  model: "claude-haiku-4-5",  sub: "Haiku 4.5 — quickest, lightest" },
-]
+/** Plain-language eyebrow labels shown only when the default engine is Claude
+ *  and all three known model IDs are present in the registry. */
+const CLAUDE_EYEBROW: Record<string, string> = {
+  opus:                "Smartest",
+  "claude-sonnet-4-6": "Balanced",
+  "claude-haiku-4-5":  "Fastest",
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -91,9 +93,16 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
   const [localLanguage, setLocalLanguage] = useState(settings.language ?? "English")
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
-  const [engineChoice, setEngineChoice] = useState<{ engine: string; model: string; effortLevel: string }>({
-    engine: "claude",
-    model: "opus",
+  /** Models for the default engine, loaded from the registry on mount.
+   *  null = still loading; [] = load failed / no models (fallback mode). */
+  const [engineOptions, setEngineOptions] = useState<ModelInfo[] | null>(null)
+  const [engineChoice, setEngineChoice] = useState<{
+    engine: string | undefined
+    model: string | undefined
+    effortLevel: string
+  }>({
+    engine: undefined,
+    model: undefined,
     effortLevel: "medium",
   })
 
@@ -125,6 +134,27 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
       }
     })
   }, [forceOpen]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load the engine registry so step 3 cards are driven by config, not hardcoded Claude IDs.
+  useEffect(() => {
+    api.getEngines().then((data) => {
+      const eng = data.default
+      const entry = data.engines?.[eng]
+      const models: ModelInfo[] = entry?.models ?? []
+      setEngineOptions(models)
+      if (models.length > 0) {
+        const defaultModel = entry?.defaultModel ?? models[0]?.id
+        setEngineChoice({ engine: eng, model: defaultModel, effortLevel: "medium" })
+      } else {
+        // No models in registry for the default engine — fallback mode.
+        setEngineOptions([])
+      }
+    }).catch(() => {
+      // API unreachable or registry empty — leave engine undefined so
+      // applyEngineChoice will no-op and the server default is preserved.
+      setEngineOptions([])
+    })
+  }, []) // run once on mount
 
   const handleNext = useCallback(async () => {
     // Commit name/operator/language on step 0
@@ -407,7 +437,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
             </div>
           )}
 
-          {/* Step 3: Engine / Model */}
+          {/* Step 3: Engine / Model — registry-driven, no hardcoded engine */}
           {step === 3 && (
             <div key="step-3" className="animate-fade-in">
               <h2 className="text-[length:var(--text-title1)] font-[var(--weight-bold)] tracking-[var(--tracking-tight)] text-[var(--text-primary)] mb-[var(--space-1)]">
@@ -417,48 +447,73 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
                 Pick how your team thinks. You can change this anytime.
               </p>
 
-              <div className="flex flex-col gap-[var(--space-2)]">
-                {TIERS.map((tier) => {
-                  const isActive = engineChoice.model === tier.model
-                  return (
-                    <button
-                      key={tier.model}
-                      onClick={() =>
-                        setEngineChoice({ engine: "claude", model: tier.model, effortLevel: "medium" })
-                      }
-                      className="flex items-center gap-[var(--space-3)] px-[var(--space-4)] py-[var(--space-3)] rounded-[var(--radius-md)] cursor-pointer transition-all duration-150 text-left"
-                      style={{
-                        background: isActive
-                          ? "color-mix(in srgb, var(--accent) 8%, var(--fill-quaternary))"
-                          : "var(--fill-quaternary)",
-                        border: isActive
-                          ? "1.5px solid var(--accent)"
-                          : "1.5px solid var(--separator)",
-                      }}
-                    >
-                      <div className="flex-1 min-w-0">
-                        <div
-                          className="text-[length:var(--text-subheadline)]"
-                          style={{
-                            fontWeight: "var(--weight-semibold)",
-                            color: isActive ? "var(--accent)" : "var(--text-primary)",
-                          }}
-                        >
-                          {tier.label}
+              {engineOptions === null ? (
+                /* Still loading from registry */
+                <div className="text-[length:var(--text-subheadline)] text-[var(--text-tertiary)] py-[var(--space-4)] text-center">
+                  Loading engine options…
+                </div>
+              ) : engineOptions.length === 0 ? (
+                /* Registry fetch failed or no models available — safe fallback */
+                <div className="px-[var(--space-4)] py-[var(--space-3)] rounded-[var(--radius-md)] bg-[var(--fill-quaternary)] border border-[var(--separator)] text-[length:var(--text-subheadline)] text-[var(--text-secondary)]">
+                  Using your default engine — you can configure models in Settings anytime.
+                </div>
+              ) : (
+                <div className="flex flex-col gap-[var(--space-2)]">
+                  {engineOptions.map((m) => {
+                    const isActive = engineChoice.model === m.id
+                    // Show plain-language eyebrow labels only on Claude when all three
+                    // known tier IDs are present in the registry.
+                    const useEyebrow =
+                      engineChoice.engine === "claude" &&
+                      ["opus", "claude-sonnet-4-6", "claude-haiku-4-5"].every(
+                        id => engineOptions.some(om => om.id === id)
+                      )
+                    const eyebrow = useEyebrow ? CLAUDE_EYEBROW[m.id] : undefined
+                    return (
+                      <button
+                        key={m.id}
+                        onClick={() =>
+                          setEngineChoice({ engine: engineChoice.engine, model: m.id, effortLevel: "medium" })
+                        }
+                        className="flex items-center gap-[var(--space-3)] px-[var(--space-4)] py-[var(--space-3)] rounded-[var(--radius-md)] cursor-pointer transition-all duration-150 text-left"
+                        style={{
+                          background: isActive
+                            ? "color-mix(in srgb, var(--accent) 8%, var(--fill-quaternary))"
+                            : "var(--fill-quaternary)",
+                          border: isActive
+                            ? "1.5px solid var(--accent)"
+                            : "1.5px solid var(--separator)",
+                        }}
+                      >
+                        <div className="flex-1 min-w-0">
+                          {eyebrow && (
+                            <div className="text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-tertiary)] uppercase tracking-[var(--tracking-wide)] mb-0.5">
+                              {eyebrow}
+                            </div>
+                          )}
+                          <div
+                            className="text-[length:var(--text-subheadline)]"
+                            style={{
+                              fontWeight: "var(--weight-semibold)",
+                              color: isActive ? "var(--accent)" : "var(--text-primary)",
+                            }}
+                          >
+                            {m.label}
+                          </div>
+                          <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mt-0.5">
+                            {m.id}
+                          </div>
                         </div>
-                        <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mt-0.5">
-                          {tier.sub}
-                        </div>
-                      </div>
-                      {isActive && (
-                        <div className="w-5 h-5 rounded-full bg-[var(--accent)] flex items-center justify-center shrink-0">
-                          <Check size={11} color="var(--accent-contrast)" strokeWidth={3} />
-                        </div>
-                      )}
-                    </button>
-                  )
-                })}
-              </div>
+                        {isActive && (
+                          <div className="w-5 h-5 rounded-full bg-[var(--accent)] flex items-center justify-center shrink-0">
+                            <Check size={11} color="var(--accent-contrast)" strokeWidth={3} />
+                          </div>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           )}
 
