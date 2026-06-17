@@ -224,3 +224,14 @@ Build on a feature branch off `main`. Web visuals go through **jinn-designer**;
 gateway/skill changes through **jinn-dev**. The live `~/.jinn` gateway (port
 7777) and `~/.jinn` data must not be touched during development; validate on an
 isolated throwaway instance (e.g. `~/.test-onboarding` on a non-7777 port).
+
+---
+
+## As-built deltas (post-implementation, 2026-06-17)
+
+The implementation refined a few decisions from the design above:
+
+- **Two flags, not one.** `portal.onboarded` gates the wizard (set by `completeOnboarding`). A separate `portal.setupComplete` gates the conversational setup context (`buildOnboardingContext`) and is set by the genie at the wrap beat. This split prevents the wizard finishing from prematurely suppressing the setup conversation (the single-flag model in §3 would have done exactly that). Both fields live on `PortalConfig`.
+- **Engine step is registry-driven, Advanced disclosure deferred.** The wizard's engine step reads the resolved default engine + its model registry and offers that engine's models as tiers (plain-language "Smartest/Balanced/Fastest" eyebrow only for the known Claude trio). The multi-engine "Advanced" switcher (§4.1) was deferred; selection never hardcodes an engine and falls back to the server default if the registry is unavailable.
+- **Effort fixed at `medium` for v1.** No per-model effort picker shipped; the wizard persists `effortLevel: "medium"`.
+- **Onboarding skill has a "do the work in-turn" rule** added after E2E showed low-effort models announcing actions and yielding before completing a beat.
