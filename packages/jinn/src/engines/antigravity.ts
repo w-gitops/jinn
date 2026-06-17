@@ -477,6 +477,12 @@ export class AntigravityEngine implements InterruptibleEngine, PtyViewEngine {
     this.lifecycle.killAll();
   }
 
+  /** Recycle idle warm PTYs only (org-reload). Sessions with an in-flight turn
+   *  (`this.active`) are skipped so the active turn is never interrupted. */
+  killIdle(): void {
+    this.lifecycle.releaseIdle((id) => this.active.has(id));
+  }
+
   isAlive(sessionId: string): boolean {
     return this.active.has(sessionId) || this.lifecycle.getWarm(sessionId) !== undefined;
   }

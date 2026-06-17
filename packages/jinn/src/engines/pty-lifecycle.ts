@@ -127,6 +127,20 @@ export class PtyLifecycleManager {
     for (const id of [...this.entries.keys()]) this.releaseSession(id);
   }
 
+  /** Release only PTYs that are NOT serving an in-flight turn. Used by org-reload
+   *  to recycle idle warm PTYs (so the next turn cold-respawns with the fresh
+   *  persona) WITHOUT killing the PTY of a turn currently running — e.g. the turn
+   *  that just wrote the org file which triggered the reload. A session is spared
+   *  if its entry has `turnRunning` set OR the caller's `isActive` predicate flags
+   *  it (covers the cold-spawn window where the engine's active set is populated
+   *  before `turnStarted` mirrors it here). */
+  releaseIdle(isActive: (sessionId: string) => boolean): void {
+    for (const [id, e] of [...this.entries.entries()]) {
+      if (e.turnRunning || isActive(id)) continue;
+      this.releaseSession(id);
+    }
+  }
+
   private reevaluate(sessionId: string): void {
     const e = this.entries.get(sessionId);
     if (!e) return;

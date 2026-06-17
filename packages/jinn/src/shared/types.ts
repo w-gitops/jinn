@@ -23,6 +23,12 @@ export interface InterruptibleEngine extends Engine {
   isAlive(sessionId: string): boolean;
   /** Kill all live engine processes during gateway shutdown. */
   killAll(): void;
+  /** Recycle only IDLE warm PTYs (no in-flight turn), leaving active turns
+   *  untouched. Used on org-reload so the next turn cold-respawns with the fresh
+   *  persona without interrupting a turn that is currently running. Engines with
+   *  no warm-PTY reuse (batch engines spawn fresh per turn) implement this as a
+   *  no-op — there is nothing idle to recycle and live processes are active turns. */
+  killIdle(): void;
 }
 
 export function isInterruptibleEngine(engine: Engine): engine is InterruptibleEngine {

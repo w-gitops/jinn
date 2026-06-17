@@ -123,6 +123,12 @@ export class CodexEngine implements InterruptibleEngine {
     }
   }
 
+  /** Batch engine: no warm-PTY reuse, every live process is an in-flight turn.
+   *  Nothing idle to recycle on org-reload — no-op. */
+  killIdle(): void {
+    /* no-op */
+  }
+
   isAlive(sessionId: string): boolean {
     const live = this.liveProcesses.get(sessionId);
     return !!live && !live.proc.killed && live.proc.exitCode === null;

@@ -1060,6 +1060,14 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     this.lifecycle.killAll();
   }
 
+  /** Recycle idle warm PTYs only (org-reload). Never interrupts an in-flight
+   *  turn: sessions in `this.active` are skipped, so the turn that wrote the org
+   *  file runs to completion on its current persona and the next turn picks up
+   *  the new one via cold respawn. */
+  killIdle(): void {
+    this.lifecycle.releaseIdle((id) => this.active.has(id));
+  }
+
   /** True only while a turn is in flight (distinct from "PTY is warm"). */
   isTurnRunning(sessionId: string): boolean {
     return this.active.has(sessionId);

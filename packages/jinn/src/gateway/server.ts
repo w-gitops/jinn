@@ -755,11 +755,17 @@ export async function startGateway(
   const reloadOrg = () => {
     employeeRegistry = scanOrg();
     logger.info(`Org directory changed, reloaded ${employeeRegistry.size} employee(s)`);
-    // Org/persona changed — drop warm PTYs so the next turn respawns with fresh system prompt.
-    interactiveClaudeEngine.killAll();
-    codexInteractiveEngine.killAll();
-    antigravityEngine.killAll();
-    grokInteractiveEngine.killAll();
+    // Org/persona changed — recycle only IDLE warm PTYs so the next turn respawns
+    // with the fresh system prompt. Must NOT killAll(): a turn in flight may itself
+    // have written the org file that triggered this reload (e.g. the onboarding
+    // genie hatching an employee, or a COO turn editing a persona). Interrupting
+    // that turn's PTY would settle it as "Interrupted", drop the web response, and
+    // hang the session. Active turns finish on their current persona; the new
+    // persona takes effect on the session's NEXT turn via cold respawn.
+    interactiveClaudeEngine.killIdle();
+    codexInteractiveEngine.killIdle();
+    antigravityEngine.killIdle();
+    grokInteractiveEngine.killIdle();
     emit("org:changed", {});
   };
 

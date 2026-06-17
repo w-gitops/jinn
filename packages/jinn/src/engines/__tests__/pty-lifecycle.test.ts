@@ -74,6 +74,31 @@ describe("PtyLifecycleManager", () => {
     expect(b.killed).toBe(true);
   });
 
+  it("releaseIdle releases idle PTYs but spares ones with a running turn", () => {
+    const m = new PtyLifecycleManager({ maxLivePtys: 8 });
+    const idle = fakeHandle(), busy = fakeHandle();
+    m.adopt("idle", idle);
+    m.adopt("busy", busy);
+    m.turnStarted("busy"); // in-flight turn → must not be reaped
+    m.releaseIdle(() => false);
+    expect(idle.killed).toBe(true);
+    expect(m.getWarm("idle")).toBeUndefined();
+    expect(busy.killed).toBe(false);
+    expect(m.getWarm("busy")).toBe(busy);
+  });
+
+  it("releaseIdle also spares sessions the isActive predicate flags (engine-level active turn)", () => {
+    const m = new PtyLifecycleManager({ maxLivePtys: 8 });
+    const idle = fakeHandle(), active = fakeHandle();
+    m.adopt("idle", idle);
+    m.adopt("active", active);
+    // turnRunning not yet mirrored (cold-spawn window), but engine knows it's active.
+    m.releaseIdle((id) => id === "active");
+    expect(idle.killed).toBe(true);
+    expect(active.killed).toBe(false);
+    expect(m.getWarm("active")).toBe(active);
+  });
+
   it("onRelease listeners fire for every released session (engines purge per-session maps here)", () => {
     const m = new PtyLifecycleManager({ maxLivePtys: 8 });
     const released: string[] = [];
