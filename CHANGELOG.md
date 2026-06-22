@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.21.2] - 2026-06-22
+
+### 🐛 Fixes
+- **Connector-backed replies no longer hang after Homebrew/npm installs.** The npm publish manifest now includes `assets/hook-relay.mjs`, so gateway boot can restore `~/.jinn/hook-relay.mjs` and Claude Stop hooks can report completed Slack/Discord/Telegram turns.
+
 ## [0.20.0] - 2026-06-11
 
 > Talk becomes a real delegation workspace: searchable session memory, server-owned delegation graphs, persistent conversation flow, and live work rails. The gateway also gets a stability pass for interactive engines, stuck-session recovery, restart safety, and context telemetry.
