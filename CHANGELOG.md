@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.21.3] - 2026-06-22
+
+### 🐛 Fixes
+- **Existing operators no longer get the onboarding prompt re-injected.** Configs that completed the setup wizard (`portal.onboarded`) are now treated as setup-complete, so the gateway stops emitting the onboarding directive and the setup-status API reports `setupComplete`/`conversationNeeded` correctly for legacy installs.
+
 ## [0.21.2] - 2026-06-22
 
 ### 🐛 Fixes
