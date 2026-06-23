@@ -474,6 +474,12 @@ export async function collectEngineLimits(
         name,
         "Grok currently exposes model/session behavior through its CLI, but no stable local quota endpoint is registered.",
       );
+    } else if (name === "hermes") {
+      engines[name] = collectUnsupported(
+        config,
+        name,
+        "Hermes currently exposes model/session behavior through its CLI, but no stable local quota endpoint is registered.",
+      );
     } else {
       engines[name] = collectUnsupported(config, name, "No limit collector is registered for this engine.");
     }

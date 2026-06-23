@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee, Engine } from "../shared/types.js";
 import { loadConfig, normalizeClaudeEngineConfig } from "../shared/config.js";
-import { invalidateModelRegistry, refreshGrokModels, refreshPiModels } from "../shared/models.js";
+import { invalidateModelRegistry, refreshGrokModels, refreshPiModels, refreshHermesModels } from "../shared/models.js";
 import { configureLogger, logger } from "../shared/logger.js";
 import { initDb, recoverStaleSessions, recoverStaleQueueItems, clearAllPartialMessages, getInterruptedSessions, listSessions, updateSession, getSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
@@ -20,6 +20,8 @@ import { AntigravityEngine } from "../engines/antigravity.js";
 import { PiEngine } from "../engines/pi.js";
 import { GrokEngine } from "../engines/grok.js";
 import { GrokInteractiveEngine } from "../engines/grok-interactive.js";
+import { HermesAcpEngine } from "../engines/hermes-acp.js";
+import { HermesInteractiveEngine } from "../engines/hermes-interactive.js";
 import type { PtyViewEngine } from "../engines/pty-view-engine.js";
 import { HookRegistry } from "./hook-registry.js";
 import { writeGatewayInfo, readGatewayInfo, updateGatewayPtyPids } from "./gateway-info.js";
@@ -281,6 +283,7 @@ export async function startGateway(
   let codexLifecycle: PtyLifecycleManager | undefined;
   let antigravityLifecycle: PtyLifecycleManager | undefined;
   let grokLifecycle: PtyLifecycleManager | undefined;
+  let hermesLifecycle: PtyLifecycleManager | undefined;
   function refreshPtyPids(): void {
     try {
       const pids = [
@@ -288,6 +291,7 @@ export async function startGateway(
         ...(codexLifecycle ? codexLifecycle.livePids() : []),
         ...(antigravityLifecycle ? antigravityLifecycle.livePids() : []),
         ...(grokLifecycle ? grokLifecycle.livePids() : []),
+        ...(hermesLifecycle ? hermesLifecycle.livePids() : []),
       ];
       updateGatewayPtyPids(GATEWAY_INFO_FILE, pids);
     } catch { /* best effort */ }
@@ -328,11 +332,18 @@ export async function startGateway(
     onCleanup: () => refreshPtyPids(),
   });
   const grokInteractiveEngine = new GrokInteractiveEngine(grokLifecycle);
+  hermesLifecycle = new PtyLifecycleManager({
+    maxLivePtys: claudeCfg.maxLivePtys!,
+    onAdopt: () => refreshPtyPids(),
+    onCleanup: () => refreshPtyPids(),
+  });
+  const hermesInteractiveEngine = new HermesInteractiveEngine(hermesLifecycle);
   const piEngine = new PiEngine();
-  logger.info("Engines initialized: claude (interactive PTY), codex (headless + interactive PTY), antigravity (interactive PTY), grok (headless + interactive PTY), pi");
+  logger.info("Engines initialized: claude (interactive PTY), codex (headless + interactive PTY), antigravity (interactive PTY), grok (headless + interactive PTY), hermes (headless + interactive PTY), pi");
 
   const codexEngine = new CodexEngine();
   const grokEngine = new GrokEngine();
+  const hermesEngine = new HermesAcpEngine();
   const engines = new Map<string, Engine>();
   // Claude WORK TURNS (chat, employees, cron, child sessions) run on the
   // interactive PTY engine → cc_entrypoint=cli, covered by the Max subscription
@@ -342,6 +353,7 @@ export async function startGateway(
   engines.set("codex", codexEngine);
   engines.set("antigravity", antigravityEngine);
   engines.set("grok", grokEngine);
+  engines.set("hermes", hermesEngine);
   engines.set("pi", piEngine);
 
   // PTY-capable engines, keyed by engine name — the /ws/pty handler routes by
@@ -351,6 +363,7 @@ export async function startGateway(
     codex: codexInteractiveEngine,
     antigravity: antigravityEngine,
     grok: grokInteractiveEngine,
+    hermes: hermesInteractiveEngine,
   };
 
   // Derive connector names from config
@@ -744,7 +757,7 @@ export async function startGateway(
   // registry serves known/synthesized fallbacks until the snapshots land, then
   // the web UI invalidates its model registry cache via engines:updated.
   const refreshDynamicModels = (cfg: JinnConfig): void => {
-    void Promise.all([refreshPiModels(cfg), refreshGrokModels(cfg)])
+    void Promise.all([refreshPiModels(cfg), refreshGrokModels(cfg), refreshHermesModels(cfg)])
       .finally(() => emit("engines:updated", {}));
   };
   refreshDynamicModels(currentConfig);
@@ -766,6 +779,7 @@ export async function startGateway(
     codexInteractiveEngine.killIdle();
     antigravityEngine.killIdle();
     grokInteractiveEngine.killIdle();
+    hermesInteractiveEngine.killIdle();
     emit("org:changed", {});
   };
 
@@ -1090,6 +1104,8 @@ export async function startGateway(
     antigravityEngine.killAll();
     grokEngine.killAll();
     grokInteractiveEngine.killAll();
+    hermesEngine.killAll();
+    hermesInteractiveEngine.killAll();
     piEngine.killAll();
 
     // Dispose the PTY lifecycle manager.

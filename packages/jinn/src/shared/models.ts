@@ -15,6 +15,12 @@ import {
   knownGrokModels,
   type GrokModelDiscovery,
 } from "./grok-models.js";
+import {
+  discoverHermesModels,
+  knownHermesModels,
+  HERMES_EFFORT_LEVELS,
+  type HermesModelDiscovery,
+} from "./hermes-models.js";
 
 /**
  * Model + capability registry — the single source of truth for which engines and
@@ -31,7 +37,7 @@ import {
  */
 
 /** Engines registered in this build (mirrors server.ts engine map). */
-const ENGINE_NAMES = ["claude", "codex", "antigravity", "grok", "pi"] as const;
+const ENGINE_NAMES = ["claude", "codex", "antigravity", "grok", "pi", "hermes"] as const;
 export type EngineName = (typeof ENGINE_NAMES)[number];
 
 /** Binary name probed for each engine's availability (override via engines.<name>.bin). */
@@ -41,6 +47,7 @@ const ENGINE_BIN: Record<EngineName, string> = {
   antigravity: "agy",
   grok: "grok",
   pi: "pi",
+  hermes: "hermes",
 };
 
 const EFFORT_MECHANISM: Record<EngineName, EffortMechanism> = {
@@ -49,6 +56,7 @@ const EFFORT_MECHANISM: Record<EngineName, EffortMechanism> = {
   antigravity: "none",
   grok: "grok-flag",
   pi: "pi-flag",
+  hermes: "none",
 };
 
 export const CODEX_DEFAULT_MODEL = "gpt-5.5";
@@ -62,6 +70,7 @@ const SYNTH_DEFAULTS: Record<EngineName, { supportsEffort: boolean; effortLevels
   // Placeholder shown only in the brief window before pi discovery completes; the
   // provider/id form keeps it well-typed for the engine's split.
   pi: { supportsEffort: false, effortLevels: [], fallbackModel: "ollama/gemma4:12b" },
+  hermes: { supportsEffort: false, effortLevels: HERMES_EFFORT_LEVELS, fallbackModel: "openai-codex:gpt-5.5" },
 };
 
 /** Optional per-engine `bin` override from config. */
@@ -89,6 +98,7 @@ const ENGINE_INSTALL_HINT: Record<EngineName, string> = {
   antigravity: "install the Antigravity CLI (agy)",
   grok: "npm install -g @xai-official/grok, then run grok once to authenticate",
   pi: "install the Pi CLI",
+  hermes: "install the Hermes CLI: curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
 };
 
 /** Actionable error message for a session blocked by a missing engine binary. */
@@ -101,6 +111,8 @@ export function engineUnavailableMessage(config: JinnConfig, name: EngineName): 
 let discoveredPiModels: ModelInfo[] | null = null;
 /** Snapshot of dynamically-discovered Grok models (null until first discovery). */
 let discoveredGrokModels: GrokModelDiscovery | null = null;
+/** Snapshot of dynamically-discovered Hermes models (null until first discovery). */
+let discoveredHermesModels: HermesModelDiscovery | null = null;
 
 /**
  * Discover Pi's local/custom models (`pi --list-models`) and refresh the registry.
@@ -143,6 +155,29 @@ export async function refreshGrokModels(config: JinnConfig): Promise<void> {
   } catch (err) {
     logger.warn(`Grok model discovery failed: ${err instanceof Error ? err.message : err}`);
     discoveredGrokModels = null;
+  } finally {
+    invalidateModelRegistry();
+  }
+}
+
+/**
+ * Discover Hermes's available model list and refresh the registry.
+ * Never throws; until discovery succeeds the registry uses Jinn's known Hermes model
+ * catalog so the UI still shows the public Hermes choices.
+ */
+export async function refreshHermesModels(config: JinnConfig): Promise<void> {
+  if (!engineAvailable(config, "hermes")) {
+    discoveredHermesModels = null;
+    invalidateModelRegistry();
+    return;
+  }
+  try {
+    const bin = resolveBin("hermes", engineBinOverride(config, "hermes"));
+    discoveredHermesModels = await discoverHermesModels(bin);
+    logger.info(`Hermes model discovery: ${discoveredHermesModels.models.length} model(s)`);
+  } catch (err) {
+    logger.warn(`Hermes model discovery failed: ${err instanceof Error ? err.message : err}`);
+    discoveredHermesModels = null;
   } finally {
     invalidateModelRegistry();
   }
@@ -206,6 +241,10 @@ export function buildRegistry(config: JinnConfig): ModelRegistry {
       registry[name] = buildGrokEntry(config, block?.grok, synthesized[name], available);
       continue;
     }
+    if (name === "hermes") {
+      registry[name] = buildHermesEntry(config, block?.hermes, synthesized[name], available);
+      continue;
+    }
     const engineBlock = block?.[name];
     registry[name] = engineBlock
       ? fromEngineModelsConfig(name, engineBlock, available)
@@ -245,6 +284,25 @@ function buildGrokEntry(
     effortMechanism: "grok-flag",
     models: known.models,
   };
+}
+
+/** Hermes registry entry: discovered models > config `models.hermes` block > known catalog. */
+function buildHermesEntry(
+  config: JinnConfig,
+  hermesBlock: EngineModelsConfig | undefined,
+  synthEntry: EngineRegistryEntry,
+  available: boolean,
+): EngineRegistryEntry {
+  const pinned = config.engines.hermes?.model;
+  if (discoveredHermesModels && discoveredHermesModels.models.length > 0) {
+    const models = discoveredHermesModels.models;
+    const valid = (id?: string) => (id && models.some((m) => m.id === id) ? id : undefined);
+    const defaultModel = valid(pinned) ?? valid(discoveredHermesModels.defaultModel) ?? models[0].id;
+    return { name: "hermes", available, defaultModel, effortMechanism: "none", models };
+  }
+  if (hermesBlock) return fromEngineModelsConfig("hermes", hermesBlock, available, pinned);
+  const known = knownHermesModels(pinned);
+  return { name: "hermes", available, defaultModel: known.defaultModel || synthEntry.defaultModel, effortMechanism: "none", models: known.models };
 }
 
 /** Pi registry entry: discovered models > config `models.pi` block > synthesized. */

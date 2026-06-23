@@ -11,3 +11,6 @@ test-results/
 packages/jinn/.npmrc
 .worktrees/
 .DS_Store
+
+# Superpowers SDD scratch (briefs, reports, ledger, diffs)
+.superpowers/

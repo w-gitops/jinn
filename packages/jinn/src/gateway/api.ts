@@ -6,7 +6,7 @@ import path from "node:path";
 import yaml from "js-yaml";
 import type { CronJob, Engine, IncomingMessage, JinnConfig, JsonObject, Session, StreamDelta, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
-import { getModelRegistry, invalidateModelRegistry, effortLevelsForModel, refreshGrokModels, refreshPiModels, engineAvailable, isKnownEngine, engineUnavailableMessage } from "../shared/models.js";
+import { getModelRegistry, invalidateModelRegistry, effortLevelsForModel, refreshGrokModels, refreshPiModels, refreshHermesModels, engineAvailable, isKnownEngine, engineUnavailableMessage } from "../shared/models.js";
 import { validateNewSessionSelection, validateSessionPatch } from "../sessions/session-patch.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
@@ -1415,6 +1415,7 @@ export async function handleApiRequest(
       const config = context.getConfig();
       await refreshPiModels(config);
       await refreshGrokModels(config);
+      await refreshHermesModels(config);
       context.emit("engines:updated", {});
       return json(res, { default: config.engines.default, engines: getModelRegistry(config) });
     }

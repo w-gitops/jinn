@@ -255,6 +255,9 @@ engines:
   grok:
     bin: grok
     model: grok-build
+  hermes:
+    bin: hermes
+    model: openai-codex:gpt-5.5
 # Model + capability registry — single source of truth for the UI selectors.
 # Add a model here (id + label + capability flags); no code change needed.
 # effortLevels gate the effort picker (empty = no effort support). Omit the block
@@ -375,11 +378,20 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     info("Install with: npm install -g @xai-official/grok");
   }
 
+  // 4a. Check for hermes binary
+  const hermesPath = whichBin("hermes");
+  if (hermesPath) {
+    ok(`hermes found at ${hermesPath}`);
+  } else {
+    fail("hermes not found");
+    info("Install the Hermes CLI: curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash");
+  }
+
   // 5. Loudly warn if NO engine is installed — the gateway will start, but it
   //     cannot run any session until at least one engine CLI is on PATH.
-  if (!claudePath && !codexPath && !grokPath) {
+  if (!claudePath && !codexPath && !grokPath && !hermesPath) {
     console.log("");
-    warn("No AI engine CLI found (claude, codex, or grok).");
+    warn("No AI engine CLI found (claude, codex, grok, or hermes).");
     warn("The gateway will start, but sessions will fail until you install one above.");
   }
 
@@ -400,13 +412,19 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     if (ver) ok(`grok --version: ${ver}`);
     else warn("grok --version failed");
   }
+  if (hermesPath) {
+    const ver = runVersion("hermes");
+    if (ver) ok(`hermes --version: ${ver}`);
+    else warn("hermes --version failed");
+  }
   // A successful --version does NOT mean the engine is authenticated — the #1
   // silent fresh-install failure. Nudge the login step explicitly.
-  if (claudePath || codexPath || grokPath) {
+  if (claudePath || codexPath || grokPath || hermesPath) {
     warn("A successful --version does NOT mean the engine is logged in.");
     if (claudePath) info("First run? Launch `claude` once and use /login to authenticate.");
     if (codexPath) info("First run? Launch `codex` once and sign in to authenticate.");
     if (grokPath) info("First run? Launch `grok` once to authenticate, or configure XAI_API_KEY.");
+    if (hermesPath) info("First run? Launch `hermes` once to authenticate, or configure your API key.");
     info("Do this before `jinn start`, or sessions will fail silently.");
   }
 
@@ -438,7 +456,7 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     : "Jinn";
 
   let chosenName = defaultName;
-  type SetupEngine = "claude" | "codex" | "grok";
+  type SetupEngine = "claude" | "codex" | "grok" | "hermes";
   let chosenEngine: SetupEngine = "claude";
 
   if (isInteractive) {
@@ -450,6 +468,7 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     if (claudePath) engines.push("claude");
     if (codexPath) engines.push("codex");
     if (grokPath) engines.push("grok");
+    if (hermesPath) engines.push("hermes");
 
     if (engines.length > 1) {
       const defaultEngine = engines.includes("claude") ? "claude" : engines[0];
