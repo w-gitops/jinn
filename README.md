@@ -188,6 +188,21 @@ flows through the same path:
 args)` per request). They don't have Claude's subscription-billing wrinkle, so they
 don't need a PTY.
 
+## 🔌 Engines
+
+Jinn supports multiple engines. Switch per session or per employee in the web UI — only engines whose CLI is installed on your `PATH` are available.
+
+| Engine | What it is | Install | Modes | Effort |
+|--------|-----------|---------|-------|--------|
+| **claude** | Anthropic Claude Code CLI — first-party, Max-subscription-friendly | `npm install -g @anthropic-ai/claude-code` | Chat (PTY + SSE) · CLI (xterm) | low / medium / high |
+| **codex** | OpenAI Codex CLI | `npm install -g @openai/codex` | Chat (headless) · CLI (xterm) | low / medium / high / xhigh |
+| **grok** | xAI Grok CLI | `npm install -g @xai-ai/grok` | Chat (headless) · CLI (xterm) | low / medium / high / xhigh / max |
+| **antigravity** | Antigravity CLI | (see Antigravity docs) | CLI (xterm) | — |
+| **pi** | Pi coding agent CLI | `npm install -g pi` | Chat (headless) | — |
+| **hermes** | NousResearch Hermes — open-source, model-agnostic, self-improving agent | `curl -fsSL https://hermes-agent.nousresearch.com/install.sh \| bash` | Chat (ACP streaming) · CLI (xterm view) | — |
+
+> **Hermes cost note.** Unlike the subscription-wrapped engines above, Hermes owns its own model loop and bills **per token** on the provider configured in `~/.hermes` (e.g. OpenAI Codex). Costs accrue at your provider — not as part of a Jinn subscription. See [`docs/engines-hermes.md`](docs/engines-hermes.md) for full details.
+
 ## ⚙️ Configuration
 
 Jinn reads its configuration from `~/.jinn/config.yaml`. An example:
