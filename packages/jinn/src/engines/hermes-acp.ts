@@ -76,7 +76,7 @@ export class HermesAcpEngine implements InterruptibleEngine {
     // session/new or session/load
     if (!p.hermesSessionId) {
       if (opts.resumeSessionId) {
-        await rpc.request("session/load", { sessionId: opts.resumeSessionId, cwd: opts.cwd, mcpServers: [] }).catch(() => {});
+        await rpc.request("session/load", { sessionId: opts.resumeSessionId, cwd: opts.cwd, mcpServers: [] });
         p.hermesSessionId = opts.resumeSessionId;
       } else {
         const ns = await rpc.request<Record<string, unknown>>("session/new", { cwd: opts.cwd, mcpServers: [] });
