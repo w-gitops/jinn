@@ -136,6 +136,10 @@ export class HermesAcpEngine implements InterruptibleEngine {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       logger.warn(`[hermes-acp] handshake error for ${jinnId}: ${msg}`);
+      // Evict the mute/dead process so the next turn gets a clean respawn.
+      p.alive = false;
+      try { p.handle.killProc(); } catch { /* ignore */ }
+      if (this.procs.get(jinnId) === p) this.procs.delete(jinnId);
       return { sessionId: "", result: "", error: msg };
     } finally {
       if (handshakeWatchdog) clearTimeout(handshakeWatchdog);

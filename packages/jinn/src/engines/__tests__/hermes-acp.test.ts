@@ -168,6 +168,8 @@ describe("HermesAcpEngine.run", () => {
     expect(r.error).toMatch(/handshake timeout/);
     expect(r.sessionId).toBe("");
     expect(r.result).toBe("");
+    // The timed-out proc must be evicted so the next turn respawns clean.
+    expect(eng.isAlive("jinn-hang")).toBe(false);
   }, 5_000);
 
   // Fix 3 — session/load failure falls back to session/new
