@@ -7,6 +7,7 @@ import { HermesRpc } from "./hermes-jsonrpc.js";
 import { mapSessionUpdate, extractPromptText } from "./hermes-protocol.js";
 
 const TURN_TIMEOUT_MS = 14 * 24 * 60 * 60 * 1000;
+const HANDSHAKE_TIMEOUT_MS = 60_000;
 const ALLOW_ALWAYS = { outcome: { outcome: "selected", optionId: "allow_always" } };
 
 interface ProcHandle {
@@ -14,6 +15,7 @@ interface ProcHandle {
   killProc: () => void;
   isAliveProc: () => boolean;
   onExit: (cb: () => void) => void;
+  onError: (cb: (err: Error) => void) => void;
 }
 
 interface HermesProc {
@@ -27,6 +29,8 @@ interface HermesProc {
 export class HermesAcpEngine implements InterruptibleEngine {
   name = "hermes" as const;
   private procs = new Map<string, HermesProc>();
+  /** Overridable in tests to shorten the handshake timeout. */
+  protected handshakeTimeoutMs = HANDSHAKE_TIMEOUT_MS;
 
   /** Test seam — overridden in unit tests to inject a fake server. */
   protected spawnProc(bin: string, cwd: string): ProcHandle {
@@ -44,6 +48,7 @@ export class HermesAcpEngine implements InterruptibleEngine {
       },
       isAliveProc: () => child.exitCode === null && !child.killed,
       onExit: (cb) => child.on("exit", cb),
+      onError: (cb) => child.on("error", cb),
     };
   }
 
@@ -52,7 +57,10 @@ export class HermesAcpEngine implements InterruptibleEngine {
     if (existing && existing.alive) return existing;
 
     const handle = this.spawnProc(bin, cwd);
-    handle.rpc.onServerRequest(() => ALLOW_ALWAYS);
+    // Fix 4: only auto-approve the specific permission-request method.
+    handle.rpc.onServerRequest((method) =>
+      method === "session/request_permission" ? ALLOW_ALWAYS : {},
+    );
     const entry: HermesProc = {
       handle,
       alive: true,
@@ -61,6 +69,11 @@ export class HermesAcpEngine implements InterruptibleEngine {
     handle.onExit(() => {
       entry.alive = false;
       handle.rpc.rejectAll(new Error("hermes acp exited"));
+    });
+    // Fix 2(a): surface spawn/exec errors so run() never hangs on ENOENT etc.
+    handle.onError((err) => {
+      entry.alive = false;
+      handle.rpc.rejectAll(new Error("hermes acp spawn/process error: " + err.message));
     });
     this.procs.set(jinnId, entry);
     return entry;
@@ -71,26 +84,69 @@ export class HermesAcpEngine implements InterruptibleEngine {
     const bin = resolveBin("hermes", opts.bin);
     const p = this.getOrSpawn(jinnId, bin, opts.cwd);
     const { rpc } = p.handle;
-    await p.initialized;
 
-    // session/new or session/load
-    if (!p.hermesSessionId) {
-      if (opts.resumeSessionId) {
-        await rpc.request("session/load", { sessionId: opts.resumeSessionId, cwd: opts.cwd, mcpServers: [] });
-        p.hermesSessionId = opts.resumeSessionId;
-      } else {
-        const ns = await rpc.request<Record<string, unknown>>("session/new", { cwd: opts.cwd, mcpServers: [] });
-        p.hermesSessionId = String(ns.sessionId);
-        const models = ns.models as Record<string, unknown> | undefined;
-        p.currentModelId = models?.currentModelId ? String(models.currentModelId) : undefined;
-      }
-      await rpc.request("session/set_mode", { sessionId: p.hermesSessionId, modeId: "dont_ask" }).catch(() => {});
+    // Fix 2(b): guard the entire pre-prompt handshake with a timeout so a hung
+    // or dead server can't stall run() forever.
+    let handshakeWatchdog: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        (async () => {
+          await p.initialized;
+
+          // session/new or session/load (with Fix 3 fallback)
+          if (!p.hermesSessionId) {
+            if (opts.resumeSessionId) {
+              try {
+                await rpc.request("session/load", { sessionId: opts.resumeSessionId, cwd: opts.cwd, mcpServers: [] });
+                p.hermesSessionId = opts.resumeSessionId;
+              } catch (loadErr) {
+                // Fix 3: stale/expired id — fall back to a fresh session so the
+                // gateway doesn't get permanently wedged on the bad id.
+                logger.warn(
+                  `[hermes-acp] session/load failed for ${opts.resumeSessionId}, falling back to session/new: ` +
+                  (loadErr instanceof Error ? loadErr.message : String(loadErr)),
+                );
+                const ns = await rpc.request<Record<string, unknown>>("session/new", { cwd: opts.cwd, mcpServers: [] });
+                p.hermesSessionId = String(ns.sessionId);
+                const models = ns.models as Record<string, unknown> | undefined;
+                p.currentModelId = models?.currentModelId ? String(models.currentModelId) : undefined;
+              }
+            } else {
+              const ns = await rpc.request<Record<string, unknown>>("session/new", { cwd: opts.cwd, mcpServers: [] });
+              p.hermesSessionId = String(ns.sessionId);
+              const models = ns.models as Record<string, unknown> | undefined;
+              p.currentModelId = models?.currentModelId ? String(models.currentModelId) : undefined;
+            }
+            await rpc.request("session/set_mode", { sessionId: p.hermesSessionId, modeId: "dont_ask" }).catch(() => {});
+          }
+
+          if (opts.model && opts.model !== p.currentModelId) {
+            await rpc.request("session/set_model", { sessionId: p.hermesSessionId, modelId: opts.model }).catch(() => {});
+            p.currentModelId = opts.model;
+          }
+        })(),
+        new Promise<never>((_, rej) => {
+          handshakeWatchdog = setTimeout(
+            () => rej(new Error("hermes acp handshake timeout")),
+            this.handshakeTimeoutMs,
+          );
+          handshakeWatchdog.unref?.();
+        }),
+      ]);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.warn(`[hermes-acp] handshake error for ${jinnId}: ${msg}`);
+      return { sessionId: "", result: "", error: msg };
+    } finally {
+      if (handshakeWatchdog) clearTimeout(handshakeWatchdog);
     }
 
-    if (opts.model && opts.model !== p.currentModelId) {
-      await rpc.request("session/set_model", { sessionId: p.hermesSessionId, modelId: opts.model }).catch(() => {});
-      p.currentModelId = opts.model;
-    }
+    // Fix 1: prepend systemPrompt on fresh (non-resume) sessions only, mirroring
+    // the grok engine pattern.
+    const rawPrompt =
+      opts.systemPrompt && !opts.resumeSessionId
+        ? `${opts.systemPrompt}\n\n${opts.prompt}`
+        : opts.prompt;
 
     let resultText = "";
     let lastContext: number | undefined;
@@ -112,7 +168,7 @@ export class HermesAcpEngine implements InterruptibleEngine {
       const res = await Promise.race([
         rpc.request<Record<string, unknown>>("session/prompt", {
           sessionId: hermesSessionId,
-          prompt: extractPromptText(opts.prompt),
+          prompt: extractPromptText(rawPrompt),
         }),
         new Promise<never>((_, rej) => {
           watchdog = setTimeout(() => rej(new Error("hermes turn timeout")), TURN_TIMEOUT_MS);
