@@ -6,9 +6,19 @@
 
 ## 1. Goal
 
-Add **Hermes Agent** (NousResearch, `hermes` CLI, v0.17.0, installed at `~/.local/bin/hermes`)
-as a first-class, selectable **engine** in the Jinn gateway, with **real token streaming**
-in the web chat and a **live CLI terminal view** in the dashboard.
+Add **Hermes Agent** (NousResearch, `hermes` CLI) as a first-class, selectable **engine** in
+the Jinn gateway, with **real token streaming** in the web chat and a **live CLI terminal
+view** in the dashboard.
+
+**Version- and path-agnostic.** Jinn runs on other people's machines. The engine must use
+**whatever `hermes` binary is found on the user's PATH** (resolved via `resolveBin("hermes",
+opts.bin)`, like every other engine), regardless of version or install location. We do **not**
+hardcode a version, an absolute path, or a fixed model list. Capabilities and models are
+**discovered at runtime** from the CLI's own ACP handshake, so a newer/older Hermes simply
+works with whatever it reports. The facts in §2 were captured against the locally installed
+build (v0.17.0) to validate the integration — they are a reference snapshot, **not** a pinned
+assumption. If a given machine has no `hermes` on PATH, the engine is simply unavailable
+(hidden in the picker), exactly like an uninstalled codex/grok.
 
 Two interaction modes, mirroring the existing Codex/Grok dual-engine pattern:
 
@@ -21,9 +31,12 @@ Two interaction modes, mirroring the existing Codex/Grok dual-engine pattern:
 
 Both run **fully autonomous / auto-approving** (no human approval prompts).
 
-## 2. Verified facts (empirically confirmed against the running Hermes)
+## 2. Verified facts (reference snapshot — local build v0.17.0, 2026-06-23)
 
-All of the following were confirmed by probing the live binary and ACP server on 2026-06-23:
+The following were confirmed by probing the locally installed binary and ACP server. They
+document the protocol the adapter targets; the adapter relies on **runtime discovery**, not on
+this exact version. ACP is a stable, versioned protocol (`initialize` negotiates
+`protocolVersion`), so other Hermes builds present the same surface.
 
 - **Transport:** `hermes acp` speaks **ndjson JSON-RPC 2.0** over stdio. One JSON object
   per line on stdout; all logs go to **stderr** (stdout stays clean). `hermes acp --check`
@@ -240,8 +253,13 @@ the registry / `GET /api/engines`.
   registry is refreshed live so it always reflects reality, with a static fallback.
 - **CLI-typed turns not in web DB (v1):** the xterm view is a live terminal only; syncing
   those turns into Jinn's message store is a v2 follow-up (would need Hermes transcript-tail).
-- **ACP schema drift:** Hermes 0.17.0 pinned; `hermes-protocol.ts` centralises the wire
-  mapping so a future schema change is a one-file fix with failing unit tests to guide it.
+- **Version variance across machines:** the binary is PATH-resolved and capabilities are
+  read from the live `initialize`/`session/new` handshake, so different Hermes versions adapt
+  automatically. `initialize` negotiates `protocolVersion`; if a build ever predates ACP or
+  fails the handshake, the engine reports unavailable rather than crashing. The static
+  `knownHermesModels()` fallback is a last resort only when live discovery returns nothing.
+- **ACP schema drift:** `hermes-protocol.ts` centralises all wire mapping so a future schema
+  change is a one-file fix with failing unit tests to guide it; no version is pinned in code.
 
 ## 7. Out of scope (v1)
 
