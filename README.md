@@ -196,9 +196,9 @@ Jinn supports multiple engines. Switch per session or per employee in the web UI
 |--------|-----------|---------|-------|--------|
 | **claude** | Anthropic Claude Code CLI — first-party, Max-subscription-friendly | `npm install -g @anthropic-ai/claude-code` | Chat (PTY + SSE) · CLI (xterm) | low / medium / high |
 | **codex** | OpenAI Codex CLI | `npm install -g @openai/codex` | Chat (headless) · CLI (xterm) | low / medium / high / xhigh |
-| **grok** | xAI Grok CLI | `npm install -g @xai-ai/grok` | Chat (headless) · CLI (xterm) | low / medium / high / xhigh / max |
+| **grok** | xAI Grok CLI | `npm install -g @xai-official/grok` (then run `grok` once to authenticate) | Chat (headless) · CLI (xterm) | low / medium / high / xhigh / max |
 | **antigravity** | Antigravity CLI | (see Antigravity docs) | CLI (xterm) | — |
-| **pi** | Pi coding agent CLI | `npm install -g pi` | Chat (headless) | — |
+| **pi** | Pi coding agent CLI | (see Pi CLI docs) | Chat (headless) | — |
 | **hermes** | NousResearch Hermes — open-source, model-agnostic, self-improving agent | `curl -fsSL https://hermes-agent.nousresearch.com/install.sh \| bash` | Chat (ACP streaming) · CLI (xterm view) | — |
 
 > **Hermes cost note.** Unlike the subscription-wrapped engines above, Hermes owns its own model loop and bills **per token** on the provider configured in `~/.hermes` (e.g. OpenAI Codex). Costs accrue at your provider — not as part of a Jinn subscription. See [`docs/engines-hermes.md`](docs/engines-hermes.md) for full details.

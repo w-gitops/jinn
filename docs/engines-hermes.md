@@ -57,8 +57,8 @@ During a turn Hermes emits `session/update` notifications. Jinn maps their `sess
 
 | `sessionUpdate` value | Mapped to | Notes |
 |-----------------------|-----------|-------|
-| `agent_message_chunk` / `agent_message_text` | `{ type: "text", content }` | The assistant's visible reply. |
-| `agent_thought_chunk` / `agent_thought_text` | *(dropped)* | Internal reasoning — never forwarded as answer text. |
+| `agent_message_chunk` / `agent_message_text` | `{ type: "text", content }` | The assistant's visible reply. (The `_chunk` form is what the live binary emits; `_text` is a tolerated legacy/compat variant.) |
+| `agent_thought_chunk` / `agent_thought_text` | *(dropped)* | Internal reasoning — never forwarded as answer text. (The `_chunk` form is emitted live; `_text` is a tolerated legacy/compat variant.) |
 | `tool_call` | `{ type: "tool_use", content: name, toolId, toolName, input }` | Tool invocation start. `input` is JSON-stringified and capped at 200 chars. |
 | `tool_call_update` (status `completed` / `failed`) | `{ type: "tool_result", content: status, toolId }` | Tool result. Only `completed` and `failed` statuses are forwarded. |
 | `usage_update` | `{ type: "context", content: String(used) }` | Token count update; also updates the session's `contextTokens` field. |
@@ -76,7 +76,7 @@ The discovery flow:
 2. `session/new` → response includes `models.availableModels[]` (each entry has `modelId` and `name`) and `models.currentModelId`.
 3. Jinn populates the model registry from this list. Model IDs follow the `provider:model` convention, e.g. `openai-codex:gpt-5.5`.
 
-**Static fallback.** If discovery yields no models (binary not reachable, provider not configured, timeout after 20 s), Jinn falls back to a built-in catalog: `openai-codex:gpt-5.5` and `openai-codex:gpt-5.4`. The fallback is also used if the `models.hermes` block is explicitly defined in `~/.jinn/config.yaml` — that block overrides live discovery.
+**Precedence.** The three sources are tried in order: live-discovered models (highest priority) → the optional `models.hermes` block in `~/.jinn/config.yaml` (only consulted when discovery returns nothing) → the built-in static catalog (`openai-codex:gpt-5.5` and `openai-codex:gpt-5.4`) as the last resort. A configured `models.hermes` block does **not** override live discovery; it is only a fallback when the binary is unreachable or returns no models.
 
 ---
 
@@ -94,7 +94,7 @@ Every Hermes process (both modes) runs fully autonomously. Three layers enforce 
 |-------|-----------|
 | Environment | `HERMES_YOLO_MODE=1` and `HERMES_ACCEPT_HOOKS=1` are injected into the process environment at spawn time. |
 | ACP mode | `session/set_mode` is called with `modeId: "dont_ask"` immediately after each new session is created. |
-| Permission handler | Jinn registers an RPC server-request handler that answers every `session/request_permission` call with `{ outcome: "selected", optionId: "allow_always" }`. |
+| Permission handler | Jinn registers an RPC server-request handler that answers every `session/request_permission` call with `{ outcome: { outcome: "selected", optionId: "allow_always" } }`. |
 
 ---
 
