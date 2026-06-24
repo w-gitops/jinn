@@ -67,6 +67,36 @@ describe("TurnResolver — StopFailure grace window", () => {
     expect(r.isSettled).toBe(false);
   });
 
+  it("non-hard permission/safety failures are graced because Claude may continue", async () => {
+    const r = new TurnResolver({ fallbackSessionId: "sid", assumeStarted: true, stopFailureGraceMs: 1000 });
+    const get = probe(r);
+    r.onHook({ hook_event_name: "StopFailure", error: "permission_error", session_id: "sid" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.isSettled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(get()?.error).toBe("Interactive turn failed: permission_error");
+  });
+
+  it("does not expire a graced StopFailure while upstream sub-agent work is still active", async () => {
+    let activeUpstream = true;
+    const r = new TurnResolver({
+      fallbackSessionId: "sid",
+      assumeStarted: true,
+      stopFailureGraceMs: 1000,
+      shouldDeferStopFailure: () => activeUpstream,
+    });
+    const get = probe(r);
+
+    r.onHook({ hook_event_name: "StopFailure", error: "invalid_request", session_id: "sid" });
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(r.isSettled).toBe(false);
+    expect(get()).toBeUndefined();
+
+    activeUpstream = false;
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(get()?.error).toBe("Interactive turn failed: invalid_request");
+  });
+
   it("noteActivity() outside a grace window is a no-op", () => {
     const r = new TurnResolver({ fallbackSessionId: "sid", assumeStarted: true });
     r.noteActivity();

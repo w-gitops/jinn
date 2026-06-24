@@ -251,12 +251,10 @@ export function sseEventToDeltas(e: SseDataEvent): StreamDelta[] {
 }
 
 const STOP_FAILURE_GRACE_MS = 20_000;
-/** StopFailure error types the interactive CLI routinely survives and retries
- *  (the PTY keeps working) — eligible for the grace window. rate_limit /
- *  billing_error / authentication_failed / max_output_tokens settle
- *  immediately: the CLI genuinely stops on those, and manager.ts's wait/retry/
- *  fallback machinery keys off the prompt settle. */
-const GRACE_ELIGIBLE_ERRORS = new Set(["invalid_request", "server_error", "unknown"]);
+/** StopFailure errors that must settle immediately. Rate-limit/billing/auth
+ *  need the manager fallback machinery right away; everything else gets a grace
+ *  window because Claude Code can keep working after a sub-agent/API failure. */
+const IMMEDIATE_STOP_FAILURE_ERRORS = new Set(["rate_limit", "billing_error", "authentication_failed", "max_output_tokens"]);
 
 export interface TurnResolverOpts {
   fallbackSessionId: string | undefined;
@@ -266,6 +264,8 @@ export interface TurnResolverOpts {
   assumeStarted?: boolean;
   /** Test override for the StopFailure grace window (default 20s). */
   stopFailureGraceMs?: number;
+  /** While true, a graced StopFailure keeps waiting instead of settling. */
+  shouldDeferStopFailure?: () => boolean;
   /** This turn is a Claude-native local command (see isNativeClaudeCommand). Such
    *  commands produce no new assistant message, so a Stop hook's
    *  last_assistant_message is the PREVIOUS turn's stale text — maybeComplete must
@@ -314,7 +314,7 @@ export class TurnResolver {
       // numTurns:1 keeps isDeadSessionError from false-positiving.
       this.stopFailurePayload = h;
       if (typeof h.session_id === "string" && !this.claudeSessionId) this.claudeSessionId = h.session_id;
-      if (GRACE_ELIGIBLE_ERRORS.has(String(h.error ?? "unknown"))) {
+      if (!IMMEDIATE_STOP_FAILURE_ERRORS.has(String(h.error ?? "unknown"))) {
         this.armGrace();
       } else {
         this.settleWithFailure();
@@ -380,7 +380,13 @@ export class TurnResolver {
   private armGrace(): void {
     this.clearGrace();
     const ms = this.opts.stopFailureGraceMs ?? STOP_FAILURE_GRACE_MS;
-    this.graceTimer = setTimeout(() => this.settleWithFailure(), ms);
+    this.graceTimer = setTimeout(() => {
+      if (this.opts.shouldDeferStopFailure?.()) {
+        this.armGrace();
+        return;
+      }
+      this.settleWithFailure();
+    }, ms);
     this.graceTimer.unref?.();
   }
 
@@ -648,6 +654,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       fallbackSessionId: opts.resumeSessionId,
       assumeStarted: !!warm, // warm PTY = SessionStart already fired (turn 1 or idle spawn)
       native: nativeCommand,
+      shouldDeferStopFailure: () => this.hasActiveUpstream(jinnSessionId),
     });
     const entry: { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty; activeTools: number } = {
       resolver,
