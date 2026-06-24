@@ -13,7 +13,7 @@ import { useLiveSession } from '@/hooks/use-live-session'
 
 const CliTerminal = lazy(() => import('@/components/cli-terminal').then(m => ({ default: m.CliTerminal })))
 import type { CliTerminalHandle } from '@/components/cli-terminal'
-import { buildNewSessionParams } from '@/components/chat/new-chat-helpers'
+import { buildNewSessionParams, resolveNewSessionSelector, shouldPersistNewSessionSelector } from '@/components/chat/new-chat-helpers'
 import type { Employee } from '@/lib/api'
 import type { Message, MediaAttachment } from '@/lib/conversations'
 
@@ -185,6 +185,9 @@ export function ChatPane({
         displayName: emp.displayName,
         department: emp.department,
         rank: emp.rank,
+        engine: emp.engine,
+        model: emp.model,
+        effortLevel: emp.effortLevel,
       }))
     : []
   // Reset the employee picker when there is no session (the live read pipeline
@@ -195,6 +198,16 @@ export function ChatPane({
   // Engine/Model/Effort selector state (composer). Engine is editable on a new
   // chat only; model + effort are editable in existing chats too.
   const [selector, setSelector] = useState<SelectorValue>(() => readNewSessionSelector())
+  const selectorRef = useRef(selector)
+  const newSessionSelectorDirtyRef = useRef(false)
+  const previousSessionIdForSelectorRef = useRef(sessionId)
+  useEffect(() => { selectorRef.current = selector }, [selector])
+  useEffect(() => {
+    if (previousSessionIdForSelectorRef.current && !sessionId) {
+      newSessionSelectorDirtyRef.current = false
+    }
+    previousSessionIdForSelectorRef.current = sessionId
+  }, [sessionId])
   const [effortPendingNote, setEffortPendingNote] = useState(false)
   const [selectorError, setSelectorError] = useState<string | null>(null)
   const cliTerminalRef = useRef<CliTerminalHandle | null>(null)
@@ -206,7 +219,12 @@ export function ChatPane({
     const emp = selectedEmployee && Array.isArray(orgData?.employees)
       ? orgData.employees.find((e) => e.name === selectedEmployee)
       : undefined
-    setSelector(emp ? { engine: emp.engine, model: emp.model } : readNewSessionSelector())
+    setSelector(resolveNewSessionSelector({
+      selectedEmployee: emp ?? null,
+      storedSelector: readNewSessionSelector(),
+      currentSelector: selectorRef.current,
+      manuallyChanged: newSessionSelectorDirtyRef.current,
+    }))
     setEffortPendingNote(false)
     setSelectorError(null)
   }, [selectedEmployee, sessionId, orgData])
@@ -257,6 +275,7 @@ export function ChatPane({
           setSelectorError(err instanceof Error ? err.message : 'Model/effort update failed')
         })
     } else {
+      newSessionSelectorDirtyRef.current = true
       setSelector(next)
       setSelectorError(null)
       writeNewSessionSelector(next)
@@ -311,7 +330,9 @@ export function ChatPane({
           })
           if (viewMode === 'cli' && supportsCliPreference(selector.engine)) (params as Record<string, unknown>).mode = 'interactive'
           const session = (await api.createSession(params)) as Record<string, unknown>
-          writeNewSessionSelector(selector)
+          if (shouldPersistNewSessionSelector({ selectedEmployee, manuallyChanged: newSessionSelectorDirtyRef.current })) {
+            writeNewSessionSelector(selector)
+          }
           sid = String(session.id)
           onSessionCreated?.(sid, userMsg)
           onRefresh?.()

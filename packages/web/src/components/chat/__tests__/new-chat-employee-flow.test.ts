@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest'
  * Tests the logic for building session creation params based on employee selection.
  * This is the pure function extracted from ChatPane's handleSend.
  */
-import { buildNewSessionParams } from '../new-chat-helpers'
+import { buildNewSessionParams, resolveNewSessionSelector, shouldPersistNewSessionSelector } from '../new-chat-helpers'
 
 describe('buildNewSessionParams', () => {
   it('creates session without employee field when COO is selected (null)', () => {
@@ -94,5 +94,67 @@ describe('buildNewSessionParams', () => {
       selectedEmployee: 'content-lead',
     })
     expect(afterSwitch.employee).toBe('content-lead')
+  })
+})
+
+describe('resolveNewSessionSelector', () => {
+  it('uses selected employee engine, model, and effort defaults when the selector has not been manually changed', () => {
+    const selector = resolveNewSessionSelector({
+      selectedEmployee: {
+        name: 'research-lead',
+        engine: 'grok',
+        model: 'grok-build',
+        effortLevel: 'xhigh',
+      },
+      storedSelector: { engine: 'claude', model: 'opus', effortLevel: 'medium' },
+      currentSelector: { engine: 'claude', model: 'opus', effortLevel: 'medium' },
+      manuallyChanged: false,
+    })
+
+    expect(selector).toEqual({
+      engine: 'grok',
+      model: 'grok-build',
+      effortLevel: 'xhigh',
+    })
+  })
+
+  it('preserves the operator-selected engine, model, and effort after choosing an employee', () => {
+    const selector = resolveNewSessionSelector({
+      selectedEmployee: {
+        name: 'writer',
+        engine: 'claude',
+        model: 'opus',
+        effortLevel: 'high',
+      },
+      storedSelector: { engine: 'claude', model: 'opus', effortLevel: 'medium' },
+      currentSelector: { engine: 'codex', model: 'gpt-5.5', effortLevel: 'xhigh' },
+      manuallyChanged: true,
+    })
+
+    expect(selector).toEqual({
+      engine: 'codex',
+      model: 'gpt-5.5',
+      effortLevel: 'xhigh',
+    })
+  })
+
+  it('falls back to the stored selector for a direct COO chat', () => {
+    expect(resolveNewSessionSelector({
+      selectedEmployee: null,
+      storedSelector: { engine: 'codex', model: 'gpt-5.5', effortLevel: 'high' },
+      currentSelector: { engine: 'claude', model: 'opus' },
+      manuallyChanged: false,
+    })).toEqual({ engine: 'codex', model: 'gpt-5.5', effortLevel: 'high' })
+  })
+})
+
+describe('shouldPersistNewSessionSelector', () => {
+  it('persists direct-chat selectors and manual operator selections', () => {
+    expect(shouldPersistNewSessionSelector({ selectedEmployee: null, manuallyChanged: false })).toBe(true)
+    expect(shouldPersistNewSessionSelector({ selectedEmployee: 'writer', manuallyChanged: true })).toBe(true)
+  })
+
+  it('does not persist employee defaults as the next direct-chat selector', () => {
+    expect(shouldPersistNewSessionSelector({ selectedEmployee: 'writer', manuallyChanged: false })).toBe(false)
   })
 })

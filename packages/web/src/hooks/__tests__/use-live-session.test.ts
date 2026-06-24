@@ -99,6 +99,34 @@ describe("useLiveSession (read-only)", () => {
     expect(result.current.messages.filter((m) => m.toolCall === "read")).toHaveLength(1)
   })
 
+  it("keeps visible progress around a tool call instead of collapsing to only the final answer", async () => {
+    getSession.mockResolvedValue({ status: "running", messages: [] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() =>
+      useLiveSession("s1", { subscribe, readOnly: true }),
+    )
+    await act(async () => { await Promise.resolve() })
+
+    act(() => {
+      emit("session:delta", { sessionId: "s1", type: "text", content: "PROGRESS-FIRST" })
+      emit("session:delta", { sessionId: "s1", type: "tool_use", content: "Using Bash", toolName: "Bash" })
+      emit("session:delta", { sessionId: "s1", type: "tool_result", content: "TOOL-CALL-OK", toolName: "Bash" })
+      emit("session:delta", { sessionId: "s1", type: "text", content: "PROGRESS-FINAL" })
+    })
+
+    await act(async () => {
+      emit("session:completed", { sessionId: "s1", result: "PROGRESS-FINAL" })
+      await Promise.resolve()
+    })
+
+    expect(result.current.messages.map((m) => m.content)).toEqual([
+      "PROGRESS-FIRST",
+      "Used Bash",
+      "PROGRESS-FINAL",
+    ])
+    expect(result.current.messages[1]?.toolCall).toBe("Bash")
+  })
+
   it("shows transient status deltas and clears them when real output arrives", async () => {
     getSession.mockResolvedValue({ status: "running", messages: [] })
     const { subscribe, emit } = makeBus()
@@ -240,6 +268,40 @@ describe("useLiveSession (editable write path)", () => {
     expect(result.current.loading).toBe(false)
     expect(result.current.streamingText).toBe("")
     expect(result.current.messages.map((m) => m.content)).toEqual(["do it", "Done."])
+  })
+
+  it("does not remove an older identical assistant answer when a later turn completes", async () => {
+    getSession.mockResolvedValue({
+      status: "idle",
+      messages: [
+        { id: "u-old", role: "user", content: "old question", timestamp: 1 },
+        { id: "a-old", role: "assistant", content: "Done.", timestamp: 2 },
+      ],
+    })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s1", { subscribe }))
+    await act(async () => { await Promise.resolve() })
+
+    act(() => {
+      result.current.beginSend({
+        id: "u-new",
+        role: "user",
+        content: "new question",
+        timestamp: 3,
+      })
+    })
+
+    await act(async () => {
+      emit("session:completed", { sessionId: "s1", result: "Done." })
+      await Promise.resolve()
+    })
+
+    expect(result.current.messages.map((m) => m.content)).toEqual([
+      "old question",
+      "Done.",
+      "new question",
+      "Done.",
+    ])
   })
 
   it("seeds backgroundActivity from the session fetch and clears it on session switch", async () => {

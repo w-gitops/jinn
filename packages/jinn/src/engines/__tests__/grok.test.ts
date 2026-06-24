@@ -187,6 +187,33 @@ describe("parseGrokJsonLine", () => {
       .toEqual([{ type: "text", content: "G" }]);
   });
 
+  it("drops reasoning-like event names even when they carry generic text fields", () => {
+    const parsed = parseGrokJsonLine(JSON.stringify({
+      type: "reasoning_delta",
+      content: "private chain-of-thought",
+    }));
+
+    expect(parsed?.deltas).toEqual([]);
+    expect(JSON.stringify(parsed)).not.toContain("private chain-of-thought");
+  });
+
+  it("omits thinking blocks from mixed assistant content snapshots", () => {
+    const parsed = parseGrokJsonLine(JSON.stringify({
+      type: "message",
+      role: "assistant",
+      content: [
+        { type: "thinking", text: "hidden reasoning" },
+        { type: "text", text: "visible answer" },
+      ],
+      session_id: "grok-1",
+    }));
+
+    expect(parsed?.sessionId).toBe("grok-1");
+    expect(parsed?.doneText).toBe("visible answer");
+    expect(parsed?.deltas).toContainEqual({ type: "text_snapshot", content: "visible answer" });
+    expect(JSON.stringify(parsed)).not.toContain("hidden reasoning");
+  });
+
   it("skips Grok transcript user/system entries", () => {
     expect(parseGrokJsonLine(JSON.stringify({ type: "user", content: "<system-reminder>startup</system-reminder>" }))?.deltas)
       .toEqual([]);
@@ -322,6 +349,19 @@ describe("parseGrokJsonLine", () => {
 
     expect(parseGrokJsonLine(JSON.stringify({ type: "error", message: "bad auth" }))?.deltas)
       .toEqual([{ type: "error", content: "bad auth" }]);
+  });
+
+  it("drops nested reasoning wrappers from Grok content blocks", () => {
+    const parsed = parseGrokJsonLine(JSON.stringify({
+      type: "message",
+      content: [
+        { type: "content", content: { type: "thinking", text: "private nested reasoning" } },
+        { type: "content", content: { type: "text", text: "visible answer" } },
+      ],
+    }));
+
+    expect(parsed?.deltas).toEqual([{ type: "text_snapshot", content: "visible answer" }]);
+    expect(parsed?.deltas.some((d) => String(d.content).includes("private nested reasoning"))).toBe(false);
   });
 });
 

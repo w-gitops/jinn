@@ -118,6 +118,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function isReasoningType(value: unknown): boolean {
+  const type = String(value ?? "").toLowerCase();
+  return type.includes("thought") || type.includes("thinking") || type.includes("reasoning") || type.includes("chain_of_thought");
+}
+
 function stringField(obj: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
     const value = obj[key];
@@ -126,29 +131,41 @@ function stringField(obj: Record<string, unknown>, keys: string[]): string | und
   return undefined;
 }
 
+function stripReasoningMarkup(text: string): string {
+  return text
+    .replace(/<\s*(thinking|reasoning|thought)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, "");
+}
+
 function textFromContent(value: unknown): string {
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return stripReasoningMarkup(value);
   if (!Array.isArray(value)) return "";
   return value
     .map((block) => {
-      if (typeof block === "string") return block;
+      if (typeof block === "string") return stripReasoningMarkup(block);
       const b = asRecord(block);
       if (!b) return "";
-      const direct = stringField(b, ["text", "content", "value", "output"]);
-      if (direct) return direct;
+      if (isReasoningType(b.type) || isReasoningType(b.kind) || isReasoningType(b.role)) return "";
       const nested = asRecord(b.content);
-      if (nested) return stringField(nested, ["text", "content", "value", "output"]) ?? textFromContent(nested.content);
+      if (nested) {
+        if (isReasoningType(nested.type) || isReasoningType(nested.kind) || isReasoningType(nested.role)) return "";
+        const nestedDirect = stringField(nested, ["text", "content", "value", "output"]);
+        return nestedDirect ? stripReasoningMarkup(nestedDirect) : textFromContent(nested.content);
+      }
+      const direct = stringField(b, ["text", "content", "value", "output"]);
+      if (direct) return stripReasoningMarkup(direct);
       return Array.isArray(b.content) ? textFromContent(b.content) : "";
     })
     .join("");
 }
 
 function textFromUnknown(value: unknown): string {
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return stripReasoningMarkup(value);
   if (Array.isArray(value)) return textFromContent(value);
   const obj = asRecord(value);
   if (!obj) return "";
-  return stringField(obj, ["text", "content", "value", "output", "message"]) ?? textFromContent(obj.content);
+  if (isReasoningType(obj.type) || isReasoningType(obj.kind) || isReasoningType(obj.role)) return "";
+  const direct = stringField(obj, ["text", "content", "value", "output", "message"]);
+  return direct ? stripReasoningMarkup(direct) : textFromContent(obj.content);
 }
 
 function compactText(text: string, max = 500): string {
@@ -291,7 +308,7 @@ export function parseGrokJsonLine(line: string): GrokParsedLine | null {
         contextTokens,
       };
     }
-    if (updateType === "agent_thought_chunk") {
+    if (isReasoningType(updateType)) {
       // Raw model reasoning ("thought") must NEVER reach the UI — the payload can
       // contain chain-of-thought, <thinking> blocks, even draft answers. Drop it
       // entirely (no placeholder line): the pre-token spinner covers the reasoning
@@ -380,7 +397,7 @@ export function parseGrokJsonLine(line: string): GrokParsedLine | null {
     return { deltas: [{ type: "error", content: error }, ...deltas], sessionId, error, terminal: true };
   }
 
-  if (eventType === "thought") {
+  if (isReasoningType(eventType)) {
     // Raw reasoning chunk — never displayed (same contract as agent_thought_chunk).
     // Dropped entirely; no placeholder status line.
     return { deltas, sessionId, terminal, contextTokens };

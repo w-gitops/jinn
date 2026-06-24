@@ -148,6 +148,13 @@ export function lastAssistantTextFromTranscript(transcriptPath: string, afterMs?
   return last;
 }
 
+export function stripReasoningBlocks(text: string): string {
+  return text
+    .replace(/<\s*(thinking|reasoning|thought)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, "")
+    .replace(/```(?:thinking|reasoning|thought)\b[\s\S]*?```/gi, "")
+    .trim();
+}
+
 function computeInteractiveCost(transcriptPath: string, model?: string): { cost: number; turns: number } | null {
   let content: string;
   try { content = fs.readFileSync(transcriptPath, "utf-8"); } catch { return null; }
@@ -194,19 +201,14 @@ export function buildInteractiveArgs(o: InteractiveArgsOpts): string[] {
   return args;
 }
 
-/**
- * Stringify a tool_input value from a hook payload into a truncated string
- * suitable for the `input` field on a StreamDelta (first `maxChars` chars).
- * Exported for unit testing; not part of the public engine API.
- */
-export function truncatedToolInput(toolInput: unknown, maxChars = 200): string {
-  const raw =
-    typeof toolInput === "object" && toolInput !== null
-      ? JSON.stringify(toolInput)
-      : typeof toolInput === "string"
-      ? toolInput
-      : "";
-  return raw.slice(0, maxChars);
+export function claudeHookToDeltas(h: Record<string, unknown>): StreamDelta[] {
+  if (h.hook_event_name !== "PostToolUse") return [];
+  const toolName = typeof h.tool_name === "string" ? h.tool_name : undefined;
+  return [{
+    type: "tool_result",
+    content: String(h.tool_name ?? ""),
+    toolName,
+  }];
 }
 
 /**
@@ -249,12 +251,10 @@ export function sseEventToDeltas(e: SseDataEvent): StreamDelta[] {
 }
 
 const STOP_FAILURE_GRACE_MS = 20_000;
-/** StopFailure error types the interactive CLI routinely survives and retries
- *  (the PTY keeps working) — eligible for the grace window. rate_limit /
- *  billing_error / authentication_failed / max_output_tokens settle
- *  immediately: the CLI genuinely stops on those, and manager.ts's wait/retry/
- *  fallback machinery keys off the prompt settle. */
-const GRACE_ELIGIBLE_ERRORS = new Set(["invalid_request", "server_error", "unknown"]);
+/** StopFailure errors that must settle immediately. Rate-limit/billing/auth
+ *  need the manager fallback machinery right away; everything else gets a grace
+ *  window because Claude Code can keep working after a sub-agent/API failure. */
+const IMMEDIATE_STOP_FAILURE_ERRORS = new Set(["rate_limit", "billing_error", "authentication_failed", "max_output_tokens"]);
 
 export interface TurnResolverOpts {
   fallbackSessionId: string | undefined;
@@ -264,6 +264,8 @@ export interface TurnResolverOpts {
   assumeStarted?: boolean;
   /** Test override for the StopFailure grace window (default 20s). */
   stopFailureGraceMs?: number;
+  /** While true, a graced StopFailure keeps waiting instead of settling. */
+  shouldDeferStopFailure?: () => boolean;
   /** This turn is a Claude-native local command (see isNativeClaudeCommand). Such
    *  commands produce no new assistant message, so a Stop hook's
    *  last_assistant_message is the PREVIOUS turn's stale text — maybeComplete must
@@ -312,7 +314,7 @@ export class TurnResolver {
       // numTurns:1 keeps isDeadSessionError from false-positiving.
       this.stopFailurePayload = h;
       if (typeof h.session_id === "string" && !this.claudeSessionId) this.claudeSessionId = h.session_id;
-      if (GRACE_ELIGIBLE_ERRORS.has(String(h.error ?? "unknown"))) {
+      if (!IMMEDIATE_STOP_FAILURE_ERRORS.has(String(h.error ?? "unknown"))) {
         this.armGrace();
       } else {
         this.settleWithFailure();
@@ -344,7 +346,7 @@ export class TurnResolver {
     // Native local commands (/usage, /limits, …) produce no new assistant
     // message; the Stop hook's last_assistant_message is the prior turn's stale
     // text. Settling with it would persist a duplicate chat echo — settle empty.
-    const text = this.opts.native ? "" : String(this.stopPayload.last_assistant_message ?? "");
+    const text = this.opts.native ? "" : stripReasoningBlocks(String(this.stopPayload.last_assistant_message ?? ""));
     this.settle({ sessionId: sid, result: text, error: undefined, numTurns: 1 });
   }
 
@@ -366,7 +368,7 @@ export class TurnResolver {
 
   completeRecovered(text: string, sessionId?: string): void {
     if (sessionId && !this.claudeSessionId) this.claudeSessionId = sessionId;
-    this.settle({ sessionId: this.claudeSessionId ?? this.opts.fallbackSessionId ?? "", result: text, numTurns: 1 });
+    this.settle({ sessionId: this.claudeSessionId ?? this.opts.fallbackSessionId ?? "", result: stripReasoningBlocks(text), numTurns: 1 });
   }
 
   /** Proof of life (SSE delta / tool hook) while a StopFailure is pending —
@@ -378,7 +380,13 @@ export class TurnResolver {
   private armGrace(): void {
     this.clearGrace();
     const ms = this.opts.stopFailureGraceMs ?? STOP_FAILURE_GRACE_MS;
-    this.graceTimer = setTimeout(() => this.settleWithFailure(), ms);
+    this.graceTimer = setTimeout(() => {
+      if (this.opts.shouldDeferStopFailure?.()) {
+        this.armGrace();
+        return;
+      }
+      this.settleWithFailure();
+    }, ms);
     this.graceTimer.unref?.();
   }
 
@@ -443,17 +451,17 @@ export function isNativeClaudeCommand(prompt: string): boolean {
   return first !== undefined && NATIVE_CLAUDE_COMMANDS.has(first);
 }
 
-/** Bracketed-paste `text` into a PTY then submit with CR after a 50ms beat.
+/** Bracketed-paste `text` into a PTY then submit with CR after a 150ms beat.
  *  Phase 0 finding: bracketed-paste does NOT neutralize a leading /, @, or ! —
  *  they still trigger the slash-command / mention / bash-mode handlers and the
  *  turn is never submitted. neutralizeForPaste() prepends a space for mentions,
  *  bash-mode, and jinn-skill slash commands, while letting engine-native commands
  *  (/compact, /clear, /model, …) pass through raw so the TUI actually runs them.
  *  Shared by injectPrompt() (warm-PTY first turn) and writeStdin() (raw WS input). */
-function pasteAndSubmit(proc: pty.IPty, text: string): void {
+export function pasteAndSubmit(proc: Pick<pty.IPty, "write">, text: string): void {
   const payload = neutralizeForPaste(text);
   proc.write(`\x1b[200~${payload}\x1b[201~`);
-  setTimeout(() => proc.write("\r"), 50);
+  setTimeout(() => proc.write("\r"), 150);
 }
 
 export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngine {
@@ -646,6 +654,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       fallbackSessionId: opts.resumeSessionId,
       assumeStarted: !!warm, // warm PTY = SessionStart already fired (turn 1 or idle spawn)
       native: nativeCommand,
+      shouldDeferStopFailure: () => this.hasActiveUpstream(jinnSessionId),
     });
     const entry: { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty; activeTools: number } = {
       resolver,
@@ -663,33 +672,15 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       // Register BEFORE spawning so a fast SessionStart is buffered+drained, not lost.
       this.hookRegistry.register(jinnSessionId, (h) => {
         resolver.onHook(h);
-        // tool_use markers + intermediate text now stream from the per-PTY SSE proxy
-        // (content_block_start / content_block_delta) in true order. The hook only
-        // supplies tool_result — the assistant SSE stream has no tool_result event
-        // (tools execute locally between assistant messages).
-        // PreToolUse fires just before the tool runs; the full input is assembled by
-        // then. Emit a second tool_use delta carrying a truncated input so the Talk
-        // whisper can distinguish delegate/search/card calls from generic Bash work.
+        // tool_use markers + intermediate text stream from the per-PTY SSE proxy
+        // in true order. The hook only supplies tool_result; SSE has no local tool
+        // completion event because tools execute between assistant messages.
         if (h.hook_event_name === "PreToolUse") {
           entry.activeTools += 1;
-          if (opts.onStream) {
-            opts.onStream({
-              type: "tool_use",
-              content: String(h.tool_name ?? ""),
-              toolName: typeof h.tool_name === "string" ? h.tool_name : undefined,
-              input: truncatedToolInput(h.tool_input),
-            });
-          }
         }
         if (h.hook_event_name === "PostToolUse") {
           entry.activeTools = Math.max(0, entry.activeTools - 1);
-          if (opts.onStream) {
-            opts.onStream({
-              type: "tool_result",
-              content: String(h.tool_name ?? ""),
-              toolName: typeof h.tool_name === "string" ? h.tool_name : undefined,
-            });
-          }
+          for (const delta of claudeHookToDeltas(h as Record<string, unknown>)) opts.onStream?.(delta);
         }
       });
 
@@ -808,7 +799,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       const recovered = recoveryPath ? lastAssistantTextFromTranscript(recoveryPath, turnStartedAt) : undefined;
       if (recovered) {
         logger.info(`Recovered ${recovered.length} chars of lost turn text for session ${jinnSessionId} from transcript (Stop hook missing)`);
-        result.result = recovered;
+        result.result = stripReasoningBlocks(recovered);
       }
     }
     // Map a StopFailure rate-limit into result.rateLimit so manager.ts's
@@ -1128,9 +1119,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       const text = String(h.last_assistant_message ?? "");
       const sid = typeof h.session_id === "string" ? h.session_id : "";
       this.cancelLateRecovery(jinnSessionId);
-      if (text.trim()) {
+      const safeText = stripReasoningBlocks(text);
+      if (safeText.trim()) {
         logger.info(`InteractiveClaudeEngine: late Stop superseded failed turn for ${jinnSessionId}`);
-        opts.onLateRecovery?.({ result: text, sessionId: sid });
+        opts.onLateRecovery?.({ result: safeText, sessionId: sid });
       } else {
         logger.info(`InteractiveClaudeEngine: late Stop with no text for ${jinnSessionId} — recovery abandoned`);
       }
