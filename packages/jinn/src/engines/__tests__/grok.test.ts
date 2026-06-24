@@ -81,6 +81,13 @@ import { buildGrokHeadlessArgs, GrokEngine, grokVisibleDeltas, parseGrokJsonLine
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(predicate: () => boolean, label: string, timeoutMs = 2500): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started >= timeoutMs) throw new Error(`Timed out waiting for ${label}`);
+    await sleep(25);
+  }
+}
 
 async function runWith(
   stdoutLines: string[],
@@ -591,7 +598,7 @@ describe("GrokEngine run", () => {
       }),
       "",
     ].join("\n"));
-    await sleep(350);
+    await waitFor(() => deltas.some((delta) => delta.type === "tool_result" && delta.toolId === "tool-1"), "Grok transcript tool result");
 
     call.proc.emitStdout([
       JSON.stringify({ type: "text", data: "done" }),
@@ -671,7 +678,7 @@ describe("GrokEngine run", () => {
       "",
     ].join("\n"));
 
-    await sleep(350);
+    await waitFor(() => deltas.some((delta) => delta.type === "tool_use" && delta.toolId === "right-tool"), "filtered Grok transcript tool call");
     call.proc.emitStdout([
       JSON.stringify({ type: "text", data: "done" }),
       JSON.stringify({ type: "result", result: "done", done: true }),
