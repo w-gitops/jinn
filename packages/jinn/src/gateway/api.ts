@@ -68,6 +68,7 @@ import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, handleSessionAttachment, fileIdsToMedia, rehomeAttachmentsToSession, ensureFilesDir } from "./files.js";
 import { readJsonBody, readBodyRaw } from "./http-helpers.js";
 import { readJsonlTail } from "./jsonl-tail.js";
+import { resultAlreadyInStreamedBlocks, shouldPreserveStreamedBlocks } from "./streamed-blocks.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel, notifyAttachedTalkSessions } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
 import { handleHookPost, isLoopback } from "./hook-endpoint.js";
@@ -2534,18 +2535,15 @@ async function runWebSession(
     const wasSuperseded = !wasInterrupted && isTurnSuperseded(currentSession.id, turnStartedAt);
     const quietPreempted = wasInterrupted || wasSuperseded;
 
-    // Turn settled. Most engines replace live partials with a single final
-    // assistant message. Antigravity's transcript is already interleaved text +
-    // tool rows, so preserve those blocks when tool cards were streamed. If the
-    // turn was preempted by a newer user message, drop stale partials/results so
-    // the old assistant answer cannot land after the new user bubble.
+    // Turn settled. Plain text-only turns collapse to a single final assistant
+    // message. Tool-bearing turns preserve their interleaved text/tool blocks so
+    // durable chat history still shows what happened between the first and final
+    // answer. If the turn was preempted by a newer user message, drop stale
+    // partials/results so the old assistant answer cannot land after the new user
+    // bubble.
     const streamedBlocks = getMessages(currentSession.id).filter((m) => m.partial);
-    const preserveStreamedBlocks =
-      !quietPreempted && currentSession.engine === "antigravity" && streamedBlocks.some((m) => !!m.toolCall);
-    const resultAlreadyPersisted =
-      preserveStreamedBlocks &&
-      !!result.result?.trim() &&
-      streamedBlocks.some((m) => !m.toolCall && m.content.trim() === result.result.trim());
+    const preserveStreamedBlocks = shouldPreserveStreamedBlocks({ quietPreempted, streamedBlocks });
+    const resultAlreadyPersisted = preserveStreamedBlocks && resultAlreadyInStreamedBlocks(result.result, streamedBlocks);
     if (preserveStreamedBlocks) finalizePartialMessages(currentSession.id);
     else deletePartialMessages(currentSession.id);
 

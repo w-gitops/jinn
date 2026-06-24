@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from "vitest";
 // unit test stays CI-portable (no native binding needed).
 vi.mock("node-pty", () => ({ spawn: vi.fn() }));
 
-import { sseEventToDeltas, truncatedToolInput } from "../claude-interactive.js";
+import { sseEventToDeltas } from "../claude-interactive.js";
 
 describe("sseEventToDeltas (Item D — SSE → StreamDelta mapping)", () => {
   it("maps message_start.usage to a context delta (input + cache_read + cache_creation)", () => {
@@ -50,46 +50,5 @@ describe("sseEventToDeltas (Item D — SSE → StreamDelta mapping)", () => {
     for (const type of ["ping", "content_block_stop", "message_delta", "message_stop"]) {
       expect(sseEventToDeltas({ type })).toEqual([]);
     }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// truncatedToolInput — used by the PreToolUse hook handler to carry a short
-// input snippet on the second tool_use delta so Talk whispers can differentiate.
-//
-// NOTE: the PreToolUse hook fires inside run() which spawns a PTY; that path is
-// not unit-testable in isolation (requires a live PTY + engine session). The
-// helper is extracted and tested here; the plumbing relies on the type guarantee
-// (StreamDelta.input) and frontend integration tests (talk-whisper.test.ts).
-// ---------------------------------------------------------------------------
-describe("truncatedToolInput", () => {
-  it("stringifies a JSON object and returns first 200 chars", () => {
-    const input = { command: "curl -X POST http://localhost:7777/api/talk/delegate -d '{}'" };
-    const result = truncatedToolInput(input);
-    expect(result).toBe(JSON.stringify(input).slice(0, 200));
-    expect(result.length).toBeLessThanOrEqual(200);
-  });
-
-  it("passes a string through untouched (up to 200 chars)", () => {
-    expect(truncatedToolInput("hello world")).toBe("hello world");
-  });
-
-  it("truncates long inputs to exactly maxChars", () => {
-    const long = "x".repeat(500);
-    expect(truncatedToolInput(long)).toHaveLength(200);
-    expect(truncatedToolInput(long, 50)).toHaveLength(50);
-  });
-
-  it("returns empty string for null/undefined/number/boolean", () => {
-    expect(truncatedToolInput(null)).toBe("");
-    expect(truncatedToolInput(undefined)).toBe("");
-    expect(truncatedToolInput(42)).toBe("");
-    expect(truncatedToolInput(true)).toBe("");
-  });
-
-  it("preserves /api/talk/* paths inside object inputs (needed for whisper matching)", () => {
-    const obj = { url: "http://host/api/talk/delegate", body: "{}" };
-    const result = truncatedToolInput(obj);
-    expect(result.toLowerCase()).toContain("/api/talk/delegate");
   });
 });

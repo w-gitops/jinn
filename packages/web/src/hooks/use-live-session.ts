@@ -321,6 +321,7 @@ export function useLiveSession(
 
       if (event === 'session:completed') {
         clearStatusMessage()
+        const intermediateStart = intermediateStartRef.current
         streamingTextRef.current = ''
         setStreamingText('')
         setLoading(false)
@@ -338,14 +339,15 @@ export function useLiveSession(
           const resultKey = resultStr.trim()
           setMessages((prev) => {
             const cleaned = [...prev]
+            const turnStart = intermediateStart >= 0 ? Math.min(intermediateStart, cleaned.length) : cleaned.length
             // Reconcile the canonical result with any text already on screen, by
             // identity — Grok streams its answer text live, and a transcript
             // `tool_use` that lands AFTER the streamed answer freezes that text into
             // a permanent assistant bubble (via the tool_use handler above). Without
-            // this dedupe the same answer would render twice. Scan from the tail and
-            // drop an identical non-tool assistant bubble before appending the result.
+            // this dedupe the same answer would render twice. Only scan the current
+            // turn's live/intermediate range so older identical answers survive.
             if (resultKey) {
-              for (let i = cleaned.length - 1; i >= 0; i--) {
+              for (let i = cleaned.length - 1; i >= turnStart; i--) {
                 const m = cleaned[i]
                 if (
                   m.role === 'assistant' &&
@@ -362,7 +364,13 @@ export function useLiveSession(
             // Pop a trailing optimistic streaming-text bubble so the canonical result
             // replaces it, but NEVER pop an attachment (media) message — it's already
             // persisted and would otherwise vanish until reload.
-            if (last && last.role === 'assistant' && !last.toolCall && !(last.media && last.media.length > 0)) {
+            if (
+              cleaned.length - 1 >= turnStart &&
+              last &&
+              last.role === 'assistant' &&
+              !last.toolCall &&
+              !(last.media && last.media.length > 0)
+            ) {
               cleaned.pop()
             }
             return [
