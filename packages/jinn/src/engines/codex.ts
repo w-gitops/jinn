@@ -187,11 +187,22 @@ export class CodexEngine implements InterruptibleEngine {
       let hardTimeout: NodeJS.Timeout | undefined;
       let terminalSettleTimer: NodeJS.Timeout | undefined;
       const onStream = opts.onStream || null;
+      let lastStreamedTextBlock: string | null = null;
       const STDERR_MAX = 10 * 1024; // 10KB rolling window for error reporting
 
       const clearTimers = () => {
         if (hardTimeout) { clearTimeout(hardTimeout); hardTimeout = undefined; }
         if (terminalSettleTimer) { clearTimeout(terminalSettleTimer); terminalSettleTimer = undefined; }
+      };
+      const resetTextBlockRun = () => { lastStreamedTextBlock = null; };
+      const streamTextBlock = (delta: StreamDelta) => {
+        if (!onStream) return;
+        const needsBoundary =
+          lastStreamedTextBlock !== null &&
+          !lastStreamedTextBlock.endsWith("\n") &&
+          !delta.content.startsWith("\n");
+        onStream(needsBoundary ? { ...delta, content: `\n\n${delta.content}` } : delta);
+        lastStreamedTextBlock = delta.content;
       };
 
       // Settle the turn on codex's parsed terminal event (`turn.completed` →
@@ -266,29 +277,35 @@ export class CodexEngine implements InterruptibleEngine {
               logger.info(`Codex session got thread ID: ${threadId}`);
               break;
             case "tool_start":
+              resetTextBlockRun();
               if (onStream) onStream(parsed.delta);
               break;
             case "tool_end":
+              resetTextBlockRun();
               if (onStream) onStream(parsed.delta);
               break;
             case "text":
               // Each agent_message item is a COMPLETE assistant message; codex emits
               // several per turn (preamble + final). The result must be the FINAL
               // message, not all of them concatenated — so replace, don't append.
-              // Live streaming of each block is unaffected (onStream below).
+              // Adjacent live blocks need a paragraph boundary because the web UI
+              // appends text deltas like chunks.
               resultText = parsed.delta.content;
-              if (onStream) onStream(parsed.delta);
+              streamTextBlock(parsed.delta);
               break;
             case "error":
+              resetTextBlockRun();
               turnError = parsed.message;
               if (onStream) onStream({ type: "error", content: parsed.message });
               break;
             case "usage":
+              resetTextBlockRun();
               numTurns++;
               if (parsed.contextTokens) lastContextTokens = parsed.contextTokens;
               scheduleTerminalSettle(); // turn.completed = end of turn
               break;
             case "turn_failed":
+              resetTextBlockRun();
               turnError = parsed.message;
               if (onStream) onStream({ type: "error", content: parsed.message });
               scheduleTerminalSettle(); // turn.failed = end of turn

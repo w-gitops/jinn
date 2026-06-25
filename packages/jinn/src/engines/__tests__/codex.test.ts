@@ -223,6 +223,18 @@ describe("CodexEngine — final result assembly (last agent_message wins, NOT co
     expect(result.result).not.toContain("intermediate");
   });
 
+  it("separates adjacent live agent_message blocks without changing the final result", async () => {
+    const { result, deltas } = await runWith({}, [
+      threadStarted("t1"),
+      agentMessage("First block."),
+      agentMessage("Second block."),
+    ]);
+
+    const liveText = deltas.filter((d) => d.type === "text").map((d) => d.content).join("");
+    expect(liveText).toBe("First block.\n\nSecond block.");
+    expect(result.result).toBe("Second block.");
+  });
+
   it("flushes a trailing agent_message that arrives without a newline (close-time lineBuf)", async () => {
     const { result } = await runWith(
       {},
