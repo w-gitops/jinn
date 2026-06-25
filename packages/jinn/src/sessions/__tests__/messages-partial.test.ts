@@ -28,6 +28,7 @@ describe("messages partial (mid-turn streaming) blocks", () => {
     expect(cols).toContain("partial");
     expect(cols).toContain("seq");
     expect(cols).toContain("tool_call");
+    expect(cols).toContain("blocks");
   });
 
   it("persists partial blocks in seq order with tool metadata, then wipes them", () => {
@@ -108,6 +109,260 @@ describe("messages partial (mid-turn streaming) blocks", () => {
     expect(reg.getMessages("p5")).toHaveLength(0);
   });
 
+  it("persists structured block messages and applies patch/remove by block id", () => {
+    newSession("block-1");
+    reg.applyBlockEnvelope("block-1", {
+      op: "put",
+      block: {
+        id: "plan",
+        type: "task-list",
+        version: 1,
+        title: "Plan",
+        payload: { items: [{ id: "a", text: "Read code", status: "running" }] },
+      },
+    });
+
+    let msgs = reg.getMessages("block-1");
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].content).toBe("Plan: 1 item");
+    expect(msgs[0].blocks?.[0]?.id).toBe("plan");
+
+    reg.applyBlockEnvelope("block-1", {
+      op: "patch",
+      block: {
+        id: "plan",
+        type: "task-list",
+        version: 1,
+        status: "done",
+        payload: { summary: "Complete" },
+      },
+    });
+
+    msgs = reg.getMessages("block-1");
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].blocks?.[0]?.status).toBe("done");
+    expect(msgs[0].blocks?.[0]?.payload).toMatchObject({ summary: "Complete" });
+
+    reg.applyBlockEnvelope("block-1", {
+      op: "remove",
+      block: { id: "plan", type: "task-list", version: 1, payload: {} },
+    });
+    expect(reg.getMessages("block-1")).toEqual([]);
+  });
+
+  it("updates synthetic block row text created with custom fallback text", () => {
+    newSession("block-custom-patch");
+    reg.applyBlockEnvelope("block-custom-patch", {
+      op: "put",
+      block: {
+        id: "plan",
+        type: "task-list",
+        version: 1,
+        title: "Plan",
+        payload: { items: [{ id: "a", text: "Read code", status: "running" }] },
+      },
+    }, "Plan running.");
+
+    reg.applyBlockEnvelope("block-custom-patch", {
+      op: "patch",
+      block: {
+        id: "plan",
+        type: "task-list",
+        version: 1,
+        status: "done",
+        payload: { summary: "Complete" },
+      },
+    }, "Plan complete.");
+
+    const msgs = reg.getMessages("block-custom-patch");
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].content).toBe("Plan complete.");
+    expect(msgs[0].blocks?.[0]?.status).toBe("done");
+  });
+
+  it("ignores patch-first block envelopes", () => {
+    newSession("block-patch-first");
+    const id = reg.applyBlockEnvelope("block-patch-first", {
+      op: "patch",
+      block: {
+        id: "plan",
+        type: "task-list",
+        version: 1,
+        status: "done",
+        payload: { summary: "Complete" },
+      },
+    }, "Plan complete.");
+
+    expect(id).toBeNull();
+    expect(reg.getMessages("block-patch-first")).toEqual([]);
+  });
+
+  it("removes synthetic block rows created with custom fallback text", () => {
+    newSession("block-custom-remove");
+    reg.applyBlockEnvelope("block-custom-remove", {
+      op: "put",
+      block: {
+        id: "plan",
+        type: "task-list",
+        version: 1,
+        title: "Plan",
+        payload: { items: [{ id: "a", text: "Read code", status: "running" }] },
+      },
+    }, "Plan");
+
+    reg.applyBlockEnvelope("block-custom-remove", {
+      op: "remove",
+      block: { id: "plan", type: "task-list", version: 1, payload: {} },
+    }, "Plan");
+
+    expect(reg.getMessages("block-custom-remove")).toEqual([]);
+  });
+
+  it("keeps mixed answer text when removing a block", () => {
+    newSession("block-mixed-remove");
+    reg.insertMessage("block-mixed-remove", "assistant", "Keep this answer", undefined, [{
+      id: "plan",
+      type: "task-list",
+      version: 1,
+      title: "Plan",
+      payload: { items: [{ id: "a", text: "Read code" }] },
+    }]);
+
+    reg.applyBlockEnvelope("block-mixed-remove", {
+      op: "remove",
+      block: { id: "plan", type: "task-list", version: 1, payload: {} },
+    }, "Plan");
+
+    const msgs = reg.getMessages("block-mixed-remove");
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].content).toBe("Keep this answer");
+    expect(msgs[0].blocks).toBeUndefined();
+  });
+
+  it("can persist structured block messages as partial turn state", () => {
+    newSession("block-partial");
+    reg.applyBlockEnvelope("block-partial", {
+      op: "put",
+      block: {
+        id: "plan",
+        type: "task-list",
+        version: 1,
+        title: "Plan",
+        payload: { items: [{ id: "a", text: "Read code", status: "running" }] },
+      },
+    }, undefined, { partial: true, seq: 0 });
+
+    let msgs = reg.getMessages("block-partial");
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].partial).toBe(true);
+    expect(msgs[0].blocks?.[0]?.id).toBe("plan");
+
+    expect(reg.deletePartialMessages("block-partial")).toBe(1);
+    msgs = reg.getMessages("block-partial");
+    expect(msgs).toEqual([]);
+  });
+
+  it("can move streamed block state onto the final assistant message", () => {
+    newSession("block-final");
+    const block = {
+      id: "plan:t1",
+      type: "task-list" as const,
+      version: 1,
+      title: "Plan",
+      payload: { items: [{ id: "a", text: "Read code", status: "done" }] },
+    };
+
+    reg.applyBlockEnvelope("block-final", {
+      op: "put",
+      block,
+    }, undefined, { partial: true, seq: 0 });
+
+    const streamedBlocks = reg.getMessages("block-final").flatMap((message) => message.blocks ?? []);
+    expect(reg.deletePartialMessages("block-final")).toBe(1);
+    reg.insertMessage("block-final", "assistant", "Done.", undefined, streamedBlocks);
+
+    const msgs = reg.getMessages("block-final");
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].partial).toBeUndefined();
+    expect(msgs[0].content).toBe("Done.");
+    expect(msgs[0].blocks).toEqual([block]);
+  });
+
+  it("drops obsolete stored block types when reading messages", () => {
+    newSession("block-legacy-types");
+    reg.initDb().prepare(
+      "INSERT INTO messages (id, session_id, role, content, timestamp, blocks) VALUES ('legacy-blocks', ?, 'assistant', 'Mixed blocks', ?, ?)",
+    ).run("block-legacy-types", Date.now(), JSON.stringify([
+      {
+        id: "old-diff",
+        type: "diff",
+        version: 1,
+        payload: { hunks: [{ before: "old", after: "new" }] },
+      },
+      {
+        id: "plan",
+        type: "task-list",
+        version: 1,
+        payload: { items: [{ id: "a", text: "Read code" }] },
+      },
+    ]));
+
+    const msgs = reg.getMessages("block-legacy-types");
+    expect(msgs[0].blocks?.map((block) => block.id)).toEqual(["plan"]);
+  });
+
+  it("removing a block from a mixed row preserves the row text", () => {
+    newSession("block-mixed");
+    reg.initDb().prepare(
+      "INSERT INTO messages (id, session_id, role, content, timestamp, blocks) VALUES ('mixed', ?, 'assistant', 'Keep this answer text', ?, ?)",
+    ).run("block-mixed", Date.now(), JSON.stringify([{
+      id: "plan",
+      type: "task-list",
+      version: 1,
+      title: "Plan",
+      payload: { items: [{ id: "a", text: "Read code" }] },
+    }]));
+
+    reg.applyBlockEnvelope("block-mixed", {
+      op: "remove",
+      block: { id: "plan", type: "task-list", version: 1, payload: {} },
+    });
+
+    const msgs = reg.getMessages("block-mixed");
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].content).toBe("Keep this answer text");
+    expect(msgs[0].blocks).toBeUndefined();
+  });
+
+  it("patching a block on a mixed row preserves the row text", () => {
+    newSession("block-mixed-patch");
+    reg.initDb().prepare(
+      "INSERT INTO messages (id, session_id, role, content, timestamp, blocks) VALUES ('mixed-patch', ?, 'assistant', 'Keep this answer text', ?, ?)",
+    ).run("block-mixed-patch", Date.now(), JSON.stringify([{
+      id: "plan",
+      type: "task-list",
+      version: 1,
+      title: "Plan",
+      payload: { items: [{ id: "a", text: "Read code" }] },
+    }]));
+
+    reg.applyBlockEnvelope("block-mixed-patch", {
+      op: "patch",
+      block: {
+        id: "plan",
+        type: "task-list",
+        version: 1,
+        status: "done",
+        payload: { summary: "Complete" },
+      },
+    }, "Plan complete");
+
+    const msgs = reg.getMessages("block-mixed-patch");
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].content).toBe("Keep this answer text");
+    expect(msgs[0].blocks?.[0]?.status).toBe("done");
+  });
+
   it("migrates a legacy message DB lacking the new columns", () => {
     const legacyPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "jinn-legacy-p-")), "legacy.db");
     const legacy = new Database(legacyPath);
@@ -122,9 +377,11 @@ describe("messages partial (mid-turn streaming) blocks", () => {
     expect(cols).toContain("partial");
     expect(cols).toContain("seq");
     expect(cols).toContain("tool_call");
-    const row = legacy.prepare("SELECT content, partial, seq, tool_call FROM messages WHERE id='m1'").get() as Record<string, unknown>;
+    expect(cols).toContain("blocks");
+    const row = legacy.prepare("SELECT content, partial, seq, tool_call, blocks FROM messages WHERE id='m1'").get() as Record<string, unknown>;
     expect(row.content).toBe("old");
     expect(row.partial).toBeNull();
+    expect(row.blocks).toBeNull();
     legacy.close();
   });
 });

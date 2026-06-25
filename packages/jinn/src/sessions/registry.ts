@@ -5,7 +5,8 @@ import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { SESSIONS_DB } from '../shared/paths.js';
 import { logger } from '../shared/logger.js';
-import type { JsonObject, ReplyContext, Session } from '../shared/types.js';
+import type { ChatBlock, ChatBlockEnvelope, JsonObject, ReplyContext, Session } from '../shared/types.js';
+import { blockFallbackText, mergeBlock, validateBlockEnvelope } from '../shared/blocks.js';
 
 let db: Database.Database;
 
@@ -221,6 +222,9 @@ export function migrateMessagesSchema(database: Database.Database): void {
   }
   if (!colNames.has('tool_call')) {
     database.exec('ALTER TABLE messages ADD COLUMN tool_call TEXT');
+  }
+  if (!colNames.has('blocks')) {
+    database.exec('ALTER TABLE messages ADD COLUMN blocks TEXT');
   }
 }
 
@@ -905,8 +909,8 @@ export function duplicateSession(sourceId: string, newTitle?: string): { session
 
   // Copy session + messages in a single transaction for consistency
   const messages = db.prepare(
-    'SELECT role, content, timestamp, media FROM messages WHERE session_id = ? ORDER BY timestamp ASC',
-  ).all(sourceId) as Array<{ role: string; content: string; timestamp: number; media: string | null }>;
+    'SELECT role, content, timestamp, media, blocks FROM messages WHERE session_id = ? ORDER BY timestamp ASC',
+  ).all(sourceId) as Array<{ role: string; content: string; timestamp: number; media: string | null; blocks: string | null }>;
 
   const txn = db.transaction(() => {
     db.prepare(`
@@ -936,10 +940,10 @@ export function duplicateSession(sourceId: string, newTitle?: string): { session
     );
 
     const insertMsg = db.prepare(
-      'INSERT INTO messages (id, session_id, role, content, timestamp, media) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO messages (id, session_id, role, content, timestamp, media, blocks) VALUES (?, ?, ?, ?, ?, ?, ?)',
     );
     for (const msg of messages) {
-      insertMsg.run(uuidv4(), newId, msg.role, msg.content, msg.timestamp, msg.media ?? null);
+      insertMsg.run(uuidv4(), newId, msg.role, msg.content, msg.timestamp, msg.media ?? null, msg.blocks ?? null);
     }
   });
   txn();
@@ -989,6 +993,8 @@ export interface SessionMessage {
   partial?: boolean;
   /** Tool name when this block is a tool call — lets a reloaded block render as a tool card. */
   toolCall?: string;
+  /** Structured Chat Mode blocks rendered by the web UI. */
+  blocks?: ChatBlock[];
 }
 
 function parseMediaColumn(value: unknown): MessageMedia[] | undefined {
@@ -1001,12 +1007,50 @@ function parseMediaColumn(value: unknown): MessageMedia[] | undefined {
   }
 }
 
-export function insertMessage(sessionId: string, role: string, content: string, media?: MessageMedia[]): string {
+function parseBlocksColumn(value: unknown): ChatBlock[] | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return undefined;
+    const blocks = parsed.flatMap((block) => {
+      const result = validateBlockEnvelope({ op: "put", block });
+      return result.ok ? [result.envelope.block] : [];
+    });
+    return blocks.length > 0 ? blocks : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function blockFallbackCandidates(block: ChatBlock, fallbackText?: string): string[] {
+  return [
+    fallbackText,
+    blockFallbackText(block),
+    block.title,
+    block.summary,
+    block.type,
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+}
+
+function isSyntheticBlockContent(content: string, block: ChatBlock | undefined, fallbackText?: string): boolean {
+  if (!block) return false;
+  const trimmed = content.trim();
+  return blockFallbackCandidates(block, fallbackText).some((candidate) => candidate.trim() === trimmed);
+}
+
+function isSyntheticBlockRow(rowId: string, content: string, block: ChatBlock | undefined, fallbackText?: string): boolean {
+  if (!block) return false;
+  if (rowId.startsWith(`block-${block.id}-`)) return true;
+  return isSyntheticBlockContent(content, block, fallbackText);
+}
+
+export function insertMessage(sessionId: string, role: string, content: string, media?: MessageMedia[], blocks?: ChatBlock[]): string {
   const db = initDb();
   const id = uuidv4();
   const mediaJson = media && media.length > 0 ? JSON.stringify(media) : null;
-  db.prepare('INSERT INTO messages (id, session_id, role, content, timestamp, media) VALUES (?, ?, ?, ?, ?, ?)').run(
-    id, sessionId, role, content, Date.now(), mediaJson,
+  const blocksJson = blocks && blocks.length > 0 ? JSON.stringify(blocks) : null;
+  db.prepare('INSERT INTO messages (id, session_id, role, content, timestamp, media, blocks) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+    id, sessionId, role, content, Date.now(), mediaJson, blocksJson,
   );
   return id;
 }
@@ -1014,16 +1058,95 @@ export function insertMessage(sessionId: string, role: string, content: string, 
 export function getMessages(sessionId: string): SessionMessage[] {
   const db = initDb();
   const rows = db
-    .prepare('SELECT id, role, content, timestamp, media, partial, seq, tool_call FROM messages WHERE session_id = ? ORDER BY timestamp ASC, seq ASC')
-    .all(sessionId) as Array<{ id: string; role: string; content: string; timestamp: number; media: string | null; partial: number | null; seq: number | null; tool_call: string | null }>;
+    .prepare('SELECT id, role, content, timestamp, media, partial, seq, tool_call, blocks FROM messages WHERE session_id = ? ORDER BY timestamp ASC, seq ASC')
+    .all(sessionId) as Array<{ id: string; role: string; content: string; timestamp: number; media: string | null; partial: number | null; seq: number | null; tool_call: string | null; blocks: string | null }>;
   return rows.map((r) => {
     const msg: SessionMessage = { id: r.id, role: r.role, content: r.content, timestamp: r.timestamp };
     const media = parseMediaColumn(r.media);
+    const blocks = parseBlocksColumn(r.blocks);
     if (media) msg.media = media;
+    if (blocks) msg.blocks = blocks;
     if (r.partial) msg.partial = true;
     if (r.tool_call) msg.toolCall = r.tool_call;
     return msg;
   });
+}
+
+export function applyBlockEnvelope(
+  sessionId: string,
+  input: ChatBlockEnvelope,
+  fallbackText?: string,
+  options?: { partial?: boolean; seq?: number },
+): string | null {
+  const result = validateBlockEnvelope(input);
+  if (!result.ok) throw new Error(result.error);
+  const envelope = result.envelope;
+  const db = initDb();
+  const partialOnly = options?.partial === true;
+  const rows = db
+    .prepare(`SELECT id, content, blocks FROM messages WHERE session_id = ? AND role = ?${partialOnly ? ' AND partial = 1' : ''} ORDER BY timestamp ASC, seq ASC`)
+    .all(sessionId, 'assistant') as Array<{ id: string; content: string; blocks: string | null }>;
+  const existing = rows
+    .map((row) => ({ row, blocks: parseBlocksColumn(row.blocks) ?? [] }))
+    .find((entry) => entry.blocks.some((block) => block.id === envelope.block.id));
+
+  if (envelope.op === 'remove') {
+    if (!existing) return null;
+    const oldBlock = existing.blocks.find((block) => block.id === envelope.block.id);
+    const remainingBlocks = existing.blocks.filter((block) => block.id !== envelope.block.id);
+    if (remainingBlocks.length > 0) {
+      db.prepare('UPDATE messages SET blocks = ? WHERE id = ?').run(JSON.stringify(remainingBlocks), existing.row.id);
+    } else if (isSyntheticBlockRow(existing.row.id, existing.row.content, oldBlock, fallbackText)) {
+      db.prepare('DELETE FROM messages WHERE id = ?').run(existing.row.id);
+    } else {
+      db.prepare('UPDATE messages SET blocks = NULL WHERE id = ?').run(existing.row.id);
+    }
+    return existing.row.id;
+  }
+
+  if (existing) {
+    const oldBlock = existing.blocks.find((block) => block.id === envelope.block.id);
+    const nextBlocks = existing.blocks.map((block) =>
+      block.id === envelope.block.id
+        ? envelope.op === "patch" ? mergeBlock(block, envelope.block) : envelope.block
+        : block,
+    );
+    const target = nextBlocks.find((block) => block.id === envelope.block.id) ?? envelope.block;
+    const nextContent = isSyntheticBlockRow(existing.row.id, existing.row.content, oldBlock, fallbackText)
+      ? fallbackText?.trim() || blockFallbackText(target)
+      : existing.row.content;
+    db.prepare('UPDATE messages SET content = ?, blocks = ? WHERE id = ?').run(
+      nextContent,
+      JSON.stringify(nextBlocks),
+      existing.row.id,
+    );
+    return existing.row.id;
+  }
+
+  if (envelope.op === 'patch') return null;
+
+  const id = `block-${envelope.block.id}-${uuidv4()}`;
+  if (partialOnly) {
+    db.prepare('INSERT INTO messages (id, session_id, role, content, timestamp, partial, seq, blocks) VALUES (?, ?, ?, ?, ?, 1, ?, ?)').run(
+      id,
+      sessionId,
+      'assistant',
+      fallbackText?.trim() || blockFallbackText(envelope.block),
+      Date.now(),
+      options?.seq ?? 0,
+      JSON.stringify([envelope.block]),
+    );
+  } else {
+    db.prepare('INSERT INTO messages (id, session_id, role, content, timestamp, blocks) VALUES (?, ?, ?, ?, ?, ?)').run(
+      id,
+      sessionId,
+      'assistant',
+      fallbackText?.trim() || blockFallbackText(envelope.block),
+      Date.now(),
+      JSON.stringify([envelope.block]),
+    );
+  }
+  return id;
 }
 
 /**

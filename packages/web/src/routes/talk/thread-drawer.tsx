@@ -207,7 +207,7 @@ function DrawerPanel({
   const { messages, streamingText, loading, session, isInitialLoading, error } =
     useSessionChat(sessionId)
   const label = headerLabel(session, sessionId)
-  const hasContent = messages.length > 0 || !!streamingText
+  const hasContent = messages.length > 0 || !!streamingText || loading
 
   // Attach-state comes from the live talk graph (self-updates on talk:graph WS
   // deltas). null → not attached → show plain Attach buttons.

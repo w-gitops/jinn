@@ -101,6 +101,13 @@ describe("ThreadDrawer", () => {
     expect(screen.queryByText("Sub-threads")).toBeNull()
   })
 
+  it("renders the chat surface for running empty sessions", () => {
+    mocks.chat.loading = true
+    render(<ThreadDrawer sessionId="t1" onClose={vi.fn()} onNavigate={vi.fn()} />)
+    expect(screen.getByTestId("chat-messages")).toBeTruthy()
+    expect(screen.queryByText("No messages yet")).toBeNull()
+  })
+
   it("Escape calls onClose", () => {
     mocks.graph = chainGraph()
     const onClose = vi.fn()

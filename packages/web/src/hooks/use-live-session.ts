@@ -27,6 +27,7 @@ import {
   clearIntermediateMessages,
   reconcileMessages,
 } from '@/lib/conversations'
+import { applyBlockEnvelopeToMessages, isBlockEnvelope, isChatBlock } from '@/lib/blocks'
 
 type Listener = (event: string, payload: unknown) => void
 
@@ -238,6 +239,7 @@ export function useLiveSession(
             })
           }
           const toolName = String(p.toolName || 'tool')
+          const toolId = typeof p.toolId === 'string' && p.toolId ? p.toolId : undefined
           setMessages((prev) => {
             if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
             const updated = [
@@ -248,6 +250,7 @@ export function useLiveSession(
                 content: `Using ${toolName}`,
                 timestamp: Date.now(),
                 toolCall: toolName,
+                ...(toolId ? { toolId } : {}),
               },
             ]
             return updated
@@ -255,11 +258,55 @@ export function useLiveSession(
         } else if (deltaType === 'tool_result') {
           setMessages((prev) => {
             const updated = [...prev]
-            const last = updated[updated.length - 1]
-            if (last && last.role === 'assistant' && last.toolCall) {
-              updated[updated.length - 1] = { ...last, content: `Used ${last.toolCall}` }
+            const toolId = typeof p.toolId === 'string' && p.toolId ? p.toolId : undefined
+            let targetIndex = -1
+            if (toolId) {
+              targetIndex = updated.findIndex((m) =>
+                m.role === 'assistant' &&
+                m.toolCall &&
+                m.toolId === toolId &&
+                !m.content.startsWith('Used '),
+              )
+            }
+            if (targetIndex < 0) {
+              for (let i = updated.length - 1; i >= 0; i--) {
+                const m = updated[i]
+                if (m.role === 'assistant' && m.toolCall && !m.content.startsWith('Used ')) {
+                  targetIndex = i
+                  break
+                }
+              }
+            }
+            if (targetIndex >= 0) {
+              const target = updated[targetIndex]
+              updated[targetIndex] = { ...target, content: `Used ${target.toolCall}` }
             }
             return updated
+          })
+        } else if (deltaType === 'block') {
+          clearStatusMessage()
+          const envelope = isBlockEnvelope(p.block) ? p.block : null
+          if (!envelope) return
+          if (streamingTextRef.current) {
+            const flushed = streamingTextRef.current
+            streamingTextRef.current = ''
+            setStreamingText('')
+            setMessages((prev) => {
+              if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
+              return [
+                ...prev,
+                {
+                  id: crypto.randomUUID(),
+                  role: 'assistant' as const,
+                  content: flushed,
+                  timestamp: Date.now(),
+                },
+              ]
+            })
+          }
+          setMessages((prev) => {
+            if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
+            return applyBlockEnvelopeToMessages(prev, envelope, String(p.content || ''), Date.now())
           })
         } else if (deltaType === 'context') {
           const n = Number(p.content)
@@ -353,6 +400,7 @@ export function useLiveSession(
                   m.role === 'assistant' &&
                   !m.toolCall &&
                   !(m.media && m.media.length > 0) &&
+                  !(m.blocks && m.blocks.length > 0) &&
                   m.content.trim() === resultKey
                 ) {
                   cleaned.splice(i, 1)
@@ -369,7 +417,8 @@ export function useLiveSession(
               last &&
               last.role === 'assistant' &&
               !last.toolCall &&
-              !(last.media && last.media.length > 0)
+              !(last.media && last.media.length > 0) &&
+              !(last.blocks && last.blocks.length > 0)
             ) {
               cleaned.pop()
             }
@@ -445,7 +494,9 @@ export function useLiveSession(
 
       const history = session.messages || session.history || []
       const backendMessages: Message[] = Array.isArray(history)
-        ? history.map((m: Record<string, unknown>) => ({
+        ? history.map((m: Record<string, unknown>) => {
+          const blocks = Array.isArray(m.blocks) ? m.blocks.filter(isChatBlock) : []
+          return {
             // Preserve the server's stable message id so live-pushed messages
             // (e.g. attachments) merge/dedupe by id instead of duplicating.
             id: typeof m.id === 'string' ? m.id : crypto.randomUUID(),
@@ -455,10 +506,15 @@ export function useLiveSession(
             // A persisted mid-turn tool block carries its tool name so it renders as
             // a tool card on reload, matching the live stream.
             ...(typeof m.toolCall === 'string' && m.toolCall ? { toolCall: m.toolCall } : {}),
+            ...(typeof m.toolId === 'string' && m.toolId ? { toolId: m.toolId } : {}),
             ...(Array.isArray(m.media) && m.media.length > 0
               ? { media: m.media as MediaAttachment[] }
               : {}),
-          }))
+            ...(blocks.length > 0
+              ? { blocks }
+              : {}),
+          }
+        })
         : []
       if (session.status === 'error' && session.lastError) {
         const lastMessage = backendMessages[backendMessages.length - 1]

@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
-import type { CronJob, Engine, IncomingMessage, JinnConfig, JsonObject, Session, StreamDelta, Target } from "../shared/types.js";
+import type { ChatBlock, ChatBlockEnvelope, CronJob, Engine, IncomingMessage, JinnConfig, JsonObject, Session, StreamDelta, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import { getModelRegistry, invalidateModelRegistry, effortLevelsForModel, refreshGrokModels, refreshPiModels, refreshHermesModels, engineAvailable, isKnownEngine, engineUnavailableMessage } from "../shared/models.js";
 import { validateNewSessionSelection, validateSessionPatch } from "../sessions/session-patch.js";
@@ -28,6 +28,7 @@ import {
   insertMessage,
   insertPartialMessage,
   updatePartialMessage,
+  applyBlockEnvelope,
   deletePartialMessages,
   finalizePartialMessages,
   getMessages,
@@ -39,6 +40,7 @@ import {
   getFile,
   initDb,
 } from "../sessions/registry.js";
+import { blockFallbackText, validateBlockEnvelope } from "../shared/blocks.js";
 import { forkEngineSession } from "../sessions/fork.js";
 import {
   CONFIG_PATH,
@@ -111,6 +113,52 @@ const AUTH_BODY_MAX_BYTES = 16 * 1024;
 const SESSION_LIST_PER_GROUP = 50;
 const BACKGROUND_ACTIVITY_STALE_MS = 5 * 60 * 1000;
 const SUPERSEDED_TURN_META_KEY = "supersededRunningTurnAt";
+
+function scopeBlockEnvelopeForTurn(envelope: ChatBlockEnvelope, turnStartedAt: number): ChatBlockEnvelope {
+  const suffix = `t${turnStartedAt.toString(36)}`;
+  if (envelope.block.id.endsWith(`:${suffix}`)) return envelope;
+  const maxBaseLength = Math.max(1, 96 - suffix.length - 1);
+  const baseId = envelope.block.id.slice(0, maxBaseLength);
+  return {
+    ...envelope,
+    block: {
+      ...envelope.block,
+      id: `${baseId}:${suffix}`,
+    },
+  };
+}
+
+export function normalizeBlockDeltaForTurn(delta: StreamDelta, turnStartedAt: number): { ok: true; delta: StreamDelta } | { ok: false; error: string } {
+  if (delta.type !== "block") return { ok: true, delta };
+  const initial = validateBlockEnvelope(delta.block);
+  if (!initial.ok) return initial;
+  const scoped = scopeBlockEnvelopeForTurn(initial.envelope, turnStartedAt);
+  const validated = validateBlockEnvelope(scoped);
+  if (!validated.ok) return validated;
+  return {
+    ok: true,
+    delta: {
+      ...delta,
+      content: delta.content || blockFallbackText(validated.envelope.block),
+      block: validated.envelope,
+    },
+  };
+}
+
+export function shouldPersistFinalAssistantMessage(options: {
+  resultText: string;
+  finalBlockCount: number;
+  resultAlreadyPersisted: boolean;
+  quietPreempted: boolean;
+}): boolean {
+  if (options.resultAlreadyPersisted || options.quietPreempted) return false;
+  return options.resultText.trim().length > 0 || options.finalBlockCount > 0;
+}
+
+export function finalBlocksForAssistantMessage(blocks: ChatBlock[], preservedBlockIds: Set<string>): ChatBlock[] {
+  if (preservedBlockIds.size === 0) return blocks;
+  return blocks.filter((block) => !preservedBlockIds.has(block.id));
+}
 
 export interface ApiContext {
   config: JinnConfig;
@@ -2508,6 +2556,7 @@ async function runWebSession(
     let curTextId: string | null = null; // the growing text-block row, null between blocks
     let curText = "";
     let lastToolId: string | null = null; // last tool row, for the tool_result → "Used" update
+    let lastToolName: string | null = null;
     let partialFlushTimer: ReturnType<typeof setTimeout> | null = null;
     const flushPartialText = () => {
       partialFlushTimer = null;
@@ -2528,11 +2577,20 @@ async function runWebSession(
         flushPartialText(); // finalize the text block before the tool
         if (partialFlushTimer) { clearTimeout(partialFlushTimer); partialFlushTimer = null; }
         const tool = delta.toolName || String(delta.content ?? "");
+        lastToolName = tool;
         lastToolId = insertPartialMessage(currentSession.id, "assistant", `Using ${tool}`, partialSeq++, tool);
         curTextId = null; curText = ""; // a fresh text block begins after the tool
       } else if (delta.type === "tool_result") {
-        const tool = delta.toolName || String(delta.content ?? "");
+        const tool = delta.toolName || lastToolName || String(delta.content ?? "");
         if (lastToolId) updatePartialMessage(lastToolId, `Used ${tool}`);
+      } else if (delta.type === "block" && delta.block) {
+        flushPartialText();
+        if (partialFlushTimer) { clearTimeout(partialFlushTimer); partialFlushTimer = null; }
+        applyBlockEnvelope(currentSession.id, delta.block, delta.content, {
+          partial: true,
+          seq: partialSeq++,
+        });
+        curTextId = null; curText = "";
       }
     };
 
@@ -2566,14 +2624,20 @@ async function runWebSession(
         // Same guard as runHeartbeat: a delta may arrive after the user
         // deleted the session; don't resurrect registry state for it.
         if (!getSession(currentSession.id)) return;
+        const normalized = normalizeBlockDeltaForTurn(delta, turnStartedAt);
+        if (!normalized.ok) {
+          logger.warn(`Dropped invalid block delta for session ${currentSession.id}: ${normalized.error}`);
+          return;
+        }
+        const outgoingDelta = normalized.delta;
         // Live context-meter: message_start.usage arrives as a `context` delta
         // (once per assistant message — infrequent). Persist it immediately so the
         // meter ticks during the turn, not just at completion. The delta also flows
         // to the FE below for an instant in-pane update.
-        if (delta.type === "context") {
+        if (outgoingDelta.type === "context") {
           // Only the MAIN agent's stream reaches here (the proxy suppresses
           // sub-agent/auxiliary streams), so its usage drives the session meter.
-          const ctx = Number(delta.content);
+          const ctx = Number(outgoingDelta.content);
           if (Number.isFinite(ctx) && ctx > 0) {
             updateSession(currentSession.id, { lastContextTokens: ctx });
           }
@@ -2589,11 +2653,12 @@ async function runWebSession(
         try {
           context.emit("session:delta", {
             sessionId: currentSession.id,
-            type: delta.type,
-            content: delta.content,
-            toolName: delta.toolName,
-            toolId: delta.toolId,
-            input: delta.input,
+            type: outgoingDelta.type,
+            content: outgoingDelta.content,
+            toolName: outgoingDelta.toolName,
+            toolId: outgoingDelta.toolId,
+            input: outgoingDelta.input,
+            block: outgoingDelta.block,
           });
         } catch (err) {
           logger.warn(`Failed to emit stream delta for session ${currentSession.id}: ${err instanceof Error ? err.message : err}`);
@@ -2601,7 +2666,7 @@ async function runWebSession(
         // Mirror the block into a persisted partial row (refresh survival). Guarded
         // so a DB hiccup never breaks the live stream above.
         try {
-          persistPartialDelta(delta);
+          persistPartialDelta(outgoingDelta);
         } catch (err) {
           logger.warn(`Failed to persist partial block for session ${currentSession.id}: ${err instanceof Error ? err.message : err}`);
         }
@@ -2613,10 +2678,10 @@ async function runWebSession(
         if (
           currentSession.source === "talk" &&
           !isTalkMuted(currentSession.id) &&
-          delta.type === "text" &&
-          typeof delta.content === "string"
+          outgoingDelta.type === "text" &&
+          typeof outgoingDelta.content === "string"
         ) {
-          feedTalkText(currentSession.id, delta.content, config.talk?.kokoro, context.emit);
+          feedTalkText(currentSession.id, outgoingDelta.content, config.talk?.kokoro, context.emit);
         }
       },
       // A turn that settled as failed but whose CLI later finished delivers the
@@ -2672,7 +2737,21 @@ async function runWebSession(
     // partials/results so the old assistant answer cannot land after the new user
     // bubble.
     const streamedBlocks = getMessages(currentSession.id).filter((m) => m.partial);
+    const finalBlocksById = new Map<string, ChatBlock>();
+    for (const message of streamedBlocks) {
+      for (const block of message.blocks ?? []) {
+        finalBlocksById.set(block.id, block);
+      }
+    }
+    const allStreamedBlocks = [...finalBlocksById.values()];
     const preserveStreamedBlocks = shouldPreserveStreamedBlocks({ quietPreempted, streamedBlocks });
+    const preservedBlockIds = new Set<string>(
+      preserveStreamedBlocks
+        ? streamedBlocks
+          .flatMap((message) => (message.blocks ?? []).map((block) => block.id))
+        : [],
+    );
+    const finalBlocks = finalBlocksForAssistantMessage(allStreamedBlocks, preservedBlockIds);
     const resultAlreadyPersisted = preserveStreamedBlocks && resultAlreadyInStreamedBlocks(result.result, streamedBlocks);
     if (preserveStreamedBlocks) finalizePartialMessages(currentSession.id);
     else deletePartialMessages(currentSession.id);
@@ -2683,11 +2762,19 @@ async function runWebSession(
       // Drop any buffered voice text — we won't speak a rate-limited turn.
       if (currentSession.source === "talk") discardTalkSpeech(currentSession.id);
       const emitDelta = (delta: StreamDelta) => {
+        const normalized = normalizeBlockDeltaForTurn(delta, turnStartedAt);
+        if (!normalized.ok) {
+          logger.warn(`Dropped invalid rate-limit block delta for session ${currentSession.id}: ${normalized.error}`);
+          return;
+        }
+        const outgoingDelta = normalized.delta;
         context.emit("session:delta", {
           sessionId: currentSession.id,
-          type: delta.type,
-          content: delta.content,
-          toolName: delta.toolName,
+          type: outgoingDelta.type,
+          content: outgoingDelta.content,
+          toolName: outgoingDelta.toolName,
+          toolId: outgoingDelta.toolId,
+          block: outgoingDelta.block,
         });
       };
 
@@ -2847,8 +2934,13 @@ async function runWebSession(
     }
 
     // Persist the assistant response
-    if (result.result && !resultAlreadyPersisted && !quietPreempted) {
-      insertMessage(currentSession.id, "assistant", result.result);
+    if (shouldPersistFinalAssistantMessage({
+      resultText: result.result,
+      finalBlockCount: finalBlocks.length,
+      resultAlreadyPersisted,
+      quietPreempted,
+    })) {
+      insertMessage(currentSession.id, "assistant", result.result, undefined, finalBlocks.length > 0 ? finalBlocks : undefined);
     }
 
     // Voice mode: flush the remainder of the turn's spoken text (final chunk,

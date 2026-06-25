@@ -46,6 +46,15 @@ const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: 'status', description: 'Show current session info' },
 ]
 
+export type ClientCommand = 'new' | 'status'
+
+export function resolveClientCommand(text: string): ClientCommand | null {
+  const trimmed = text.trim()
+  if (trimmed === '/new') return 'new'
+  if (trimmed === '/status') return 'status'
+  return null
+}
+
 interface ChatInputProps {
   disabled: boolean
   loading: boolean
@@ -373,18 +382,17 @@ export function ChatInput({
 
     if ((!trimmed && !hasMedia) || disabled) return
 
-    // Handle commands
-    if (trimmed === '/new') {
+    const command = resolveClientCommand(trimmed)
+    if (command === 'new') {
       setValue('')
       onNewSession()
       return
     }
-    if (trimmed === '/status') {
+    if (command === 'status') {
       setValue('')
       onStatusRequest()
       return
     }
-
     const mediaToSend = hasMedia ? [...pendingAttachments] : undefined
     setValue('')
     setPendingAttachments([])
