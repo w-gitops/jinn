@@ -584,6 +584,48 @@ describe("useLiveSession (editable write path)", () => {
     expect(__getLiveSessionSnapshotCacheSizeForTests()).toBeLessThanOrEqual(16)
   })
 
+  it("replaces a cached in-flight snapshot with collapsed idle history after switching back", async () => {
+    __cacheLiveSessionSnapshotForTests("s-stale", {
+      messages: [
+        { id: "u1", role: "user", content: "long task", timestamp: 1 },
+        { id: "p1", role: "assistant", content: "Working through files", timestamp: 2 },
+        { id: "t1", role: "assistant", content: "Using Bash", timestamp: 3, toolCall: "Bash" },
+        { id: "p2", role: "assistant", content: "More progress", timestamp: 4 },
+      ],
+      streamingText: "partial final",
+      loading: true,
+      session: { id: "s-stale", status: "running" },
+      liveContextTokens: 123,
+      backgroundActivity: null,
+    })
+    getSession.mockResolvedValue({
+      status: "idle",
+      messages: [
+        { id: "u1", role: "user", content: "long task", timestamp: 1 },
+        { id: "a1", role: "assistant", content: "Final answer", timestamp: 5 },
+      ],
+    })
+    const { subscribe } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s-stale", { subscribe }))
+
+    expect(result.current.messages.map((m) => m.content)).toEqual([
+      "long task",
+      "Working through files",
+      "Using Bash",
+      "More progress",
+    ])
+    expect(result.current.streamingText).toBe("partial final")
+    expect(result.current.loading).toBe(true)
+
+    await act(async () => { await Promise.resolve() })
+
+    expect(result.current.messages.map((m) => m.content)).toEqual(["long task", "Final answer"])
+    expect(result.current.messages.some((m) => m.toolCall)).toBe(false)
+    expect(result.current.streamingText).toBe("")
+    expect(result.current.loading).toBe(false)
+    expect(result.current.liveContextTokens).toBeNull()
+  })
+
   it("seeds loading from a running session after reload or tab switch", async () => {
     getSession.mockResolvedValue({ status: "running", messages: [{ id: "m1", role: "user", content: "hi" }] })
     const { subscribe } = makeBus()

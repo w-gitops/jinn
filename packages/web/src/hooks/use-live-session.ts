@@ -626,13 +626,24 @@ export function useLiveSession(
         // loadSession must NEVER set loading=true — a stale GET arriving after completion would
         // re-arm the spinner and stick (the WS completion event has already passed).
       } else {
+        const hadLocalInFlightState =
+          loadingRef.current ||
+          Boolean(streamingTextRef.current) ||
+          intermediateStartRef.current >= 0
+
+        setLoading(false)
+        streamingTextRef.current = ''
+        setStreamingText('')
+        setLiveContextTokens(null)
         if (!readOnlyRef.current) clearIntermediateMessages(id)
         intermediateStartRef.current = -1
         setMessages((current) => {
           // If backend has FEWER messages than local, the backend snapshot is stale —
-          // local already contains streaming-completed messages not yet persisted (or
-          // a stale-snapshot race during slow GET). Keep current.
-          if (backendMessages.length < current.length) {
+          // local already contains streaming-completed messages not yet persisted.
+          // Exception: if local was still in-flight (cached loading/streaming/partial
+          // rows) and the server is now idle, the shorter backend is the canonical
+          // collapsed history and must replace the stale mid-turn cache.
+          if (backendMessages.length < current.length && !hadLocalInFlightState) {
             return current
           }
           const next = backendMessages.length > 0 ? backendMessages : current
@@ -785,6 +796,7 @@ export function useLiveSession(
 
   // --- write API (editable pane) ---
   const beginSend = useCallback((userMsg: Message) => {
+    loadTokenRef.current += 1
     setMessages((prev) => {
       intermediateStartRef.current = prev.length + 1
       return [...prev, userMsg]
