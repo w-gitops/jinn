@@ -5,7 +5,7 @@ import {
 } from "../streamed-blocks.js";
 
 describe("streamed block persistence", () => {
-  it("preserves interleaved progress and tool blocks for durable chat history", () => {
+  it("keeps tool-bearing turns consolidated to the final assistant message", () => {
     expect(
       shouldPreserveStreamedBlocks({
         quietPreempted: false,
@@ -15,7 +15,7 @@ describe("streamed block persistence", () => {
           { content: "PROGRESS-FINAL" },
         ],
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("keeps plain text-only turns consolidated to the final assistant message", () => {

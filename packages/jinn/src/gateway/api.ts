@@ -2730,12 +2730,10 @@ async function runWebSession(
     const wasSuperseded = !wasInterrupted && isTurnSuperseded(currentSession.id, turnStartedAt);
     const quietPreempted = wasInterrupted || wasSuperseded;
 
-    // Turn settled. Plain text-only turns collapse to a single final assistant
-    // message. Tool-bearing turns preserve their interleaved text/tool blocks so
-    // durable chat history still shows what happened between the first and final
-    // answer. If the turn was preempted by a newer user message, drop stale
-    // partials/results so the old assistant answer cannot land after the new user
-    // bubble.
+    // Turn settled. Mid-turn rows are refresh-only, including tool rows: durable
+    // chat history collapses to the final assistant message. If the turn was
+    // preempted by a newer user message, drop stale partials/results so the old
+    // assistant answer cannot land after the new user bubble.
     const streamedBlocks = getMessages(currentSession.id).filter((m) => m.partial);
     const finalBlocksById = new Map<string, ChatBlock>();
     for (const message of streamedBlocks) {

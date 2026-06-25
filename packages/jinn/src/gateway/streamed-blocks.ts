@@ -3,12 +3,13 @@ export interface StreamedBlockForPersistence {
   toolCall?: string;
 }
 
-export function shouldPreserveStreamedBlocks(args: {
+export function shouldPreserveStreamedBlocks(_args: {
   quietPreempted: boolean;
   streamedBlocks: StreamedBlockForPersistence[];
 }): boolean {
-  if (args.quietPreempted) return false;
-  return args.streamedBlocks.some((m) => !!m.toolCall);
+  // Partial stream rows are a refresh cache only. Durable history is the final
+  // assistant message, regardless of whether tools were used mid-turn.
+  return false;
 }
 
 export function resultAlreadyInStreamedBlocks(
