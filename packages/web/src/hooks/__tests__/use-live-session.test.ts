@@ -569,6 +569,43 @@ describe("useLiveSession (editable write path)", () => {
     expect(result.current.hydrating).toBe(false)
   })
 
+  it("keeps the pending user message visible while a newly-created session hydrates", async () => {
+    let resolveFresh!: (value: unknown) => void
+    getSession.mockReturnValue(new Promise((resolve) => { resolveFresh = resolve }))
+    const { subscribe } = makeBus()
+    const pendingUserMessage = {
+      id: "u1",
+      role: "user" as const,
+      content: "start this task",
+      timestamp: 1,
+    }
+    const { result } = renderHook(() =>
+      useLiveSession("s-new", { subscribe, pendingUserMessage }),
+    )
+
+    expect(result.current.messages.map((m) => m.content)).toEqual(["start this task"])
+    expect(result.current.loading).toBe(true)
+    expect(result.current.hydrating).toBe(false)
+
+    await act(async () => { await Promise.resolve() })
+
+    expect(result.current.messages.map((m) => m.content)).toEqual(["start this task"])
+    expect(result.current.loading).toBe(true)
+    expect(result.current.hydrating).toBe(false)
+
+    await act(async () => {
+      resolveFresh({
+        status: "running",
+        messages: [{ id: "u1", role: "user", content: "start this task", timestamp: 1 }],
+      })
+      await Promise.resolve()
+    })
+
+    expect(result.current.messages.map((m) => m.content)).toEqual(["start this task"])
+    expect(result.current.loading).toBe(true)
+    expect(result.current.hydrating).toBe(false)
+  })
+
   it("evicts old session cache entries so switching does not grow unbounded", () => {
     for (let i = 0; i < 25; i++) {
       __cacheLiveSessionSnapshotForTests(`s-${i}`, {

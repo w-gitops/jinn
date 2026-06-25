@@ -525,10 +525,10 @@ export function useLiveSession(
   }, [subscribe])
 
   // Load session data
-  const loadSession = useCallback(async (id: string) => {
+  const loadSession = useCallback(async (id: string, options?: { suppressHydrating?: boolean }) => {
     const myToken = ++loadTokenRef.current
     setLoadError(null) // fresh attempt
-    if (!readLiveSessionSnapshot(id)) setHydrating(true)
+    if (!options?.suppressHydrating && !readLiveSessionSnapshot(id)) setHydrating(true)
     try {
       const session = (await api.getSession(id)) as Record<string, unknown>
       if (myToken !== loadTokenRef.current) {
@@ -676,6 +676,7 @@ export function useLiveSession(
       return
     }
     const cached = readLiveSessionSnapshot(sessionId)
+    const pending = opts.pendingUserMessage
     if (cached) {
       setMessages(cached.messages)
       setLoading(cached.loading)
@@ -685,6 +686,16 @@ export function useLiveSession(
       setBackgroundActivity(cached.backgroundActivity)
       streamingTextRef.current = cached.streamingText
       setStreamingText(cached.streamingText)
+      setHydrating(false)
+    } else if (pending) {
+      setMessages([pending])
+      setLoading(true)
+      setCurrentSession(null)
+      setLoadError(null)
+      setLiveContextTokens(null)
+      setBackgroundActivity(null)
+      streamingTextRef.current = ''
+      setStreamingText('')
       setHydrating(false)
     } else {
       setMessages([])
@@ -705,7 +716,7 @@ export function useLiveSession(
     // NOTE: do NOT setLoading(false) here. Loading is owned by handleSend (true) and
     // WS session:completed/stopped (false). Clearing here would clobber the lazy-init
     // loading=true set by useState() when this pane mounted with pendingUserMessage.
-    loadSession(sessionId)
+    loadSession(sessionId, { suppressHydrating: Boolean(pending && !cached) })
   }, [sessionId]) // loadSession is stable (useCallback with [] deps)
 
   // Reload on reconnect — only fires when WS genuinely reconnects (connectionSeq changes).
