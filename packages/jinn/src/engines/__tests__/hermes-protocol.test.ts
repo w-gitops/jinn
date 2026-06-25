@@ -38,4 +38,91 @@ describe("mapSessionUpdate", () => {
     const r = mapSessionUpdate({ sessionUpdate: "tool_call", toolCallId: "t1", title: "bash", rawInput: { cmd: "ls" } });
     expect(r.deltas[0]).toMatchObject({ type: "tool_use", toolId: "t1", toolName: "bash" });
   });
+  it("maps plan updates to a reusable task-list block", () => {
+    const r = mapSessionUpdate({
+      sessionUpdate: "plan",
+      entries: [
+        { content: "Read current chat stream", status: "completed", priority: "high" },
+        { content: "Render structured blocks", status: "in_progress", priority: "high" },
+      ],
+    });
+
+    expect(r.deltas[0]).toMatchObject({
+      type: "block",
+      block: {
+        op: "put",
+        block: {
+          id: "hermes-plan",
+          type: "task-list",
+          version: 1,
+          sourceEngine: "hermes",
+          payload: {
+            items: [
+              { id: "plan-0", text: "Read current chat stream", status: "done", priority: "high" },
+              { id: "plan-1", text: "Render structured blocks", status: "running", priority: "high" },
+            ],
+          },
+        },
+      },
+    });
+  });
+  it("marks the aggregate plan block as error when any entry failed", () => {
+    const r = mapSessionUpdate({
+      sessionUpdate: "plan",
+      entries: [
+        { content: "Read current chat stream", status: "completed" },
+        { content: "Render structured blocks", status: "failed" },
+      ],
+    });
+
+    expect(r.deltas[0]).toMatchObject({
+      type: "block",
+      block: {
+        block: {
+          status: "error",
+          payload: {
+            items: [
+              { text: "Read current chat stream", status: "done" },
+              { text: "Render structured blocks", status: "error" },
+            ],
+          },
+        },
+      },
+    });
+  });
+  it("keeps tool calls but ignores ACP diff content in chat mode", () => {
+    const r = mapSessionUpdate({
+      sessionUpdate: "tool_call",
+      toolCallId: "edit-1",
+      title: "edit",
+      rawInput: { path: "src/app.ts" },
+      content: [
+        {
+          type: "diff",
+          path: "src/app.ts",
+          oldText: "before",
+          newText: "after",
+        },
+      ],
+    });
+
+    expect(r.deltas).toEqual([{ type: "tool_use", content: "edit", toolId: "edit-1", toolName: "edit", input: "{\"path\":\"src/app.ts\"}" }]);
+  });
+
+  it("does not emit a block for incidental before/after fields", () => {
+    const r = mapSessionUpdate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "search-1",
+      title: "search",
+      status: "completed",
+      content: {
+        type: "search_result",
+        before: "cursor-a",
+        after: "cursor-b",
+        path: "pagination",
+      },
+    });
+
+    expect(r.deltas).toEqual([{ type: "tool_result", content: "completed", toolId: "search-1" }]);
+  });
 });

@@ -1,5 +1,5 @@
 // packages/jinn/src/engines/hermes-protocol.ts
-import type { StreamDelta } from "../shared/types.js";
+import type { ChatBlockStatus, JsonObject, StreamDelta } from "../shared/types.js";
 
 export function encodeModelChoice(provider: string | undefined, model: string): string {
   const m = (model || "").trim();
@@ -36,6 +36,55 @@ function textOf(content: unknown): string {
   return "";
 }
 
+function normalizePlanStatus(status: unknown): ChatBlockStatus {
+  const s = String(status ?? "").toLowerCase();
+  if (s === "completed" || s === "complete" || s === "done" || s === "success") return "done";
+  if (s === "in_progress" || s === "running" || s === "active") return "running";
+  if (s === "failed" || s === "error" || s === "cancelled") return "error";
+  return "queued";
+}
+
+function mapPlan(update: Record<string, unknown>): StreamDelta | null {
+  const entries = Array.isArray(update.entries) ? update.entries : [];
+  const items = entries
+    .map((entry, index) => {
+      if (!entry || typeof entry !== "object") return null;
+      const e = entry as Record<string, unknown>;
+      const text = textOf(e.content ?? e.text ?? e.title).trim();
+      if (!text) return null;
+      const item: JsonObject = {
+        id: typeof e.id === "string" && e.id.trim() ? e.id : `plan-${index}`,
+        text,
+        status: normalizePlanStatus(e.status),
+      };
+      if (typeof e.priority === "string" && e.priority.trim()) item.priority = e.priority;
+      return item;
+    })
+    .filter((item): item is JsonObject => !!item);
+  if (items.length === 0) return null;
+  const running = items.filter((item) => item.status === "running").length;
+  const done = items.filter((item) => item.status === "done").length;
+  const failed = items.filter((item) => item.status === "error").length;
+  const status: ChatBlockStatus = running > 0 ? "running" : failed > 0 ? "error" : done === items.length ? "done" : "queued";
+  return {
+    type: "block",
+    content: `Plan: ${items.length} items`,
+    block: {
+      op: "put",
+      block: {
+        id: "hermes-plan",
+        type: "task-list",
+        version: 1,
+        status,
+        sourceEngine: "hermes",
+        title: "Plan",
+        summary: `${done}/${items.length} done`,
+        payload: { items },
+      },
+    },
+  };
+}
+
 export function mapSessionUpdate(update: Record<string, unknown>): HermesUpdate {
   const kind = String(update.sessionUpdate ?? update.type ?? "");
   const deltas: StreamDelta[] = [];
@@ -66,6 +115,11 @@ export function mapSessionUpdate(update: Record<string, unknown>): HermesUpdate 
       if (status === "completed" || status === "failed") {
         deltas.push({ type: "tool_result", content: status, toolId: id });
       }
+      return { deltas };
+    }
+    case "plan": {
+      const delta = mapPlan(update);
+      if (delta) deltas.push(delta);
       return { deltas };
     }
     case "usage_update": {

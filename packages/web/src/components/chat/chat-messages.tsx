@@ -5,12 +5,28 @@ import { MessageMedia } from './message-media'
 import { useOpenFile } from '@/components/chat/file-open-context'
 import { useStickToBottom } from '@/hooks/use-stick-to-bottom'
 import { useMessageTts, stopMessageTts } from './use-message-tts'
+import { ChatBlockInline, statusMark } from './chat-blocks'
+import { blockFallbackContent } from '@/lib/blocks'
+import { ChevronDown, Wrench } from 'lucide-react'
 
 /* ── Tool grouping ──────────────────────────────────────── */
 
 type MessageItem =
   | { kind: 'message'; msg: Message; index: number }
   | { kind: 'tool-group'; msgs: Message[]; startIndex: number }
+
+// A finished tool call lands in the transcript as "Used <tool>". While it's
+// still running the content carries the live tool name instead.
+function isToolDone(msg: Message): boolean {
+  return msg.content.startsWith('Used ')
+}
+
+function findActiveToolIndex(msgs: Message[]): number {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (!isToolDone(msgs[i])) return i
+  }
+  return -1
+}
 
 function groupMessages(messages: Message[]): MessageItem[] {
   const items: MessageItem[] = []
@@ -32,52 +48,79 @@ function groupMessages(messages: Message[]): MessageItem[] {
   return items
 }
 
-function ToolGroup({ msgs, isActive }: { msgs: Message[]; isActive: boolean }) {
+function ToolGroup({
+  msgs,
+  isActive,
+}: {
+  msgs: Message[]
+  isActive: boolean
+}) {
   const [expanded, setExpanded] = useState(false)
-  const allDone = msgs.every((m) => m.content.startsWith('Used '))
+  const [showAllTools, setShowAllTools] = useState(false)
+  const allDone = msgs.every(isToolDone)
+  const activeIndex = isActive ? findActiveToolIndex(msgs) : -1
   const label = isActive && !allDone
     ? `${msgs.length} tool${msgs.length !== 1 ? 's' : ''} running…`
-    : `${msgs.length} tool${msgs.length !== 1 ? 's' : ''} used`
+    : `${msgs.length} tool${msgs.length !== 1 ? 's' : ''}`
+  const indexedMsgs = msgs.map((msg, index) => ({ msg, index }))
+  const activeEntry = activeIndex >= 10 ? indexedMsgs[activeIndex] : undefined
+  const visibleEntries = showAllTools
+    ? indexedMsgs
+    : activeEntry
+      ? [...indexedMsgs.slice(0, 9), activeEntry]
+      : indexedMsgs.slice(0, 10)
+  const hiddenToolCount = Math.max(0, msgs.length - visibleEntries.length)
 
   return (
     // Share the assistant text gutter (.assistant-msg-row → space-3 / space-8 @lg)
     // so the tool card's left edge lines up with the message text column.
     <div className="assistant-msg-row mb-[var(--space-1)]">
       <button
+        type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex items-center gap-[var(--space-2)] py-[5px] px-[var(--space-3)] rounded-full bg-[var(--fill-secondary)] text-[length:var(--text-caption1)] text-[var(--text-secondary)] cursor-pointer transition-[background] duration-150 ease-in-out hover:bg-[var(--fill-tertiary)]"
+        aria-expanded={expanded}
+        className="inline-flex min-h-9 max-w-full items-center gap-2 rounded-full border-none bg-[var(--fill-quaternary)] py-1 pl-3 pr-2.5 text-[length:var(--text-caption1)] text-[var(--text-secondary)] shadow-none transition-[background-color,scale] duration-150 ease-[var(--ease-smooth)] hover:bg-[var(--fill-secondary)] active:scale-[0.97]"
       >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-60">
-          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-        </svg>
-        {label}
+        <Wrench size={13} className="shrink-0 text-[var(--text-tertiary)]" />
+        <span className="min-w-0 truncate font-[var(--weight-medium)]">{label}</span>
         {isActive && !allDone && (
           <span className="w-1.5 h-1.5 rounded-full bg-[var(--system-blue)] animate-[jinn-pulse_1.4s_infinite]" />
         )}
-        <svg
-          width="10"
-          height="10"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className={`transition-transform duration-150 ease-in-out opacity-50 ${expanded ? 'rotate-180' : 'rotate-0'}`}
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
+        <ChevronDown size={14} className={`ml-0.5 shrink-0 text-[var(--text-quaternary)] transition-transform duration-150 ease-[var(--ease-smooth)] ${expanded ? 'rotate-180' : 'rotate-0'}`} />
       </button>
       {expanded && (
-        <div className="flex flex-wrap gap-[var(--space-1)] mt-[var(--space-1)] pl-[var(--space-1)]">
-          {msgs.map((m) => (
-            <span
-              key={m.id}
-              className="inline-flex items-center gap-1 py-0.5 px-2 rounded-full bg-[var(--fill-tertiary)] text-[length:var(--text-caption2)] text-[var(--text-tertiary)]"
+        <div
+          className="mt-1.5 flex max-w-[min(620px,calc(100vw_-_var(--space-6)))] flex-col items-start gap-1 pl-1"
+          data-testid="tool-group-list"
+        >
+          {visibleEntries.map(({ msg: m, index }) => {
+            const done = isToolDone(m)
+            const key = m.id || `${m.toolCall}-${index}`
+            const status = done ? 'done' : index === activeIndex ? 'running' : 'queued'
+            return (
+              <div
+                key={key}
+                className="inline-flex min-h-9 max-w-full items-center gap-1.5 px-2.5 py-1 text-left"
+              >
+                <span className="grid size-4 shrink-0 place-items-center">
+                  {statusMark(status)}
+                </span>
+                <span className="min-w-0 truncate text-[length:var(--text-footnote)] font-[var(--weight-medium)] text-[var(--text-primary)]">
+                  {m.toolCall || `Tool ${index + 1}`}
+                </span>
+              </div>
+            )
+          })}
+          {hiddenToolCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAllTools(true)}
+              className="ml-6 inline-flex min-h-8 items-center gap-1 rounded-full border-none bg-transparent px-2.5 text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-tertiary)] transition-[background-color,color,scale] duration-150 ease-[var(--ease-smooth)] hover:bg-[var(--fill-quaternary)] hover:text-[var(--text-secondary)] active:scale-[0.96]"
             >
-              {m.toolCall}
-            </span>
-          ))}
+              Show {hiddenToolCount} more
+              <ChevronDown size={13} className="shrink-0 text-[var(--text-quaternary)]" />
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -139,6 +182,11 @@ function renderPathLink(p: string, key: React.Key): React.ReactNode {
   return <FileLink key={key} path={p} />
 }
 
+function safeMarkdownHref(href: string): string | null {
+  const trimmed = href.trim()
+  return /^(https?:\/\/|mailto:)/i.test(trimmed) ? trimmed : null
+}
+
 function inlineFormat(text: string): React.ReactNode {
   const parts: React.ReactNode[] = []
   // Fresh regex per call (own lastIndex — inlineFormat recurses for table cells).
@@ -150,17 +198,20 @@ function inlineFormat(text: string): React.ReactNode {
     if (match.index > last) parts.push(text.slice(last, match.index))
     if (match[1] && match[2]) {
       // Markdown link: [text](url)
-      parts.push(
-        <a
-          key={match.index}
-          href={match[2]}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-[var(--system-blue)] underline underline-offset-2"
-        >
-          {match[1]}
-        </a>
-      )
+      const href = safeMarkdownHref(match[2])
+      parts.push(href
+        ? (
+          <a
+            key={match.index}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[var(--system-blue)] underline underline-offset-2"
+          >
+            {match[1]}
+          </a>
+        )
+        : match[1])
     } else if (match[3]) {
       // Bare URL
       parts.push(
@@ -636,6 +687,8 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, messages, loa
   const isNotification = msg.role === 'notification'
   const showTimestamp = shouldShowTimestamp(messages, i)
   const media = msg.media || parseMedia(msg.content)
+  const blocks = msg.blocks || []
+  const hasBlocks = blocks.length > 0
 
   // Strip media URLs from text for display
   let textContent = msg.content
@@ -654,6 +707,13 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, messages, loa
     const isAutoLabel = textContent.startsWith('[') && textContent.endsWith(']')
     if (isAutoLabel) textContent = ''
   }
+  const isBlockFallbackText = hasBlocks && blocks.some((block) => {
+    const content = textContent.trim()
+    return content === blockFallbackContent(block).trim()
+      || content === (block.title || '').trim()
+      || content === (block.summary || '').trim()
+  })
+  if (isBlockFallbackText) textContent = ''
 
   // Memoize the expensive formatting — re-runs only when textContent changes
   const formattedContent = useMemo(() => formatMessage(textContent), [textContent])
@@ -716,12 +776,23 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, messages, loa
 
       {/* Assistant message */}
       {!isUser && !isNotification && (
-        <div className="assistant-msg-row flex justify-start mb-[var(--space-1)]">
-          <div className="assistant-msg-bubble flex flex-col">
+        <div className="assistant-msg-row flex min-w-0 justify-start mb-[var(--space-1)]">
+          <div className="assistant-msg-bubble flex min-w-0 flex-col">
             {/* Text bubble */}
             {textContent && (
               <div className="assistant-transcript py-[var(--space-1)] text-[var(--text-primary)] text-[length:var(--text-body)] leading-[var(--leading-relaxed)]">
                 {formattedContent}
+              </div>
+            )}
+
+            {blocks.length > 0 && (
+              <div className="mt-1.5 flex min-w-0 max-w-full flex-col items-start gap-1.5">
+                {blocks.map((block) => (
+                  <ChatBlockInline
+                    key={block.id}
+                    block={block}
+                  />
+                ))}
               </div>
             )}
 
@@ -783,6 +854,16 @@ export function ChatMessages({ messages, loading, streamingText, onRetry }: Chat
 
   // Memoize grouped messages to avoid re-running on streaming-only re-renders
   const groupedMessages = useMemo(() => groupMessages(messages), [messages])
+  const activeToolGroupStart = useMemo(() => {
+    if (!loading) return -1
+    for (let i = groupedMessages.length - 1; i >= 0; i--) {
+      const item = groupedMessages[i]
+      if (item.kind === 'tool-group' && item.msgs.some((msg) => !isToolDone(msg))) {
+        return item.startIndex
+      }
+    }
+    return -1
+  }, [groupedMessages, loading])
 
   // Stop any in-progress read-aloud when the chat view unmounts (navigation away).
   useEffect(() => () => stopMessageTts(), [])
@@ -810,7 +891,7 @@ export function ChatMessages({ messages, loading, streamingText, onRetry }: Chat
           const firstMsg = item.msgs[0]
           const showTimestamp = shouldShowTimestamp(messages, item.startIndex)
           const prevMsg = item.startIndex > 0 ? messages[item.startIndex - 1] : null
-          const isActive = loading && item.startIndex + item.msgs.length === messages.length
+          const isActive = item.startIndex === activeToolGroupStart
           return (
             <div key={`tg-${item.startIndex}`}>
               {showTimestamp && (
@@ -828,7 +909,14 @@ export function ChatMessages({ messages, loading, streamingText, onRetry }: Chat
 
         const { msg, index: i } = item
         return (
-          <MessageRow key={msg.id || i} msg={msg} index={i} messages={messages} loading={loading} onRetry={onRetry} />
+          <MessageRow
+            key={msg.id || i}
+            msg={msg}
+            index={i}
+            messages={messages}
+            loading={loading}
+            onRetry={onRetry}
+          />
         )
       })}
 

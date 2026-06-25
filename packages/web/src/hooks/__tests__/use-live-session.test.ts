@@ -45,6 +45,70 @@ describe("useLiveSession (read-only)", () => {
     expect(result.current.loading).toBe(true) // running → spinner
   })
 
+  it("filters obsolete block types from loaded history", async () => {
+    getSession.mockResolvedValue({
+      status: "idle",
+      messages: [{
+        id: "m1",
+        role: "assistant",
+        content: "Answer text",
+        blocks: [{
+          id: "approval",
+          type: "approval",
+          version: 1,
+          payload: { actionId: "approve" },
+        }],
+      }],
+    })
+    const { subscribe } = makeBus()
+    const { result } = renderHook(() =>
+      useLiveSession("s1", { subscribe, readOnly: true }),
+    )
+    await act(async () => { await Promise.resolve() })
+
+    expect(result.current.messages).toHaveLength(1)
+    expect(result.current.messages[0]?.content).toBe("Answer text")
+    expect(result.current.messages[0]?.blocks).toBeUndefined()
+  })
+
+  it("hydrates valid task-list blocks from loaded running history", async () => {
+    getSession.mockResolvedValue({
+      status: "running",
+      messages: [
+        {
+          id: "tool-1",
+          role: "assistant",
+          content: "Using read_file",
+          toolCall: "read_file",
+        },
+        {
+          id: "plan-row",
+          role: "assistant",
+          content: "Plan",
+          blocks: [{
+            id: "plan",
+            type: "task-list",
+            version: 1,
+            title: "Plan",
+            payload: { items: [{ id: "a", text: "Read file", status: "running" }] },
+          }],
+        },
+      ],
+    })
+    const { subscribe } = makeBus()
+    const { result } = renderHook(() =>
+      useLiveSession("s1", { subscribe, readOnly: true }),
+    )
+    await act(async () => { await Promise.resolve() })
+
+    expect(result.current.loading).toBe(true)
+    expect(result.current.messages[0]?.toolCall).toBe("read_file")
+    expect(result.current.messages[1]?.blocks?.[0]?.id).toBe("plan")
+    expect(result.current.messages[1]?.blocks?.[0]?.payload).toEqual({
+      items: [{ id: "a", text: "Read file", status: "running" }],
+    })
+  })
+
   it("accumulates streaming text and clears it on completion", async () => {
     getSession.mockResolvedValue({ status: "running", messages: [] })
     const { subscribe, emit } = makeBus()
@@ -158,6 +222,221 @@ describe("useLiveSession (read-only)", () => {
       await Promise.resolve()
     })
     expect(result.current.messages.map((m) => m.content)).toEqual(["Done."])
+  })
+
+  it("applies live block put, patch, and remove deltas without text duplication", async () => {
+    getSession.mockResolvedValue({ status: "running", messages: [] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() =>
+      useLiveSession("s1", { subscribe, readOnly: true }),
+    )
+    await act(async () => { await Promise.resolve() })
+
+    act(() => {
+      emit("session:delta", { sessionId: "s1", type: "text", content: "Intro" })
+      emit("session:delta", {
+        sessionId: "s1",
+        type: "block",
+        content: "Plan",
+        block: {
+          op: "put",
+          block: {
+            id: "plan",
+            type: "task-list",
+            version: 1,
+            title: "Plan",
+            payload: { items: [{ id: "a", text: "Read code", status: "running" }] },
+          },
+        },
+      })
+    })
+
+    expect(result.current.streamingText).toBe("")
+    expect(result.current.messages.filter((m) => m.content === "Intro")).toHaveLength(1)
+    expect(result.current.messages.at(-1)?.blocks?.[0]?.id).toBe("plan")
+
+    act(() => {
+      emit("session:delta", {
+        sessionId: "s1",
+        type: "block",
+        content: "Plan complete",
+        block: {
+          op: "patch",
+          block: {
+            id: "plan",
+            type: "task-list",
+            version: 1,
+            status: "done",
+            payload: { summary: "Complete" },
+          },
+        },
+      })
+    })
+
+    expect(result.current.messages.filter((m) => m.blocks?.[0]?.id === "plan")).toHaveLength(1)
+    expect(result.current.messages.filter((m) => m.content === "Intro")).toHaveLength(1)
+    expect(result.current.messages.find((m) => m.blocks?.[0]?.id === "plan")?.content).toBe("Plan complete")
+    expect(result.current.messages.find((m) => m.blocks?.[0]?.id === "plan")?.blocks?.[0]?.payload).toMatchObject({ summary: "Complete" })
+
+    act(() => {
+      emit("session:delta", {
+        sessionId: "s1",
+        type: "block",
+        block: {
+          op: "remove",
+          block: { id: "plan", type: "task-list", version: 1, payload: {} },
+        },
+      })
+    })
+
+    expect(result.current.messages.filter((m) => m.blocks?.[0]?.id === "plan")).toHaveLength(0)
+    expect(result.current.messages.filter((m) => m.content === "Intro")).toHaveLength(1)
+  })
+
+  it("keeps live task-list blocks separate from tool-call rows", async () => {
+    getSession.mockResolvedValue({ status: "running", messages: [] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() =>
+      useLiveSession("s1", { subscribe, readOnly: true }),
+    )
+    await act(async () => { await Promise.resolve() })
+
+    act(() => {
+      emit("session:delta", { sessionId: "s1", type: "tool_use", toolName: "file_edit", content: "file_edit" })
+      emit("session:delta", {
+        sessionId: "s1",
+        type: "block",
+        content: "Plan",
+        block: {
+          op: "put",
+          block: {
+            id: "plan",
+            type: "task-list",
+            version: 1,
+            title: "Plan",
+            payload: { items: [{ id: "a", text: "Read code", status: "running" }] },
+          },
+        },
+      })
+    })
+
+    expect(result.current.messages).toHaveLength(2)
+    expect(result.current.messages[0]?.toolCall).toBe("file_edit")
+    expect(result.current.messages[0]?.blocks).toBeUndefined()
+    expect(result.current.messages[1]?.blocks?.[0]?.id).toBe("plan")
+  })
+
+  it("keeps live task-list blocks visible when a turn completes with text", async () => {
+    getSession.mockResolvedValue({ status: "running", messages: [] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() =>
+      useLiveSession("s1", { subscribe, readOnly: true }),
+    )
+    await act(async () => { await Promise.resolve() })
+
+    act(() => {
+      emit("session:delta", {
+        sessionId: "s1",
+        type: "block",
+        content: "Plan running.",
+        block: {
+          op: "put",
+          block: {
+            id: "plan",
+            type: "task-list",
+            version: 1,
+            title: "Plan",
+            payload: { items: [{ id: "a", text: "Read code", status: "running" }] },
+          },
+        },
+      })
+    })
+
+    await act(async () => {
+      emit("session:completed", { sessionId: "s1", result: "Done." })
+      await Promise.resolve()
+    })
+
+    expect(result.current.messages.some((m) => m.blocks?.some((block) => block.id === "plan"))).toBe(true)
+    expect(result.current.messages.at(-1)?.content).toBe("Done.")
+  })
+
+  it("marks the matching unfinished tool row done when a block arrives before tool_result", async () => {
+    getSession.mockResolvedValue({ status: "running", messages: [] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() =>
+      useLiveSession("s1", { subscribe, readOnly: true }),
+    )
+    await act(async () => { await Promise.resolve() })
+
+    act(() => {
+      emit("session:delta", { sessionId: "s1", type: "tool_use", toolName: "file_edit", toolId: "tool-1" })
+      emit("session:delta", {
+        sessionId: "s1",
+        type: "block",
+        content: "Plan",
+        block: {
+          op: "put",
+          block: {
+            id: "plan",
+            type: "task-list",
+            version: 1,
+            title: "Plan",
+            payload: { items: [{ id: "a", text: "Edit file", status: "running" }] },
+          },
+        },
+      })
+      emit("session:delta", { sessionId: "s1", type: "tool_result", toolName: "file_edit", toolId: "tool-1" })
+    })
+
+    expect(result.current.messages.find((m) => m.toolCall === "file_edit")?.content).toBe("Used file_edit")
+    expect(result.current.messages.some((m) => m.blocks?.some((block) => block.id === "plan"))).toBe(true)
+  })
+
+  it("marks an earlier unfinished tool row done by toolId without closing a later tool", async () => {
+    getSession.mockResolvedValue({ status: "running", messages: [] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() =>
+      useLiveSession("s1", { subscribe, readOnly: true }),
+    )
+    await act(async () => { await Promise.resolve() })
+
+    act(() => {
+      emit("session:delta", { sessionId: "s1", type: "tool_use", toolName: "search", toolId: "tool-1" })
+      emit("session:delta", { sessionId: "s1", type: "tool_use", toolName: "read", toolId: "tool-2" })
+      emit("session:delta", { sessionId: "s1", type: "tool_result", toolId: "tool-1" })
+    })
+
+    expect(result.current.messages.find((m) => m.toolCall === "search")?.content).toBe("Used search")
+    expect(result.current.messages.find((m) => m.toolCall === "read")?.content).toBe("Using read")
+  })
+
+  it("ignores obsolete block types from live deltas", async () => {
+    getSession.mockResolvedValue({ status: "running", messages: [] })
+    const { subscribe, emit } = makeBus()
+    const { result } = renderHook(() =>
+      useLiveSession("s1", { subscribe, readOnly: true }),
+    )
+    await act(async () => { await Promise.resolve() })
+
+    act(() => {
+      emit("session:delta", {
+        sessionId: "s1",
+        type: "block",
+        content: "Diff",
+        block: {
+          op: "put",
+          block: {
+            id: "diff",
+            type: "diff",
+            version: 1,
+            payload: { hunks: [{ before: "old", after: "new" }] },
+          },
+        },
+      })
+    })
+
+    expect(result.current.messages).toEqual([])
   })
 
   it("appends a live media attachment", async () => {
