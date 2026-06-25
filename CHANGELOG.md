@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.23.1] - 2026-06-25
+
+### 🐛 Fixes
+- **Completed chat turns collapse live noise immediately.** Chat Mode now removes mid-turn progress, tool rows, and task-list blocks from the visible transcript as soon as the turn completes, matching the cleaned final history without requiring a page refresh.
+
 ## [0.23.0] - 2026-06-25
 
 > Chat Mode gets a lean structured activity layer while keeping durable history clean.
