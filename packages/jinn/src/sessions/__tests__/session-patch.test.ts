@@ -53,6 +53,34 @@ describe("validateNewSessionSelection", () => {
     });
   });
 
+  it("uses employee engine/model/effort defaults when the request only names an employee", () => {
+    const r = validateNewSessionSelection(
+      cfg(),
+      {},
+      { engine: "claude", model: "claude-sonnet-4-6", effortLevel: "high" },
+    );
+    expect(r).toEqual({
+      ok: true,
+      engine: "claude",
+      model: "claude-sonnet-4-6",
+      effortLevel: "high",
+    });
+  });
+
+  it("lets explicit request values override employee defaults", () => {
+    const r = validateNewSessionSelection(
+      cfg(),
+      { model: "opus", effortLevel: "medium" },
+      { engine: "claude", model: "claude-sonnet-4-6", effortLevel: "high" },
+    );
+    expect(r).toEqual({
+      ok: true,
+      engine: "claude",
+      model: "opus",
+      effortLevel: "medium",
+    });
+  });
+
   it("rejects an unknown engine before persisting a session", () => {
     const r = validateNewSessionSelection(cfg(), { engine: "not-real", model: "opus" });
     expect(r.ok).toBe(false);

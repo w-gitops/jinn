@@ -1027,11 +1027,21 @@ export async function handleApiRequest(
       const prompt = body.prompt || body.message;
       if (!prompt) return badRequest(res, "prompt or message is required");
       const config = context.getConfig();
+      const employeeName = coercePortalEmployee(body.employee, config.portal?.portalName);
+      let employeeDefaults: { engine: string; model: string; effortLevel?: string } | undefined;
+      if (employeeName) {
+        const { scanOrg } = await import("./org.js");
+        const emp = scanOrg().get(employeeName);
+        if (emp) {
+          employeeDefaults = { engine: emp.engine, model: emp.model };
+          if (emp.effortLevel) employeeDefaults.effortLevel = emp.effortLevel;
+        }
+      }
       const selection = validateNewSessionSelection(config, {
         engine: body.engine,
         model: body.model,
         effortLevel: body.effortLevel,
-      });
+      }, employeeDefaults);
       if (!selection.ok) return badRequest(res, selection.error || "invalid engine/model/effort");
       const engineName = selection.engine || config.engines.default;
       const sessionKey = `web:${Date.now()}`;
@@ -1051,7 +1061,7 @@ export async function handleApiRequest(
         // pseudo-employee (there is no org employee by the portal's name).
         // Coerce it to null so it buckets into the direct group rather than
         // spawning a phantom group that renders with the portal's own title.
-        employee: coercePortalEmployee(body.employee, config.portal?.portalName),
+        employee: employeeName,
         parentSessionId: body.parentSessionId,
         effortLevel: selection.effortLevel,
         // Honor body.model so API clients can pin per-employee models

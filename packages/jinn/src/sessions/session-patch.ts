@@ -36,9 +36,10 @@ export interface SessionPatchContext {
 export function validateNewSessionSelection(
   config: JinnConfig,
   body: { engine?: unknown; model?: unknown; effortLevel?: unknown },
+  defaults: { engine?: string; model?: string; effortLevel?: string } = {},
 ): NewSessionSelectionResult {
   const registry = getModelRegistry(config);
-  let engine: string = config.engines.default;
+  let engine: string = defaults.engine?.trim() || config.engines.default;
 
   if (body.engine !== undefined) {
     if (typeof body.engine !== "string" || !body.engine.trim()) {
@@ -51,11 +52,12 @@ export function validateNewSessionSelection(
   if (!entry) return { ok: false, error: `unknown engine "${engine}"` };
 
   let model: string | undefined;
-  if (body.model !== undefined) {
-    if (typeof body.model !== "string" || !body.model.trim()) {
+  const requestedModel = body.model !== undefined ? body.model : defaults.model;
+  if (requestedModel !== undefined) {
+    if (typeof requestedModel !== "string" || !requestedModel.trim()) {
       return { ok: false, error: "model must be a non-empty string" };
     }
-    model = body.model.trim();
+    model = requestedModel.trim();
     if (!entry.models.some((m) => m.id === model)) {
       if (engine === "pi") {
         // Pi models are discovered dynamically; tolerate an id the snapshot hasn't
@@ -69,11 +71,12 @@ export function validateNewSessionSelection(
   }
 
   let effortLevel: string | undefined;
-  if (body.effortLevel !== undefined) {
-    if (typeof body.effortLevel !== "string" || !body.effortLevel.trim()) {
+  const requestedEffortLevel = body.effortLevel !== undefined ? body.effortLevel : defaults.effortLevel;
+  if (requestedEffortLevel !== undefined) {
+    if (typeof requestedEffortLevel !== "string" || !requestedEffortLevel.trim()) {
       return { ok: false, error: "effortLevel must be a non-empty string" };
     }
-    effortLevel = body.effortLevel.trim();
+    effortLevel = requestedEffortLevel.trim();
     const effectiveModel = model ?? undefined;
     const valid = effortLevelsForModel(config, engine, effectiveModel);
     if (valid.length === 0) {

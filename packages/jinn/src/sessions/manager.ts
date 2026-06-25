@@ -159,6 +159,7 @@ export class SessionManager {
         transportMeta: msg.transportMeta,
         employee: opts.employee?.name ?? undefined,
         model: opts.model ?? opts.employee?.model ?? undefined,
+        effortLevel: opts.employee?.effortLevel ?? undefined,
         title: opts.title,
         prompt: msg.text,
         portalName: this.config.portal?.portalName,
