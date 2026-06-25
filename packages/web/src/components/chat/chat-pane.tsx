@@ -66,6 +66,8 @@ interface ChatPaneProps {
   onFocus: () => void
   /** Notify parent when a new session is created (e.g. first message in new chat) */
   onSessionCreated?: (sessionId: string, pendingUserMessage?: Message) => void
+  /** Open the parent-level new-chat composer. */
+  onNewChat?: () => void
   /** If set on mount, used as the initial user message before loadSession resolves — for the just-created-from-new-chat case. */
   pendingUserMessage?: Message
   /** Notify parent when session meta changes */
@@ -97,6 +99,7 @@ export function ChatPane({
   isActive,
   onFocus,
   onSessionCreated,
+  onNewChat,
   onSessionMetaChange,
   onRefresh,
   portalName = 'Jinn',
@@ -145,6 +148,7 @@ export function ChatPane({
     messages,
     streamingText,
     loading,
+    hydrating,
     session: currentSession,
     liveContextTokens,
     backgroundActivity,
@@ -403,6 +407,7 @@ export function ChatPane({
   const [dragOver, setDragOver] = useState(false)
   const [droppedFiles, setDroppedFiles] = useState<File[]>()
   const dragCounter = useRef(0)
+  const showSessionHydration = Boolean(sessionId && hydrating && messages.length === 0 && !streamingText)
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -491,6 +496,12 @@ export function ChatPane({
           </div>
         </div>
       )}
+      {showSessionHydration && (
+        <div className="flex flex-1 items-center justify-center" role="status" aria-label="Loading chat">
+          <div className="size-5 animate-spin rounded-full border-2 border-[var(--fill-tertiary)] border-t-[var(--accent)]" />
+        </div>
+      )}
+
       {/* Employee picker for new chat (any view mode — the CLI terminal mounts after first message creates the session) */}
       {!sessionId && messages.length === 0 && (
         <div className="flex flex-1 items-center justify-center">
@@ -510,7 +521,7 @@ export function ChatPane({
         <Suspense fallback={<div style={{ flex: 1, minHeight: 0, background: 'var(--bg)' }} />}>
           <CliTerminal ref={cliTerminalRef} sessionId={sessionId} />
         </Suspense>
-      ) : (sessionId || messages.length > 0) ? (
+      ) : !showSessionHydration && (sessionId || messages.length > 0) ? (
         <ChatMessages messages={messages} loading={loading} streamingText={streamingText} onRetry={(t) => void handleSend(t)} />
       ) : null}
 
@@ -554,7 +565,7 @@ export function ChatPane({
             errorNote={selectorError ?? undefined}
             disabled={loading}
             contextTokens={liveContextTokens ?? (currentSession?.lastContextTokens as number | null | undefined) ?? undefined}
-            onNewChat={handleNewSession}
+            onNewChat={sessionId ? onNewChat : handleNewSession}
           />
         }
         terminalActionsSlot={

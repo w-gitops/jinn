@@ -90,6 +90,8 @@ export interface UseLiveSessionResult {
   messages: Message[]
   streamingText: string
   loading: boolean
+  /** True only for the initial cold fetch of an uncached selected session. */
+  hydrating: boolean
   session: Record<string, unknown> | null
   /** Set when the last load failed (so read-only consumers don't hang on a
    *  "Loading…" state forever). Cleared at the start of each load attempt. */
@@ -112,29 +114,114 @@ export interface UseLiveSessionResult {
   reset: () => void
 }
 
+const SESSION_SNAPSHOT_CACHE_MAX = 16
+const SESSION_SNAPSHOT_CACHE_TTL_MS = 10 * 60 * 1000
+
+interface LiveSessionSnapshot {
+  messages: Message[]
+  streamingText: string
+  loading: boolean
+  session: Record<string, unknown> | null
+  liveContextTokens: number | null
+  backgroundActivity: BackgroundActivity | null
+  updatedAt: number
+}
+
+type SnapshotInput = Omit<LiveSessionSnapshot, 'updatedAt'>
+
+const liveSessionSnapshotCache = new Map<string, LiveSessionSnapshot>()
+
+function cloneMessages(messages: Message[]): Message[] {
+  return messages.map((message) => ({ ...message }))
+}
+
+function pruneLiveSessionSnapshotCache(now = Date.now()) {
+  for (const [id, snapshot] of liveSessionSnapshotCache) {
+    if (now - snapshot.updatedAt > SESSION_SNAPSHOT_CACHE_TTL_MS) {
+      liveSessionSnapshotCache.delete(id)
+    }
+  }
+
+  while (liveSessionSnapshotCache.size > SESSION_SNAPSHOT_CACHE_MAX) {
+    let oldestId: string | null = null
+    let oldestAt = Infinity
+    for (const [id, snapshot] of liveSessionSnapshotCache) {
+      if (snapshot.updatedAt < oldestAt) {
+        oldestAt = snapshot.updatedAt
+        oldestId = id
+      }
+    }
+    if (!oldestId) break
+    liveSessionSnapshotCache.delete(oldestId)
+  }
+}
+
+function readLiveSessionSnapshot(id: string): LiveSessionSnapshot | null {
+  pruneLiveSessionSnapshotCache()
+  const snapshot = liveSessionSnapshotCache.get(id)
+  if (!snapshot) return null
+  return {
+    ...snapshot,
+    messages: cloneMessages(snapshot.messages),
+    session: snapshot.session ? { ...snapshot.session } : null,
+    backgroundActivity: snapshot.backgroundActivity ? { ...snapshot.backgroundActivity } : null,
+  }
+}
+
+function writeLiveSessionSnapshot(id: string, input: SnapshotInput) {
+  if (!input.session && input.messages.length === 0 && !input.streamingText) return
+  liveSessionSnapshotCache.set(id, {
+    ...input,
+    messages: cloneMessages(input.messages),
+    session: input.session ? { ...input.session } : null,
+    backgroundActivity: input.backgroundActivity ? { ...input.backgroundActivity } : null,
+    updatedAt: Date.now(),
+  })
+  pruneLiveSessionSnapshotCache()
+}
+
+export function __clearLiveSessionSnapshotCacheForTests() {
+  liveSessionSnapshotCache.clear()
+}
+
+export function __cacheLiveSessionSnapshotForTests(id: string, input: SnapshotInput) {
+  writeLiveSessionSnapshot(id, input)
+}
+
+export function __getLiveSessionSnapshotCacheSizeForTests() {
+  pruneLiveSessionSnapshotCache()
+  return liveSessionSnapshotCache.size
+}
+
 export function useLiveSession(
   sessionId: string | null,
   opts: UseLiveSessionOptions,
 ): UseLiveSessionResult {
   const { subscribe, connectionSeq, readOnly = false } = opts
+  const initialSnapshotRef = useRef<LiveSessionSnapshot | null | undefined>(undefined)
+  if (initialSnapshotRef.current === undefined) {
+    initialSnapshotRef.current = sessionId ? readLiveSessionSnapshot(sessionId) : null
+  }
+  const initialSnapshot = initialSnapshotRef.current
 
   const [messages, setMessages] = useState<Message[]>(() =>
-    opts.pendingUserMessage ? [opts.pendingUserMessage] : [],
+    opts.pendingUserMessage ? [opts.pendingUserMessage] : initialSnapshot?.messages ?? [],
   )
   // Seed loading=true when mounting with a pendingUserMessage (just-created new chat
   // where the OLD pane's setLoading(true) was lost in the remount). Otherwise the
   // thinking indicator wouldn't show until the first WS delta arrives.
-  const [loading, setLoading] = useState<boolean>(() => !!opts.pendingUserMessage)
+  const [loading, setLoading] = useState<boolean>(() => !!opts.pendingUserMessage || initialSnapshot?.loading === true)
+  const [hydrating, setHydrating] = useState<boolean>(() => Boolean(sessionId && !opts.pendingUserMessage && !initialSnapshot))
   const loadingRef = useRef(loading)
   useEffect(() => { loadingRef.current = loading }, [loading])
   const lastDeltaAtRef = useRef<number>(0)
-  const streamingTextRef = useRef('')
-  const [streamingText, setStreamingText] = useState('')
-  const [liveContextTokens, setLiveContextTokens] = useState<number | null>(null)
-  const [backgroundActivity, setBackgroundActivity] = useState<BackgroundActivity | null>(null)
+  const streamingTextRef = useRef(initialSnapshot?.streamingText ?? '')
+  const [streamingText, setStreamingText] = useState(initialSnapshot?.streamingText ?? '')
+  const [liveContextTokens, setLiveContextTokens] = useState<number | null>(initialSnapshot?.liveContextTokens ?? null)
+  const [backgroundActivity, setBackgroundActivity] = useState<BackgroundActivity | null>(initialSnapshot?.backgroundActivity ?? null)
   const intermediateStartRef = useRef<number>(-1)
   const statusMessageIdRef = useRef<string | null>(null)
-  const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(null)
+  const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(initialSnapshot?.session ?? null)
   const [loadError, setLoadError] = useState<Error | null>(null)
   const sessionIdRef = useRef(sessionId)
   const justCompletedAtRef = useRef<number>(0)
@@ -441,11 +528,13 @@ export function useLiveSession(
   const loadSession = useCallback(async (id: string) => {
     const myToken = ++loadTokenRef.current
     setLoadError(null) // fresh attempt
+    if (!readLiveSessionSnapshot(id)) setHydrating(true)
     try {
       const session = (await api.getSession(id)) as Record<string, unknown>
       if (myToken !== loadTokenRef.current) {
         return
       }
+      setHydrating(false)
       setCurrentSession(session)
       // Seed background-activity from the authoritative fetch (absent → null);
       // session:background WS events keep it live from here.
@@ -551,6 +640,8 @@ export function useLiveSession(
         })
       }
     } catch (err) {
+      if (myToken !== loadTokenRef.current) return
+      setHydrating(false)
       setMessages([])
       setCurrentSession(null)
       intermediateStartRef.current = -1
@@ -563,6 +654,7 @@ export function useLiveSession(
     if (!sessionId) {
       setMessages([])
       setLoading(false)
+      setHydrating(false)
       setCurrentSession(null)
       setLoadError(null)
       setBackgroundActivity(null)
@@ -572,12 +664,33 @@ export function useLiveSession(
       intermediateStartRef.current = -1
       return
     }
+    const cached = readLiveSessionSnapshot(sessionId)
+    if (cached) {
+      setMessages(cached.messages)
+      setLoading(cached.loading)
+      setCurrentSession(cached.session)
+      setLoadError(null)
+      setLiveContextTokens(cached.liveContextTokens)
+      setBackgroundActivity(cached.backgroundActivity)
+      streamingTextRef.current = cached.streamingText
+      setStreamingText(cached.streamingText)
+      setHydrating(false)
+    } else {
+      setMessages([])
+      setLoading(false)
+      setCurrentSession(null)
+      setLoadError(null)
+      setLiveContextTokens(null)
+      setHydrating(true)
+    }
     // Don't carry the previous session's background indicator across a switch;
     // loadSession re-seeds it from the fresh fetch.
-    setBackgroundActivity(null)
-    // Clear streaming state immediately to avoid stale content flash
-    streamingTextRef.current = ''
-    setStreamingText('')
+    if (!cached) setBackgroundActivity(null)
+    // Clear streaming state immediately to avoid stale content flash on cold loads.
+    if (!cached) {
+      streamingTextRef.current = ''
+      setStreamingText('')
+    }
     // NOTE: do NOT setLoading(false) here. Loading is owned by handleSend (true) and
     // WS session:completed/stopped (false). Clearing here would clobber the lazy-init
     // loading=true set by useState() when this pane mounted with pendingUserMessage.
@@ -702,6 +815,7 @@ export function useLiveSession(
   const reset = useCallback(() => {
     setMessages([])
     setLoading(false)
+    setHydrating(false)
     setCurrentSession(null)
     setBackgroundActivity(null)
     streamingTextRef.current = ''
@@ -709,10 +823,23 @@ export function useLiveSession(
     intermediateStartRef.current = -1
   }, [])
 
+  useEffect(() => {
+    if (!sessionId) return
+    writeLiveSessionSnapshot(sessionId, {
+      messages,
+      streamingText,
+      loading,
+      session: currentSession,
+      liveContextTokens,
+      backgroundActivity,
+    })
+  }, [sessionId, messages, streamingText, loading, currentSession, liveContextTokens, backgroundActivity])
+
   return {
     messages,
     streamingText,
     loading,
+    hydrating,
     session: currentSession,
     error: loadError,
     liveContextTokens,

@@ -11,7 +11,12 @@ import { renderHook, act } from "@testing-library/react"
 const getSession = vi.fn()
 vi.mock("@/lib/api", () => ({ api: { getSession: (id: string) => getSession(id) } }))
 
-import { useLiveSession } from "../use-live-session"
+import {
+  __cacheLiveSessionSnapshotForTests,
+  __clearLiveSessionSnapshotCacheForTests,
+  __getLiveSessionSnapshotCacheSizeForTests,
+  useLiveSession,
+} from "../use-live-session"
 
 type Listener = (event: string, payload: unknown) => void
 
@@ -28,6 +33,7 @@ function makeBus() {
 
 beforeEach(() => {
   getSession.mockReset()
+  __clearLiveSessionSnapshotCacheForTests()
 })
 
 describe("useLiveSession (read-only)", () => {
@@ -519,6 +525,65 @@ describe("useLiveSession (read-only)", () => {
 })
 
 describe("useLiveSession (editable write path)", () => {
+  it("hydrates from the in-memory session cache immediately while revalidating", async () => {
+    getSession.mockResolvedValueOnce({
+      status: "idle",
+      messages: [{ id: "m1", role: "user", content: "cached question" }],
+    })
+    const { subscribe } = makeBus()
+    const first = renderHook(() => useLiveSession("s-cache", { subscribe }))
+    await act(async () => { await Promise.resolve() })
+    expect(first.result.current.messages.map((m) => m.content)).toEqual(["cached question"])
+    first.unmount()
+
+    let resolveFresh!: (value: unknown) => void
+    getSession.mockReturnValueOnce(new Promise((resolve) => { resolveFresh = resolve }))
+    const second = renderHook(() => useLiveSession("s-cache", { subscribe }))
+
+    expect(second.result.current.hydrating).toBe(false)
+    expect(second.result.current.messages.map((m) => m.content)).toEqual(["cached question"])
+    expect(getSession).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      resolveFresh({
+        status: "idle",
+        messages: [{ id: "m2", role: "assistant", content: "fresh answer" }],
+      })
+      await Promise.resolve()
+    })
+    expect(second.result.current.messages.map((m) => m.content)).toEqual(["fresh answer"])
+  })
+
+  it("reports hydrating for an uncached session until the first fetch resolves", async () => {
+    let resolveFresh!: (value: unknown) => void
+    getSession.mockReturnValue(new Promise((resolve) => { resolveFresh = resolve }))
+    const { subscribe } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s-cold", { subscribe }))
+
+    expect(result.current.hydrating).toBe(true)
+
+    await act(async () => {
+      resolveFresh({ status: "idle", messages: [] })
+      await Promise.resolve()
+    })
+    expect(result.current.hydrating).toBe(false)
+  })
+
+  it("evicts old session cache entries so switching does not grow unbounded", () => {
+    for (let i = 0; i < 25; i++) {
+      __cacheLiveSessionSnapshotForTests(`s-${i}`, {
+        messages: [{ id: `m-${i}`, role: "user", content: `message ${i}`, timestamp: i }],
+        streamingText: "",
+        loading: false,
+        session: { id: `s-${i}`, status: "idle" },
+        liveContextTokens: null,
+        backgroundActivity: null,
+      })
+    }
+
+    expect(__getLiveSessionSnapshotCacheSizeForTests()).toBeLessThanOrEqual(16)
+  })
+
   it("seeds loading from a running session after reload or tab switch", async () => {
     getSession.mockResolvedValue({ status: "running", messages: [{ id: "m1", role: "user", content: "hi" }] })
     const { subscribe } = makeBus()

@@ -759,6 +759,7 @@ function ChatPage() {
                 isActive={true}
                 onFocus={() => {}}
                 onSessionCreated={handleSessionCreated}
+                onNewChat={handleNewChat}
                 onSessionMetaChange={handleSessionMetaChange}
                 onRefresh={handleRefresh}
                 portalName={portalName}

@@ -110,7 +110,7 @@ const MIME_TYPES: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
-function serveStatic(
+export function serveStatic(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   webDir: string,
@@ -140,6 +140,15 @@ function serveStatic(
     : "no-cache";
 
   if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) {
+    if (urlPath.startsWith("/assets/")) {
+      res.writeHead(404, {
+        "Content-Type": "text/plain",
+        "Cache-Control": "no-store",
+      });
+      res.end("Not found");
+      return true;
+    }
+
     // SPA fallback to index.html for client-side routing
     const indexPath = path.join(webDir, "index.html");
     if (fs.existsSync(indexPath)) {
