@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.23.0] - 2026-06-25
+
+> Chat Mode gets a lean structured activity layer while keeping durable history clean.
+
+### ✨ Features
+- **Lean Chat Mode BlockKit.** Chat sessions can now render validated structured task-list blocks from engine streams, with refresh-safe partial persistence during active turns and scoped block ids so later turns cannot rewrite older transcript rows.
+- **Compact tool-call history UI.** Tool activity now groups into quiet, expandable inline rows instead of noisy side panels or speculative cards, keeping the chat transcript minimal while still making tool activity inspectable.
+
+### 🐛 Fixes
+- **Final chat history stays final.** Mid-turn text/tool rows are refresh-only again: after a turn completes, SQLite history collapses to the final assistant message instead of preserving every streamed tool call and partial text block.
+- **Remote access pairing polish.** The pairing flow accordion now toggles correctly, avoiding a stuck expanded/collapsed state during browser pairing.
+- **Employee session defaults.** New employee sessions now honor the configured default engine/model/effort instead of drifting from the selected employee defaults.
+- **Engine streaming correctness.** Codex adjacent text blocks are separated without corrupting the final result, Grok transcript tests are race-hardened, and active Claude subagent StopFailure handling no longer reports premature turn failures.
+
 ## [0.22.0] - 2026-06-23
 
 > Hermes joins the engine lineup, and the README is rebuilt to actually sell what Jinn is.
