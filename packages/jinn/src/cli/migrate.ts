@@ -70,7 +70,11 @@ function stampVersion(version: string): void {
   if (!config.jinn) config.jinn = {};
   config.jinn.version = version;
 
-  fs.writeFileSync(CONFIG_PATH, yaml.dump(config, { lineWidth: -1 }), "utf-8");
+  // Atomic write: the live gateway hot-reloads config.yaml, so a partial write
+  // would corrupt it. Write to a tmp file in the same directory, then rename.
+  const tmpPath = `${CONFIG_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, yaml.dump(config, { lineWidth: -1 }), "utf-8");
+  fs.renameSync(tmpPath, CONFIG_PATH);
 }
 
 /**
@@ -82,6 +86,8 @@ function buildMigrateArgs(engine: string, prompt: string): string[] {
     case "codex":
       // `codex exec` is Codex's own non-interactive mode (not a claude `-p`).
       return ["exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", prompt];
+    case "grok":
+      return ["--no-auto-update", "--always-approve", "-p", prompt];
     case "claude":
     default:
       // No `-p`: launch the interactive claude TUI (cc_entrypoint=cli, subsidy-safe)

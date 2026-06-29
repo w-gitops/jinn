@@ -37,6 +37,7 @@ vi.mock("node-pty", () => ({
 }));
 // Avoid real sockets: the SSE proxy is exercised empirically elsewhere (Item A).
 vi.mock("../sse-pty-proxy.js", () => ({
+  MAIN_AGENT_SENTINEL: "<!-- jinn-main-agent:5c1f -->",
   SsePtyProxy: class {
     port = 0;
     constructor(_label: string, _onEvent: (e: unknown) => void) {}

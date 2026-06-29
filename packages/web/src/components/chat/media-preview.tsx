@@ -23,10 +23,9 @@ export function MediaPreview({ attachments, onRemove }: MediaPreviewProps) {
           width: 56,
           height: 56,
           flexShrink: 0,
-          borderRadius: 'var(--radius-sm)',
+          borderRadius: 'var(--radius-md)',
           overflow: 'hidden',
           background: 'var(--fill-tertiary)',
-          border: '1px solid var(--separator)',
         }}>
           {att.type === 'image' ? (
             <img
@@ -75,33 +74,43 @@ export function MediaPreview({ attachments, onRemove }: MediaPreviewProps) {
             </div>
           )}
 
-          {/* Remove button */}
+          {/* Remove button — ≥36px pressable target (transparent), with an 18px
+              frosted token chip drawn in the top-right corner. */}
           <button
             onClick={() => onRemove(i)}
             aria-label="Remove attachment"
             style={{
               position: 'absolute',
-              top: 2,
-              right: 2,
-              width: 18,
-              height: 18,
-              borderRadius: '50%',
-              background: 'rgba(0,0,0,0.6)',
+              top: 0,
+              right: 0,
+              width: 36,
+              height: 36,
+              background: 'transparent',
               border: 'none',
               cursor: 'pointer',
               display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#fff',
-              fontSize: 11,
-              lineHeight: 1,
-              padding: 0,
+              alignItems: 'flex-start',
+              justifyContent: 'flex-end',
+              padding: 2,
+              margin: 0,
             }}
           >
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
+            <span style={{
+              width: 18,
+              height: 18,
+              borderRadius: '50%',
+              background: 'var(--material-thick)',
+              color: 'var(--text-primary)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: 'var(--shadow-subtle)',
+            }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </span>
           </button>
         </div>
       ))}

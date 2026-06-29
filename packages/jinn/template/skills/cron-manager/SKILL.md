@@ -34,18 +34,18 @@ All cron jobs are stored in `~/.jinn/cron/jobs.json` as a JSON array of job obje
 ```
 
 Field details:
-- `id` — UUID v4, generated when creating the job
-- `name` — kebab-case human-readable identifier, must be unique across all jobs
-- `enabled` — boolean, whether the job is active
-- `schedule` — standard cron expression (minute hour day month weekday)
-- `timezone` — IANA timezone string (e.g., `America/New_York`, `Europe/London`, `UTC`)
-- `engine` — AI engine to run the job: `claude` or `codex`
-- `model` — model identifier (e.g., `sonnet`, `opus`, `o3`)
-- `employee` — optional, the employee persona to use (must match an employee name in the org)
-- `prompt` — the instruction to execute when the job fires
-- `delivery` — optional object specifying where to send output
-  - `connector` — the connector to use (e.g., `slack`, `discord`)
-  - `channel` — the target channel or destination
+- `id` - UUID v4, generated when creating the job
+- `name` - kebab-case human-readable identifier, must be unique across all jobs
+- `enabled` - boolean, whether the job is active
+- `schedule` - standard cron expression (minute hour day month weekday)
+- `timezone` - IANA timezone string (e.g., `America/New_York`, `Europe/London`, `UTC`)
+- `engine` - AI engine to run the job: `claude` or `codex`
+- `model` - model identifier (e.g., `sonnet`, `opus`, `o3`)
+- `employee` - optional, the employee persona to use (must match an employee name in the org)
+- `prompt` - the instruction to execute when the job fires
+- `delivery` - optional object specifying where to send output
+  - `connector` - the connector to use (e.g., `slack`, `discord`)
+  - `channel` - the target channel or destination
 
 ## Operations
 
@@ -110,13 +110,13 @@ The schedule field uses standard 5-field cron syntax:
 ```
 
 Common examples:
-- `0 9 * * 1-5` — Every weekday at 9:00 AM
-- `0 0 * * *` — Every day at midnight
-- `*/15 * * * *` — Every 15 minutes
-- `0 9 * * 1` — Every Monday at 9:00 AM
-- `0 8,17 * * *` — Every day at 8:00 AM and 5:00 PM
-- `0 0 1 * *` — First day of every month at midnight
-- `30 14 * * 5` — Every Friday at 2:30 PM
+- `0 9 * * 1-5` - Every weekday at 9:00 AM
+- `0 0 * * *` - Every day at midnight
+- `*/15 * * * *` - Every 15 minutes
+- `0 9 * * 1` - Every Monday at 9:00 AM
+- `0 8,17 * * *` - Every day at 8:00 AM and 5:00 PM
+- `0 0 1 * *` - First day of every month at midnight
+- `30 14 * * 5` - Every Friday at 2:30 PM
 
 ## Error Handling
 

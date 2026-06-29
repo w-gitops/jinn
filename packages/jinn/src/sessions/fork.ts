@@ -12,6 +12,7 @@ import os from "node:os";
 import * as pty from "node-pty";
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "../shared/logger.js";
+import { resolveBin } from "../shared/resolve-bin.js";
 import type { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
 
 export interface ForkResult {
@@ -60,7 +61,7 @@ export async function forkClaudeSession(opts: ForkClaudeOpts): Promise<ForkResul
 
   logger.info(`Forking Claude session ${engineSessionId} in ${cwd} (headless)`);
 
-  const result = execFileSync("claude", [
+  const result = execFileSync(resolveBin("claude"), [
     "--resume", engineSessionId,
     "--fork-session",
     "--print",
@@ -110,7 +111,7 @@ async function forkClaudeSessionInteractive(
   const projectDir = claudeProjectDir(cwd);
   const spawnedAfter = Date.now();
 
-  const bin = ctx.bin || "claude";
+  const bin = resolveBin("claude", ctx.bin);
   const args = [
     "--resume", engineSessionId,
     "--fork-session",
@@ -151,9 +152,16 @@ async function forkClaudeSessionInteractive(
   return { engineSessionId: newSessionId };
 }
 
-/** Translate a cwd into the Claude project directory key (`/` → `-`). */
-function claudeProjectDir(cwd: string): string {
-  const key = cwd.replace(/\//g, "-");
+/**
+ * Translate a cwd into the Claude project directory key. Claude Code slugifies
+ * the cwd by replacing every non-alphanumeric character with "-" (so `~/.jinn`
+ * → `…--jinn`, double-dash; spaces/underscores/unicode become "-" too). Must
+ * match `findTranscriptForSession` in claude-interactive.ts — otherwise the
+ * fork polls a non-existent directory and times out for any cwd containing a
+ * dot (every COO/.jinn session).
+ */
+export function claudeProjectDir(cwd: string): string {
+  const key = cwd.replace(/[^a-zA-Z0-9]/g, "-");
   return path.join(os.homedir(), ".claude", "projects", key);
 }
 
@@ -225,7 +233,14 @@ export function forkCodexSession(engineSessionId: string): ForkResult {
   // Read source, rewrite session_meta (first line) with new UUID
   const lines = fs.readFileSync(sourceFile, "utf-8").split("\n");
   if (lines.length > 0 && lines[0].trim()) {
-    const meta = JSON.parse(lines[0]);
+    let meta: { payload?: { id?: string }; timestamp?: string };
+    try {
+      meta = JSON.parse(lines[0]);
+    } catch (err) {
+      throw new Error(
+        `Codex session ${engineSessionId}: first line of ${sourceFile} is not valid JSON — ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     if (meta.payload?.id) {
       meta.payload.id = newUuid;
       meta.timestamp = now.toISOString();

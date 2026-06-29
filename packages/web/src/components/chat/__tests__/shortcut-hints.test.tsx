@@ -49,13 +49,10 @@ describe('ChatSidebar shortcut hints', () => {
     onNewChat: vi.fn(),
   }
 
-  it('renders "New" button with shortcut hint in title/aria-label', () => {
-    render(withQueryClient(<ChatSidebar {...defaultProps} />))
-    // The New button should have a title attribute containing "N" shortcut
-    const newBtn = screen.getByRole('button', { name: /new/i })
-    const title = newBtn.getAttribute('title') ?? newBtn.getAttribute('aria-label') ?? ''
-    expect(title.toLowerCase()).toContain('n')
-  })
+  // The "+ New" affordance moved out of the sidebar into the header pill
+  // (see the "ChatHeaderPills shortcut hints" suite below, which asserts the
+  // New-chat button + its (N) shortcut hint). The sidebar header no longer
+  // renders a New button.
 
   it('renders search input with placeholder', () => {
     render(withQueryClient(<ChatSidebar {...defaultProps} />))
@@ -74,9 +71,9 @@ vi.mock('@/lib/clean-preview', () => ({
   cleanPreview: (s: string) => s,
 }))
 
-import { ChatTabBar } from '../chat-tabs'
+import { ChatHeaderPills } from '../chat-tabs'
 
-describe('ChatTabBar shortcut hints', () => {
+describe('ChatHeaderPills shortcut hints', () => {
   const defaultProps = {
     tabs: [],
     activeIndex: -1,
@@ -85,11 +82,14 @@ describe('ChatTabBar shortcut hints', () => {
     onNew: vi.fn(),
   }
 
-  it('renders new tab button with shortcut hint in title', () => {
-    render(<ChatTabBar {...defaultProps} />)
-    // The + button should show "N" shortcut in its title
-    const newBtn = screen.getByTitle(/\(N\)/i)
-    expect(newBtn).toBeTruthy()
+  it('renders new chat button with shortcut hint in title', () => {
+    render(<ChatHeaderPills {...defaultProps} />)
+    // The compose (new chat) button shows the "(N)" shortcut in its title. It is
+    // rendered in both the desktop right pill and the mobile thread nav bar (CSS
+    // hides one per breakpoint), so assert at least one and that all carry the hint.
+    const newBtns = screen.getAllByTitle(/\(N\)/i)
+    expect(newBtns.length).toBeGreaterThan(0)
+    expect(newBtns.every((b) => b.getAttribute('aria-label') === 'New chat')).toBe(true)
   })
 })
 

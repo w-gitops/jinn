@@ -2,12 +2,35 @@ import fs from "node:fs";
 import path from "node:path";
 import type { CronJob } from "../shared/types.js";
 import { CRON_JOBS, CRON_RUNS } from "../shared/paths.js";
+import { logger } from "../shared/logger.js";
 
 export function loadJobs(): CronJob[] {
+  let raw: string;
   try {
-    const raw = fs.readFileSync(CRON_JOBS, "utf-8");
+    raw = fs.readFileSync(CRON_JOBS, "utf-8");
+  } catch (err) {
+    // Missing file is normal (no cron jobs configured yet); anything else is not.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.error(
+        `Failed to read cron jobs file ${CRON_JOBS}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+    return [];
+  }
+  try {
     return JSON.parse(raw) as CronJob[];
-  } catch {
+  } catch (err) {
+    // Corrupt JSON: preserve the broken file for the operator, then run with no jobs.
+    const backupPath = `${CRON_JOBS}.corrupt-${Date.now()}`;
+    try {
+      fs.copyFileSync(CRON_JOBS, backupPath);
+    } catch {
+      // best effort — the original file is still on disk
+    }
+    logger.error(
+      `Failed to parse cron jobs file ${CRON_JOBS}: ${err instanceof Error ? err.message : err}. ` +
+      `Corrupt copy saved to ${backupPath}; running with zero cron jobs.`,
+    );
     return [];
   }
 }
@@ -15,7 +38,10 @@ export function loadJobs(): CronJob[] {
 export function saveJobs(jobs: CronJob[]): void {
   const dir = path.dirname(CRON_JOBS);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(CRON_JOBS, JSON.stringify(jobs, null, 2) + "\n", "utf-8");
+  // Atomic write: tmp file + rename so a crash mid-write can't corrupt jobs.json.
+  const tmpPath = `${CRON_JOBS}.tmp-${process.pid}`;
+  fs.writeFileSync(tmpPath, JSON.stringify(jobs, null, 2) + "\n", "utf-8");
+  fs.renameSync(tmpPath, CRON_JOBS);
 }
 
 export function appendRunLog(jobId: string, entry: object): void {

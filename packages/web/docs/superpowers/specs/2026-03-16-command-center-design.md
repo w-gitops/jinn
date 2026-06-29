@@ -1,17 +1,17 @@
-# Command Center — Design Spec
+# Command Center - Design Spec
 
 **Date**: 2026-03-16
 **Status**: Draft
-**Author**: Jimbo + Hristo (brainstorm)
+**Author**: Jimbo + the operator (brainstorm)
 **Scope**: New top-level page in Jinn web UI for project-centric operational focus
 
 ## Problem
 
-The current chat sidebar is a flat chronological list of 172+ sessions grouped by Direct/Employee/Cron. As sessions accumulate from web conversations, cron jobs, Slack, and employee delegations, the list becomes overwhelming. There is no concept of "projects," no priority system, no way to distinguish what needs attention from noise. The COO (Jimbo) handles complexity behind the scenes, but Hristo still needs a way to see what matters at a glance and act on it.
+The current chat sidebar is a flat chronological list of 172+ sessions grouped by Direct/Employee/Cron. As sessions accumulate from web conversations, cron jobs, Slack, and employee delegations, the list becomes overwhelming. There is no concept of "projects," no priority system, no way to distinguish what needs attention from noise. The COO (Jimbo) handles complexity behind the scenes, but the operator still needs a way to see what matters at a glance and act on it.
 
 ## Solution
 
-A new **Command Center** page (`/command`) with three complementary views — Graph, Dashboard, and Timeline — organized around **projects** (not employees or sources). A per-session attention and priority system ensures only what matters surfaces. A smart decay filter hides old noise automatically.
+A new **Command Center** page (`/command`) with three complementary views - Graph, Dashboard, and Timeline - organized around **projects** (not employees or sources). A per-session attention and priority system ensures only what matters surfaces. A smart decay filter hides old noise automatically.
 
 ## Design Decisions
 
@@ -34,11 +34,11 @@ A new **Command Center** page (`/command`) with three complementary views — Gr
 
 ```typescript
 interface Project {
-  id: string              // e.g. "pravko", "homy", "tax-tool"
-  name: string            // "Pravko", "Homy", "Tax Declaration Tool"
+  id: string              // e.g. "project-a", "acme", "demo-project"
+  name: string            // "Project A", "Acme", "Demo Project"
   color: string           // hex color for graph node + badges
   icon?: string           // emoji or icon identifier
-  parentId?: string       // optional nesting (e.g. "tax-tool" → parent "pravko")
+  parentId?: string       // optional nesting (e.g. "demo-project" → parent "project-a")
   archived?: boolean      // hidden from views but data preserved
   createdAt: string       // ISO timestamp
   updatedAt: string       // ISO timestamp
@@ -68,9 +68,9 @@ Three new fields on the existing Session model:
 ```typescript
 interface Session {
   // ...existing fields
-  projects: string[]                                    // NEW — flexible project tag IDs
-  attentionRequired: boolean                            // NEW — does this need Hristo's eyes?
-  priority: 'urgent' | 'normal' | 'low' | null         // NEW — manual priority override
+  projects: string[]                                    // NEW - flexible project tag IDs
+  attentionRequired: boolean                            // NEW - does this need the operator's eyes?
+  priority: 'urgent' | 'normal' | 'low' | null         // NEW - manual priority override
 }
 ```
 
@@ -81,14 +81,14 @@ Two new fields in `jobs.json` entries:
 ```typescript
 interface CronJob {
   // ...existing fields
-  attentionRequired: boolean         // NEW — inherited by spawned sessions
-  defaultPriority: 'urgent' | 'normal' | 'low' | null  // NEW — inherited by spawned sessions
+  attentionRequired: boolean         // NEW - inherited by spawned sessions
+  defaultPriority: 'urgent' | 'normal' | 'low' | null  // NEW - inherited by spawned sessions
 }
 ```
 
 ### Auto-Tagging Logic
 
-Runs as a **one-shot operation** on session create/update via a `project-tagger` module. Does NOT trigger recursive re-evaluation of related sessions — reads their tags but does not write to them.
+Runs as a **one-shot operation** on session create/update via a `project-tagger` module. Does NOT trigger recursive re-evaluation of related sessions - reads their tags but does not write to them.
 
 Triggered by: `POST /api/sessions` handler and `session:started` / `session:completed` WebSocket events.
 
@@ -119,13 +119,13 @@ A living, spatial map of the operation. Each project is an interactive node.
 - Special: "General/Inbox" node has dashed border to distinguish from real projects
 
 **Edges:**
-- Connect projects that share sessions (a session tagged both "Pravko" and "Tax Tool" creates an edge)
+- Connect projects that share sessions (a session tagged both "Project A" and "Demo Project" creates an edge)
 - Animated dash when a shared session is running
 - Thickness proportional to number of shared sessions
 - Color inherits from the more active project
 
 **Interaction:**
-- Drag nodes to arrange spatially — positions persist in localStorage (`jinn-graph-positions`)
+- Drag nodes to arrange spatially - positions persist in localStorage (`jinn-graph-positions`)
 - Zoom/pan with scroll wheel and trackpad (React Flow built-in)
 - Click node → opens slide-over panel (tasks + filtered sessions)
 - Hover node → tooltip with full breakdown (sessions by status, task summary)
@@ -135,12 +135,12 @@ A living, spatial map of the operation. Each project is an interactive node.
 
 ### 2. Dashboard View (Custom CSS Grid)
 
-Operational card grid — one card per project.
+Operational card grid - one card per project.
 
 **Project cards:**
 - Header: Project icon + name + color accent strip
-- Status indicators: Small dots/badges — running (blue pulse), errors (red), attention (orange)
-- Task summary: Compact line — "3 todo · 2 in progress · 1 blocked"
+- Status indicators: Small dots/badges - running (blue pulse), errors (red), attention (orange)
+- Task summary: Compact line - "3 todo · 2 in progress · 1 blocked"
 - Recent activity: Last 2-3 session titles with relative timestamps
 - Priority badge: If any task/session is `urgent`, card gets priority border/glow
 
@@ -149,17 +149,17 @@ Operational card grid — one card per project.
 - Sort order: Attention-required cards float to top → most recent activity → idle/empty sink to bottom
 - "General/Inbox" card: Always last unless it has attention items; styled with dashed border
 
-**Click behavior:** Same as graph — slide-over panel.
+**Click behavior:** Same as graph - slide-over panel.
 
 **Empty state:** "All quiet. Adjust the time filter to see older sessions."
 
 ### 3. Timeline View (Custom CSS Grid)
 
-Temporal perspective — what happened when, across all projects.
+Temporal perspective - what happened when, across all projects.
 
 **Layout:**
-- Y-axis: Swimlanes — one horizontal lane per project, labeled on left with icon + name
-- X-axis: Time — scrollable, with zoom levels (hours / days / weeks)
+- Y-axis: Swimlanes - one horizontal lane per project, labeled on left with icon + name
+- X-axis: Time - scrollable, with zoom levels (hours / days / weeks)
 - Lane ordering: Attention-required projects at top, then by most recent activity
 
 **Session bars:**
@@ -237,19 +237,19 @@ UI: Dropdown or popover in the Command Center top bar, right-aligned. Quick pres
 
 | Endpoint | Method | Body | Response |
 |----------|--------|------|----------|
-| `/api/projects` | GET | — | `ProjectWithStats[]` (includes computed stats) |
+| `/api/projects` | GET | - | `ProjectWithStats[]` (includes computed stats) |
 | `/api/projects` | POST | `{name, color, icon?, parentId?}` | `Project` |
 | `/api/projects/:id` | PUT | `{name?, color?, icon?, parentId?, archived?}` | `Project` |
-| `/api/projects/:id` | DELETE | — | `204` |
+| `/api/projects/:id` | DELETE | - | `204` |
 
 ### Tasks
 
 | Endpoint | Method | Body | Response |
 |----------|--------|------|----------|
-| `/api/projects/:id/tasks` | GET | — | `Task[]` |
+| `/api/projects/:id/tasks` | GET | - | `Task[]` |
 | `/api/projects/:id/tasks` | POST | `{title, priority?, sessionIds?}` | `Task` |
 | `/api/tasks/:id` | PUT | `{title?, status?, priority?, sessionIds?, attentionRequired?}` | `Task` |
-| `/api/tasks/:id` | DELETE | — | `204` |
+| `/api/tasks/:id` | DELETE | - | `204` |
 
 ### Session Extensions
 
@@ -262,7 +262,7 @@ UI: Dropdown or popover in the Command Center top bar, right-aligned. Quick pres
 New events for real-time Command Center updates:
 - `project:created`, `project:updated`, `project:deleted`
 - `task:created`, `task:updated`, `task:deleted`
-- `session:updated` — single event with `fields` payload indicating what changed (projects, priority, attentionRequired); consistent with existing `session:*` naming pattern
+- `session:updated` - single event with `fields` payload indicating what changed (projects, priority, attentionRequired); consistent with existing `session:*` naming pattern
 
 ## Server-Side Changes
 
@@ -270,10 +270,10 @@ New events for real-time Command Center updates:
 
 Projects and tasks are stored in **JSON files** alongside existing gateway data:
 
-- `~/.jinn/projects.json` — array of `Project` objects, loaded into memory on gateway startup, flushed on every mutation
-- `~/.jinn/tasks.json` — array of `Task` objects, same lifecycle
+- `~/.jinn/projects.json` - array of `Project` objects, loaded into memory on gateway startup, flushed on every mutation
+- `~/.jinn/tasks.json` - array of `Task` objects, same lifecycle
 
-This follows the existing pattern used by `cron/jobs.json` and session storage — file-based, watched for changes, hot-reloaded.
+This follows the existing pattern used by `cron/jobs.json` and session storage - file-based, watched for changes, hot-reloaded.
 
 ### Session Schema Migration
 
@@ -285,17 +285,17 @@ attentionRequired: boolean      // default: false
 priority: 'urgent' | 'normal' | 'low' | null  // default: null
 ```
 
-**Migration for existing 172 sessions**: On first gateway startup after deploy, sessions without these fields get defaults applied (`projects: []`, `attentionRequired: false`, `priority: null`). This is a backward-compatible additive change — no data loss.
+**Migration for existing 172 sessions**: On first gateway startup after deploy, sessions without these fields get defaults applied (`projects: []`, `attentionRequired: false`, `priority: null`). This is a backward-compatible additive change - no data loss.
 
 ### New Gateway Routes
 
 In `packages/jinn/src/gateway/api.ts`:
 
-- `PATCH /api/sessions/:id` — new route accepting `{projects?, priority?, attentionRequired?}`, updates session in registry and emits `session:updated` WebSocket event
-- `GET/POST /api/projects` — CRUD for projects (read/write `projects.json`)
-- `PUT/DELETE /api/projects/:id` — update/delete individual project
-- `GET/POST /api/projects/:id/tasks` — CRUD for tasks scoped to project
-- `PUT/DELETE /api/tasks/:id` — update/delete individual task
+- `PATCH /api/sessions/:id` - new route accepting `{projects?, priority?, attentionRequired?}`, updates session in registry and emits `session:updated` WebSocket event
+- `GET/POST /api/projects` - CRUD for projects (read/write `projects.json`)
+- `PUT/DELETE /api/projects/:id` - update/delete individual project
+- `GET/POST /api/projects/:id/tasks` - CRUD for tasks scoped to project
+- `PUT/DELETE /api/tasks/:id` - update/delete individual task
 
 ### Web Client API Extension
 
@@ -354,16 +354,16 @@ interface ProjectWithStats extends Project {
 
 ## Navigation Changes
 
-- New nav item: `{ href: "/command", label: "Command Center", icon: Radar }` — positioned second (after Home)
+- New nav item: `{ href: "/command", label: "Command Center", icon: Radar }` - positioned second (after Home)
 - Attention badge on nav icon: red pill with count of `attentionRequired` sessions
 - Remove `/kanban` from nav (replaced by per-project Kanban in Command Center). Add 301 redirect from `/kanban` → `/command` for bookmarks.
-- Existing Kanban board data migration: Existing board tickets become Tasks linked to their department's project. Status mapping: `backlog` → `todo` (intentionally collapsed — the backlog/todo distinction is dropped in favor of simplicity), `review` → `in-progress`, `in-progress` → `in-progress`, `done` → `done`. Priority mapping: `high` → `urgent`, `medium` → `normal`, `low` → `low`.
+- Existing Kanban board data migration: Existing board tickets become Tasks linked to their department's project. Status mapping: `backlog` → `todo` (intentionally collapsed - the backlog/todo distinction is dropped in favor of simplicity), `review` → `in-progress`, `in-progress` → `in-progress`, `done` → `done`. Priority mapping: `high` → `urgent`, `medium` → `normal`, `low` → `low`.
 - `/sessions` page stays as lower-level admin view
 - `/chat` page keeps its existing sidebar unchanged
 
 ## Technology
 
-- **Graph**: React Flow (MIT, ~45KB) — handles drag, zoom, minimap, animated edges, custom nodes, persistent positions
+- **Graph**: React Flow (MIT, ~45KB) - handles drag, zoom, minimap, animated edges, custom nodes, persistent positions
 - **Dashboard**: Custom React + CSS Grid
 - **Timeline**: Custom React + CSS Grid with horizontal scroll/zoom
 - **Slide-over panel**: Custom React component with Framer Motion or CSS transitions
@@ -386,13 +386,13 @@ All three views handle these states consistently:
 - Graph nodes are keyboard-focusable (`Tab` to navigate, `Enter` to open slide-over)
 - `Tab`/`1`/`2`/`3` keyboard shortcuts to switch between Graph/Dashboard/Timeline tabs
 - Slide-over traps focus when open, `Escape` to close
-- All status indicators (pulsing, glowing, colored) have `aria-label` descriptions (e.g., "Pravko: 2 errors, 1 running")
-- Color is never the only indicator — status dots include shape differentiation (circle = running, triangle = error, diamond = attention)
+- All status indicators (pulsing, glowing, colored) have `aria-label` descriptions (e.g., "Project A: 2 errors, 1 running")
+- Color is never the only indicator - status dots include shape differentiation (circle = running, triangle = error, diamond = attention)
 
 ## Out of Scope
 
 - Replacing the /chat page or its sidebar
 - Mobile-first optimization (desktop-first, responsive as secondary concern)
 - Collaborative multi-user features
-- External integrations (Slack notifications for attention items — future enhancement)
+- External integrations (Slack notifications for attention items - future enhancement)
 - AI-powered auto-prioritization (future enhancement)

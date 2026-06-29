@@ -1,5 +1,6 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { Search, X } from 'lucide-react'
 import { EmployeeAvatar } from '@/components/ui/employee-avatar'
 import { cn } from '@/lib/utils'
 import type { Employee } from '@/lib/api'
@@ -20,6 +21,12 @@ const RANK_LABELS: Record<string, string> = {
   employee: '',
 }
 
+/** Does this key press a single printable character that should auto-open search? */
+function isFilterChar(e: React.KeyboardEvent): boolean {
+  if (e.metaKey || e.ctrlKey || e.altKey) return false
+  return e.key.length === 1 && /[a-z0-9]/i.test(e.key)
+}
+
 export function ChatEmployeePicker({
   employees,
   selectedEmployee,
@@ -27,9 +34,11 @@ export function ChatEmployeePicker({
   portalName,
 }: ChatEmployeePickerProps) {
   const [search, setSearch] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
   const [highlightIdx, setHighlightIdx] = useState(-1) // -1 = COO
   const listRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+  const didMount = useRef(false)
 
   // Filter employees by search query
   const filtered = useMemo(() => {
@@ -68,6 +77,17 @@ export function ChatEmployeePicker({
     setHighlightIdx(-1)
   }, [search])
 
+  // Move focus when the search field is revealed (→ input) or collapsed (→ list),
+  // but never on the initial mount (avoid stealing focus / scroll jump on open).
+  useEffect(() => {
+    if (!didMount.current) {
+      didMount.current = true
+      return
+    }
+    if (searchOpen) searchRef.current?.focus()
+    else listRef.current?.focus()
+  }, [searchOpen])
+
   // Scroll highlighted item into view
   useEffect(() => {
     if (!listRef.current) return
@@ -78,24 +98,74 @@ export function ChatEmployeePicker({
     if (item && typeof item.scrollIntoView === 'function') item.scrollIntoView({ block: 'nearest' })
   }, [highlightIdx])
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
+  const selectHighlighted = useCallback(() => {
+    if (highlightIdx === -1) {
+      onSelect(null)
+    } else if (flatList[highlightIdx]) {
+      onSelect(flatList[highlightIdx].name)
+    }
+  }, [highlightIdx, flatList, onSelect])
+
+  // Shared list navigation (arrows + enter). Returns true if it handled the key.
+  const handleNavKeys = useCallback(
+    (e: React.KeyboardEvent): boolean => {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
         setHighlightIdx(i => Math.min(i + 1, flatList.length - 1))
-      } else if (e.key === 'ArrowUp') {
+        return true
+      }
+      if (e.key === 'ArrowUp') {
         e.preventDefault()
         setHighlightIdx(i => Math.max(i - 1, -1))
-      } else if (e.key === 'Enter') {
+        return true
+      }
+      if (e.key === 'Enter') {
         e.preventDefault()
-        if (highlightIdx === -1) {
-          onSelect(null)
-        } else if (flatList[highlightIdx]) {
-          onSelect(flatList[highlightIdx].name)
-        }
+        selectHighlighted()
+        return true
+      }
+      return false
+    },
+    [flatList.length, selectHighlighted]
+  )
+
+  const openSearch = useCallback((seed?: string) => {
+    if (seed !== undefined) setSearch(seed)
+    setSearchOpen(true)
+  }, [])
+
+  const closeSearch = useCallback(() => {
+    setSearch('')
+    setSearchOpen(false)
+  }, [])
+
+  // Keys while the clean list is focused (search collapsed)
+  const handleListKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (handleNavKeys(e)) return
+      if (e.key === '/') {
+        // Reveal search without seeding the slash.
+        e.preventDefault()
+        openSearch()
+      } else if (isFilterChar(e)) {
+        // Type-to-filter: reveal the field seeded with this character.
+        e.preventDefault()
+        openSearch(e.key)
       }
     },
-    [highlightIdx, flatList, onSelect]
+    [handleNavKeys, openSearch]
+  )
+
+  // Keys while the search field is focused (search open)
+  const handleSearchKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (handleNavKeys(e)) return
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        closeSearch()
+      }
+    },
+    [handleNavKeys, closeSearch]
   )
 
   return (
@@ -104,25 +174,59 @@ export function ChatEmployeePicker({
         Who do you want to talk to?
       </p>
 
-      {/* Search */}
-      <div className="w-full">
-        <input
-          ref={searchRef}
-          type="text"
-          placeholder="Search employees..."
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="w-full py-2 px-3 text-[length:var(--text-footnote)] border border-[var(--separator)] rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] text-[var(--text-primary)] outline-none font-[inherit] placeholder:text-[var(--text-tertiary)]"
-        />
+      {/* Header row: a quiet label + magnifier, OR the slim search field when revealed.
+          This reads as a PICKER toolbar, never a chat composer. */}
+      <div className="w-full min-h-[34px]">
+        {searchOpen ? (
+          <div className="flex items-center gap-1.5 w-full">
+            <div className="relative flex-1">
+              <Search
+                size={15}
+                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-tertiary)]"
+              />
+              <input
+                ref={searchRef}
+                type="text"
+                placeholder="Filter people…"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                onKeyDown={handleSearchKeyDown}
+                className="w-full h-[34px] pl-8 pr-3 text-[length:var(--text-footnote)] rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] text-[var(--text-primary)] outline-none font-[inherit] placeholder:text-[var(--text-tertiary)]"
+              />
+            </div>
+            <button
+              type="button"
+              aria-label="Close search"
+              onClick={closeSearch}
+              className="flex items-center justify-center h-[34px] w-[34px] shrink-0 rounded-[var(--radius-md)] text-[var(--text-tertiary)] bg-transparent hover:bg-[var(--fill-secondary)] hover:text-[var(--text-secondary)] transition-colors outline-none"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between w-full pl-1">
+            <span className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] uppercase tracking-wider">
+              Team
+            </span>
+            <button
+              type="button"
+              aria-label="Search employees"
+              onClick={() => openSearch()}
+              className="flex items-center justify-center h-[34px] w-[34px] shrink-0 rounded-[var(--radius-md)] text-[var(--text-tertiary)] bg-transparent hover:bg-[var(--fill-secondary)] hover:text-[var(--text-secondary)] transition-colors outline-none"
+            >
+              <Search size={16} />
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Scrollable list */}
+      {/* Scrollable list — clean by default, borderless (separation via fill + spacing) */}
       <div
         ref={listRef}
         role="listbox"
         tabIndex={0}
-        onKeyDown={handleKeyDown}
-        className="w-full max-h-[360px] overflow-y-auto rounded-[var(--radius-md)] border border-[var(--separator)] bg-[var(--fill-quaternary)]"
+        onKeyDown={handleListKeyDown}
+        className="w-full max-h-[360px] overflow-y-auto rounded-[var(--radius-md)] bg-[var(--fill-quaternary)] outline-none"
       >
         {/* COO row — always visible */}
         <div
@@ -133,7 +237,7 @@ export function ChatEmployeePicker({
           onClick={() => onSelect(null)}
           onMouseEnter={() => setHighlightIdx(-1)}
           className={cn(
-            'flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors border-b border-[var(--separator)]',
+            'flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors',
             highlightIdx === -1 && 'bg-[var(--fill-secondary)]',
             selectedEmployee === null
               ? 'bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]'

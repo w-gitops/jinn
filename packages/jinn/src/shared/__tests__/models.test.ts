@@ -8,7 +8,7 @@ function cfg(partial: Partial<JinnConfig["engines"]>, models?: JinnConfig["model
     engines: {
       default: "claude",
       claude: { bin: "claude", model: "opus" },
-      codex: { bin: "codex", model: "gpt-5.3-codex" },
+      codex: { bin: "codex", model: "gpt-5.5" },
       ...partial,
     },
     models,
@@ -23,19 +23,30 @@ describe("synthesizeFromEngineConfig (backward-compat fallback)", () => {
     const reg = synthesizeFromEngineConfig(cfg({}));
     expect(reg.claude.models[0].id).toBe("opus");
     expect(reg.claude.defaultModel).toBe("opus");
-    expect(reg.codex.models[0].id).toBe("gpt-5.3-codex");
-    expect(reg.antigravity.models[0].id).toBe("gemini-3-flash-preview");
+    expect(reg.codex.models[0].id).toBe("gpt-5.5");
+    expect(reg.antigravity.models[0].id).toBe("Gemini 3.5 Flash (Medium)");
+    expect(reg.grok.defaultModel).toBe("grok-build");
+    expect(reg.grok.models.map((m) => m.id)).toEqual(["grok-build", "grok-composer-2.5-fast"]);
+    expect(reg.grok.models.map((m) => m.label)).toEqual(["Grok Build", "Grok Composer 2.5 Fast"]);
   });
 
-  it("uses per-engine effort semantics: claude flag (low/med/high), codex config (incl xhigh), antigravity none", () => {
+  it("uses per-engine effort semantics: claude flag, codex config, grok flag, antigravity none", () => {
     const reg = synthesizeFromEngineConfig(cfg({}));
     expect(reg.claude.effortMechanism).toBe("claude-flag");
     expect(reg.claude.models[0].effortLevels).toEqual(["low", "medium", "high"]);
     expect(reg.codex.effortMechanism).toBe("codex-config");
     expect(reg.codex.models[0].effortLevels).toContain("xhigh");
+    expect(reg.grok.effortMechanism).toBe("grok-flag");
+    expect(reg.grok.models[0].effortLevels).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(reg.antigravity.effortMechanism).toBe("none");
     expect(reg.antigravity.models[0].supportsEffort).toBe(false);
     expect(reg.antigravity.models[0].effortLevels).toEqual([]);
+  });
+
+  it("uses the pinned Grok model as default while keeping the known Grok catalog", () => {
+    const reg = synthesizeFromEngineConfig(cfg({ grok: { bin: "grok", model: "grok-composer-2.5-fast" } }));
+    expect(reg.grok.defaultModel).toBe("grok-composer-2.5-fast");
+    expect(reg.grok.models.map((m) => m.id)).toEqual(["grok-build", "grok-composer-2.5-fast"]);
   });
 });
 
@@ -50,8 +61,8 @@ describe("getModelRegistry with a models: block", () => {
       ],
     },
     codex: {
-      default: "gpt-5.3-codex",
-      models: [{ id: "gpt-5.3-codex", label: "GPT-5.3 Codex", supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"] }],
+      default: "gpt-5.5",
+      models: [{ id: "gpt-5.5", label: "GPT-5.5 Codex", supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"] }],
     },
     antigravity: {
       models: [{ id: "gemini-3-flash-preview", label: "Gemini 3 Flash", supportsEffort: false, effortLevels: [] }],
@@ -70,6 +81,26 @@ describe("getModelRegistry with a models: block", () => {
     const reg = getModelRegistry(cfg({}, models));
     expect(reg.claude.defaultModel).toBe("claude-opus-4-8");
     expect(reg.antigravity.defaultModel).toBe("gemini-3-flash-preview"); // no default → first
+  });
+
+  it("lets engines.grok.model pin the Grok default when models.grok is configured", () => {
+    const reg = getModelRegistry(cfg(
+      { grok: { bin: "grok", model: "grok-composer-2.5-fast" } },
+      {
+        grok: {
+          default: "grok-build",
+          effortMechanism: "grok-flag",
+          models: [
+            { id: "grok-build", label: "Grok Build", supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh", "max"], contextWindow: 256000 },
+            { id: "grok-composer-2.5-fast", label: "Grok Composer 2.5 Fast", supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh", "max"], contextWindow: 256000 },
+          ],
+        },
+      },
+    ));
+
+    expect(reg.grok.defaultModel).toBe("grok-composer-2.5-fast");
+    expect(reg.grok.models[0].label).toBe("Grok Build");
+    expect(reg.grok.models[0].contextWindow).toBe(256000);
   });
 });
 

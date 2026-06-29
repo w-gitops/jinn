@@ -1,9 +1,13 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo, Suspense } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '@/lib/api'
+import { resolveDeepLink } from '@/components/chat/chat-route-helpers'
 import { useGateway } from '@/hooks/use-gateway'
 import { PageLayout } from '@/components/page-layout'
 import { ChatSidebar, type SidebarOrder } from '@/components/chat/chat-sidebar'
-import { ChatTabBar } from '@/components/chat/chat-tabs'
+import { ChatHeaderPills } from '@/components/chat/chat-tabs'
+import { NavRibbon } from '@/components/pill-nav'
+import { MobileTabBar } from '@/components/chat/mobile-tab-bar'
 import { ChatPane } from '@/components/chat/chat-pane'
 import { FileView } from '@/components/chat/file-view'
 import { FileOpenContext } from '@/components/chat/file-open-context'
@@ -17,7 +21,7 @@ import { useSettings } from '@/routes/settings-provider'
 import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '@/lib/query-keys'
 import { cn } from '@/lib/utils'
-import { Check, Copy, EllipsisVertical, PanelLeftClose, PanelLeftOpen, Plus, Share2, Trash2 } from 'lucide-react'
+import { Check, Copy, MoreHorizontal, Search, Share2, Trash2 } from 'lucide-react'
 import { writeViewMode, type ViewMode } from '@/lib/view-mode'
 import { shareDebugLog, clearDebugLog } from '@/lib/debug-log'
 
@@ -78,25 +82,24 @@ function ChatPage() {
   const [employeeSessions, setEmployeeSessions] = useState<Array<{ id: string; title?: string; lastActivity?: string; createdAt?: string }>>([])
   // When true, user explicitly started a new chat — don't auto-select first session
   const newChatIntentRef = useRef(false)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('jinn-chat-sidebar-collapsed') === 'true'
-    }
-    return false
+  // Employee to preselect for a brand-new chat (contacting a session-less
+  // employee from the sidebar, or via an ?employee= deep-link). Null = none.
+  const [pendingEmployee, setPendingEmployee] = useState<string | null>(null)
+  // Show-both: the slim nav ribbon is always mounted (desktop); only the 280px
+  // chat list folds. The ribbon's top toggle drives listOpen (persisted), so nav
+  // never leaves the rail. There is no list⇄nav swap any more.
+  const [listOpen, setListOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem('jinn-chat-list-open') !== 'false' } catch { return true }
   })
-  const toggleSidebar = useCallback(() => {
-    // Mobile: toggle mobileView between sidebar and chat
-    const isMobile = window.innerWidth < 1024
-    if (isMobile) {
-      setMobileView((prev) => (prev === 'sidebar' ? 'chat' : 'sidebar'))
-    } else {
-      setSidebarCollapsed((prev) => {
-        const next = !prev
-        localStorage.setItem('jinn-chat-sidebar-collapsed', String(next))
-        return next
-      })
-    }
+  const toggleList = useCallback(() => {
+    setListOpen((prev) => {
+      const next = !prev
+      try { localStorage.setItem('jinn-chat-list-open', String(next)) } catch { /* ignore */ }
+      return next
+    })
   }, [])
+  // Mobile: pop from the thread back to the chat list (the tab bar's Chat screen).
+  const backToList = useCallback(() => setMobileView('sidebar'), [])
   const [viewMode, setViewMode] = useState<ViewMode>('chat')
   // Pending user message from new-chat send — passed to the new ChatPane so the user bubble appears before loadSession resolves
   const [pendingUserMessage, setPendingUserMessage] = useState<{ sessionId: string; message: Message } | null>(null)
@@ -166,6 +169,15 @@ function ChatPage() {
     setCopiedField(field)
     setShowMoreMenu(false)
     setTimeout(() => setCopiedField(null), 1500)
+  }, [])
+
+  // D4: open the existing global search (⌘K). GlobalSearch listens for a
+  // meta/ctrl+K keydown on window, so synthesize one — same mechanism the old
+  // header search button used. Desktop lost its only visible search entry when
+  // the header became pills; this restores it inside the ⋯ menu.
+  const openGlobalSearch = useCallback(() => {
+    setShowMoreMenu(false)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, ctrlKey: true, bubbles: true }))
   }, [])
 
   // Update tab label/status when session meta changes.
@@ -265,12 +277,42 @@ function ChatPage() {
 
   const handleNewChat = useCallback(() => {
     newChatIntentRef.current = true
+    setPendingEmployee(null)
     setSelectedId(null)
     setSessionMeta(null)
     setMobileView('chat')
     setEmployeeSessions([])
     chatTabs.clearActiveTab()
   }, [chatTabs])
+
+  // Start a new chat with a specific employee preselected — used when contacting
+  // a session-less employee from the sidebar roster or via an ?employee= deep-link.
+  // The actual session is created on first send (ChatPane → buildNewSessionParams).
+  const contactEmployee = useCallback((name: string) => {
+    newChatIntentRef.current = true
+    setPendingEmployee(name)
+    setSelectedId(null)
+    setSessionMeta(null)
+    setMobileView('chat')
+    setEmployeeSessions([])
+    chatTabs.clearActiveTab()
+  }, [chatTabs])
+
+  // Deep-links: ?session=<id> focuses/opens that session's tab; ?employee=<name>
+  // opens a new chat with that employee preselected. The param is consumed once
+  // (cleared from the URL) so it doesn't re-fire on unrelated re-renders or stick
+  // across navigation. Mirrors routes/file/page.tsx's useSearchParams usage.
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    const link = resolveDeepLink(searchParams)
+    if (!link) return
+    if (link.kind === 'session') handleSelect(link.id)
+    else contactEmployee(link.name)
+    const next = new URLSearchParams(searchParams)
+    next.delete('session')
+    next.delete('employee')
+    setSearchParams(next, { replace: true })
+  }, [searchParams, handleSelect, contactEmployee, setSearchParams])
 
   // Back target for the mobile file-view "back" button: the session that was
   // active when a file link was clicked. selectedIdRef (declared below) is read
@@ -444,6 +486,10 @@ function ChatPage() {
     }},
     { key: '[', modifiers: ['meta', 'shift'], category: 'Navigation', description: 'Previous tab', action: () => chatTabs.prevTab() },
     { key: ']', modifiers: ['meta', 'shift'], category: 'Navigation', description: 'Next tab', action: () => chatTabs.nextTab() },
+    // Fold/unfold the chat list. ⌥⌘S is the macOS-native sidebar toggle; ⌘\ is
+    // the web-friendly alias (Linear/VS Code class).
+    { key: 's', modifiers: ['meta', 'alt'], category: 'Navigation', description: 'Toggle chat list', action: toggleList },
+    { key: '\\', modifiers: ['meta'], category: 'Navigation', description: 'Toggle chat list', action: toggleList },
     ...Array.from({ length: 9 }, (_, i) => ({
       key: String(i + 1),
       modifiers: ['meta' as const, 'alt' as const],
@@ -451,7 +497,7 @@ function ChatPage() {
       description: `Tab ${i + 1}`,
       action: () => chatTabs.switchTab(i),
     })),
-  ], [handleNewChat, navigateSession, cycleEmployee, copyChat, selectedId, showShortcutOverlay, showMoreMenu, chatTabs])
+  ], [handleNewChat, navigateSession, cycleEmployee, copyChat, selectedId, showShortcutOverlay, showMoreMenu, chatTabs, toggleList])
 
   useKeyboardShortcuts(shortcuts)
 
@@ -472,209 +518,214 @@ function ChatPage() {
     // instead of ChatPane, but the underlying session selection is preserved.
   }, [chatTabs.activeTab, selectedId])
 
-  // Codex has no live PTY/xterm view, so the CLI toggle is hidden for it (and the
-  // view coerced to chat) — attaching a CLI socket for codex is refused server-side.
-  const cliSupported = sessionMeta?.engine !== 'codex'
-  const effectiveViewMode: ViewMode = cliSupported ? viewMode : 'chat'
+  const cliModeAvailable = !sessionMeta?.engine || ['claude', 'codex', 'antigravity', 'grok'].includes(sessionMeta.engine)
+  const activeSessionTab = chatTabs.activeTab?.kind === 'session' ? chatTabs.activeTab : null
+  const viewSwitchLocked = sessionMeta?.engine === 'codex' && activeSessionTab?.sessionId === selectedId && activeSessionTab.status === 'running'
+  const cliTitle = viewSwitchLocked
+    ? 'Codex view switching is locked while a turn is running'
+    : cliModeAvailable ? undefined : 'CLI view is not available for this engine'
+  const effectiveViewMode: ViewMode = cliModeAvailable ? viewMode : 'chat'
 
-  // More menu (shared between desktop tab bar and mobile header)
-  const moreMenu = selectedId ? (
+  // More (…) menu — rendered as the last control inside the right header pill.
+  // D7: ALWAYS rendered (even on a new chat, where it carries Search + the view
+  // toggle) so the right pill is consistent. When a session is selected the items
+  // are grouped: primary (Search · view toggle · Duplicate) → Developer cluster →
+  // destructive Delete, each separated.
+  const moreMenu = (
     <div data-more-menu className="relative">
       <button
         onClick={() => setShowMoreMenu((v) => !v)}
         aria-label="More options"
-        className="flex items-center rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        className="inline-flex size-9 lg:size-8 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-foreground"
       >
-        <EllipsisVertical className="size-[18px]" />
+        <MoreHorizontal className="size-[18px]" />
       </button>
 
       {showMoreMenu && (
-        <div className="absolute right-0 top-full z-[200] mt-1 min-w-[220px] overflow-hidden rounded-[var(--radius-md)] border border-border bg-[var(--material-thick)] shadow-[var(--shadow-overlay)] backdrop-blur-xl">
-          {/* Mobile-only Chat/CLI toggle — the desktop one lives in the tab bar's toolbarActions */}
-          {cliSupported && (
-            <>
-              <div className="flex items-center gap-1 px-3 py-2 md:hidden">
-                <button
-                  onClick={() => { setAndPersistViewMode('chat'); setShowMoreMenu(false) }}
-                  className={cn(
-                    "flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors",
-                    viewMode === 'chat' ? "bg-[var(--accent-fill)] text-[var(--accent)]" : "text-muted-foreground hover:bg-accent"
-                  )}
-                >
-                  Chat
-                </button>
-                <button
-                  onClick={() => { setAndPersistViewMode('cli'); setShowMoreMenu(false) }}
-                  className={cn(
-                    "flex-1 rounded-md px-2 py-1 font-mono text-xs font-medium transition-colors",
-                    viewMode === 'cli' ? "bg-[var(--accent-fill)] text-[var(--accent)]" : "text-muted-foreground hover:bg-accent"
-                  )}
-                >
-                  CLI
-                </button>
-              </div>
-              <div className="my-0.5 border-t border-border md:hidden" />
-            </>
-          )}
+        <div className="absolute right-0 top-full z-[200] mt-2 min-w-[220px] overflow-hidden rounded-[var(--radius-md)] border border-border bg-[var(--material-thick)] shadow-[var(--shadow-overlay)] backdrop-blur-xl">
+          {/* PRIMARY group — Search (⌘K), then the Chat/CLI view toggle, then
+              Duplicate (only when a session is selected). */}
+          {/* D4: Search lives at the very top — the only visible ⌘K entry point on desktop. */}
           <button
-            onClick={() => copyToClipboard(selectedId, 'id')}
-            className="block w-full px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent"
-          >
-            Copy Session ID
-          </button>
-          {sessionMeta?.engineSessionId && (
-            <button
-              onClick={() => {
-                const cli = sessionMeta.engine === 'codex' ? 'codex' : 'claude'
-                copyToClipboard(`${cli} --resume ${sessionMeta.engineSessionId}`, 'cli')
-              }}
-              className="block w-full px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent"
-            >
-              Copy CLI Resume Command
-            </button>
-          )}
-          <button
-            onClick={() => { if (selectedId) handleDuplicate(selectedId) }}
-            disabled={duplicateSessionMutation.isPending}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent disabled:opacity-50"
-          >
-            <Copy className="size-3.5" />
-            <span className="flex-1">{duplicateSessionMutation.isPending ? 'Duplicating...' : 'Duplicate...'}</span>
-          </button>
-          <button
-            onClick={() => { setShowMoreMenu(false); shareDebugLog() }}
+            onClick={openGlobalSearch}
             className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent"
           >
-            <Share2 className="size-3.5" />
-            <span className="flex-1">Share debug log</span>
+            <Search className="size-3.5" />
+            <span className="flex-1">Search…</span>
+            <kbd className="font-mono text-[10px] text-[var(--text-quaternary)]">⌘K</kbd>
           </button>
-          <button
-            onClick={() => { setShowMoreMenu(false); clearDebugLog() }}
-            className="block w-full px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-accent"
-          >
-            Clear debug log
-          </button>
-          <div className="my-0.5 border-t border-border" />
-          <button
-            onClick={() => { setShowMoreMenu(false); if (selectedId && window.confirm('Delete this session?')) handleDeleteSession(selectedId) }}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--system-red)] transition-colors hover:bg-accent"
-          >
-            <Trash2 className="size-3.5" />
-            <span className="flex-1">Delete Session</span>
-            <kbd className="font-mono text-[10px] text-[var(--text-quaternary)]">⌫</kbd>
-          </button>
+          {/* Chat/CLI view toggle (moved here from the old tab bar so it stays
+              reachable now that the header is a pill). */}
+          <div className="flex items-center gap-1 px-3 py-2">
+            <button
+              onClick={() => { if (!viewSwitchLocked) { setAndPersistViewMode('chat'); setShowMoreMenu(false) } }}
+              disabled={viewSwitchLocked}
+              title={viewSwitchLocked ? cliTitle : undefined}
+              className={cn(
+                "flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                effectiveViewMode === 'chat' ? "bg-[var(--accent-fill)] text-[var(--accent)]" : "text-muted-foreground hover:bg-accent",
+                viewSwitchLocked && "opacity-60 cursor-not-allowed"
+              )}
+            >
+              Chat
+            </button>
+            <button
+              onClick={() => { if (cliModeAvailable && !viewSwitchLocked) { setAndPersistViewMode('cli'); setShowMoreMenu(false) } }}
+              disabled={!cliModeAvailable || viewSwitchLocked}
+              title={cliTitle}
+              className={cn(
+                "flex-1 rounded-md px-2 py-1 font-mono text-xs font-medium transition-colors",
+                effectiveViewMode === 'cli' ? "bg-[var(--accent-fill)] text-[var(--accent)]" : "text-muted-foreground hover:bg-accent",
+                (!cliModeAvailable || viewSwitchLocked) && "opacity-45 cursor-not-allowed"
+              )}
+            >
+              CLI
+            </button>
+          </div>
+          {selectedId && (
+            <button
+              onClick={() => { if (selectedId) handleDuplicate(selectedId) }}
+              disabled={duplicateSessionMutation.isPending}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+            >
+              <Copy className="size-3.5" />
+              <span className="flex-1">{duplicateSessionMutation.isPending ? 'Duplicating...' : 'Duplicate...'}</span>
+            </button>
+          )}
+
+          {selectedId && (
+            <>
+              {/* DEVELOPER cluster */}
+              <div className="my-0.5 border-t border-border" />
+              <div className="px-3 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-[var(--text-tertiary)]">
+                Developer
+              </div>
+              <button
+                onClick={() => copyToClipboard(selectedId, 'id')}
+                className="block w-full px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent"
+              >
+                Copy Session ID
+              </button>
+              {sessionMeta?.engineSessionId && (
+                <button
+                  onClick={() => {
+                    const cli = sessionMeta.engine === 'codex' ? 'codex' : 'claude'
+                    copyToClipboard(`${cli} --resume ${sessionMeta.engineSessionId}`, 'cli')
+                  }}
+                  className="block w-full px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent"
+                >
+                  Copy CLI Resume Command
+                </button>
+              )}
+              <button
+                onClick={() => { setShowMoreMenu(false); shareDebugLog() }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent"
+              >
+                <Share2 className="size-3.5" />
+                <span className="flex-1">Share debug log</span>
+              </button>
+              <button
+                onClick={() => { setShowMoreMenu(false); clearDebugLog() }}
+                className="block w-full px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-accent"
+              >
+                Clear debug log
+              </button>
+
+              {/* DESTRUCTIVE */}
+              <div className="my-0.5 border-t border-border" />
+              <button
+                onClick={() => { setShowMoreMenu(false); if (selectedId && window.confirm('Delete this session?')) handleDeleteSession(selectedId) }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--system-red)] transition-colors hover:bg-accent"
+              >
+                <Trash2 className="size-3.5" />
+                <span className="flex-1">Delete Session</span>
+                <kbd className="font-mono text-[10px] text-[var(--text-quaternary)]">⌫</kbd>
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
-  ) : null
-
-  // Build toolbar actions to pass into tab bar (desktop only content)
-  const toolbarActions = (
-    <>
-      {cliSupported && (
-        <div className="flex items-center gap-0.5 rounded-full bg-[var(--fill-tertiary)] p-0.5">
-          <button
-            onClick={() => setAndPersistViewMode('chat')}
-            className={cn(
-              "rounded-full px-2.5 py-1 text-[11px] font-medium transition-all",
-              viewMode === 'chat'
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            Chat
-          </button>
-          <button
-            onClick={() => setAndPersistViewMode('cli')}
-            className={cn(
-              "rounded-full px-2.5 py-1 font-mono text-[11px] font-medium transition-all",
-              viewMode === 'cli'
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            CLI
-          </button>
-        </div>
-      )}
-
-      <div className="hidden lg:block">{moreMenu}</div>
-
-      {copiedField && (
-        <div className="flex items-center gap-1 whitespace-nowrap text-xs font-medium text-[var(--accent)]">
-          <Check className="size-3" />
-          Copied!
-        </div>
-      )}
-    </>
   )
 
-  const mobileSidebarToggle = (
-    <button
-      onClick={toggleSidebar}
-      aria-label={mobileView === 'sidebar' ? 'Hide chats' : 'Show chats'}
-      className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-    >
-      {mobileView === 'sidebar' ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
-    </button>
-  )
+  // The conversation title — slim inline title (desktop) / centered nav-bar title
+  // (mobile thread). "New chat" on a fresh composer, else nothing until meta loads.
+  const headerTitle = sessionMeta?.title?.trim() || (selectedId ? '' : 'New chat')
 
-  const mobileRightActions = (
-    <>
-      <button
-        onClick={handleNewChat}
-        aria-label="New chat"
-        title="New chat"
-        className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-      >
-        <Plus size={18} />
-      </button>
-      {moreMenu}
-    </>
-  )
+  const onMobileList = mobileView === 'sidebar'
 
   return (
     <FileOpenContext.Provider value={openFile}>
-    <PageLayout mobileHeaderActions={mobileRightActions} mobileHeaderLeftActions={mobileSidebarToggle}>
+    <PageLayout chromeless>
       <div className="flex overflow-hidden h-full">
-        <div
-          className="hidden h-full shrink-0 overflow-hidden lg:block"
-          style={{
-            width: sidebarCollapsed ? 0 : 280,
-            transition: 'width 200ms ease-in-out',
-          }}
-        >
-          <div className="h-full w-[280px]">
-            <ChatSidebar
-              selectedId={selectedId}
-              onSelect={handleSelect}
-              onNewChat={handleNewChat}
-              onDelete={handleDeleteSession}
-              onDuplicate={handleDuplicateFromSidebar}
-              onSessionsLoaded={handleSessionsLoaded}
-              onEmployeeSessionsAvailable={handleEmployeeSessionsAvailable}
-              onOrderComputed={handleOrderComputed}
-            />
+        {/* Left region (desktop): the permanent slim nav ribbon + the foldable
+            280px chat list. The ribbon's top toggle folds the list to 0; the
+            ribbon persists and the thread reflows wider. No overflow-hidden here
+            so the ribbon's per-icon label pills can escape to the right over the
+            list/thread (the list column clips its own fold). `group/sidebar`
+            scopes the ribbon-logo→toggle morph to this whole region (rail + list)
+            — hovering the thread (a sibling outside this div) never triggers it. */}
+        <div className="group/sidebar hidden h-full shrink-0 lg:flex">
+          <NavRibbon listOpen={listOpen} onToggleList={toggleList} />
+          {/* Fold the list by animating its width; the inner column keeps a fixed
+              280px so its contents don't reflow mid-fold. */}
+          <div
+            className={cn(
+              "h-full overflow-hidden transition-[width] duration-200 [transition-timing-function:var(--ease-smooth)] motion-reduce:transition-none",
+              listOpen ? "w-[280px]" : "w-0",
+            )}
+            aria-hidden={!listOpen}
+          >
+            <div className="h-full w-[280px]">
+              <ChatSidebar
+                selectedId={selectedId}
+                onSelect={handleSelect}
+                onNewChat={handleNewChat}
+                onDelete={handleDeleteSession}
+                onDuplicate={handleDuplicateFromSidebar}
+                onSessionsLoaded={handleSessionsLoaded}
+                onEmployeeSessionsAvailable={handleEmployeeSessionsAvailable}
+                onOrderComputed={handleOrderComputed}
+                onContactEmployee={contactEmployee}
+              />
+            </div>
           </div>
         </div>
 
-        <div className="min-w-0 flex-1 flex-col overflow-hidden bg-background flex">
-          <ChatTabBar
-            tabs={chatTabs.tabs}
-            activeIndex={chatTabs.activeIndex}
-            onSwitch={chatTabs.switchTab}
-            onClose={chatTabs.closeTab}
-            onNew={handleNewChat}
-            onPin={chatTabs.pinTab}
-            onMove={chatTabs.moveTab}
-            toolbarActions={toolbarActions}
-            sidebarCollapsed={mobileView === 'chat' || sidebarCollapsed}
-            onToggleSidebar={toggleSidebar}
+        <div className="chat-pills-layout relative min-w-0 flex-1 flex-col overflow-hidden bg-background flex">
+          {/* Soft top scrim (gradient, not a border) — content scrolls under it.
+              Hold a real cloud behind the floating header, then fade before the
+              message list's top padding ends. Theme-aware via var(--bg). */}
+          <div
+            aria-hidden
+            className={cn(
+              "pointer-events-none absolute inset-x-0 top-0 z-[5] h-[88px]",
+              onMobileList && "hidden lg:block",
+            )}
+            style={{ background: 'linear-gradient(to bottom, var(--bg) 0, var(--bg) 52px, color-mix(in srgb, var(--bg) 68%, transparent) 68px, transparent 100%)' }}
           />
+
+          {/* Frosted corner pills replace the solid header. Hidden over the mobile
+              chat-list view (the sidebar has its own header); shown on desktop + thread. */}
+          <ChatHeaderPills
+            hideOnMobile={onMobileList}
+            title={headerTitle}
+            onBack={backToList}
+            onNew={handleNewChat}
+            moreMenu={moreMenu}
+          />
+
+          {copiedField && (
+            <div className="absolute right-4 top-[58px] z-10 flex items-center gap-1 rounded-full bg-[var(--material-thick)] px-2.5 py-1 text-xs font-medium text-[var(--accent)] shadow-[var(--shadow-overlay)]">
+              <Check className="size-3" /> Copied!
+            </div>
+          )}
 
           <div
             className={mobileView === 'sidebar' ? 'flex-1 overflow-hidden lg:hidden' : 'hidden'}
           >
+            {/* Mobile: the chat list is the full-width body; the bottom tab bar
+                (rendered below) is the persistent nav. */}
             <ChatSidebar
               selectedId={selectedId}
               onSelect={handleSelect}
@@ -684,6 +735,7 @@ function ChatPage() {
               onSessionsLoaded={handleSessionsLoaded}
               onEmployeeSessionsAvailable={handleEmployeeSessionsAvailable}
               onOrderComputed={handleOrderComputed}
+              onContactEmployee={contactEmployee}
             />
           </div>
 
@@ -700,11 +752,13 @@ function ChatPage() {
               <FileView path={chatTabs.activeTab.path} embedded onBack={handleFileBack} />
             ) : (
               <ChatPane
-                key={selectedId ?? '__new__'}
+                key={selectedId ?? `__new__:${pendingEmployee ?? ''}`}
                 sessionId={selectedId}
+                initialEmployee={selectedId ? undefined : pendingEmployee}
                 isActive={true}
                 onFocus={() => {}}
                 onSessionCreated={handleSessionCreated}
+                onNewChat={handleNewChat}
                 onSessionMetaChange={handleSessionMetaChange}
                 onRefresh={handleRefresh}
                 portalName={portalName}
@@ -726,6 +780,10 @@ function ChatPage() {
         </div>
       </div>
 
+      {/* Mobile bottom tab bar — persistent nav on the chat-list screen; hidden on
+          the thread (Apple hidesBottomBarWhenPushed: the composer owns the bottom). */}
+      {onMobileList && <MobileTabBar />}
+
       {showShortcutOverlay && (
         <ShortcutOverlay
           shortcuts={shortcuts}
@@ -733,6 +791,17 @@ function ChatPage() {
         />
       )}
 
+      {/* D8: clear the floating pills/scrim by padding the scroll container itself
+          and aligning scroll anchoring to the same offset. Driven by the shared
+          token (pill height + gap + safe-area) so it auto-tracks notched devices —
+          no fragile `:first-child` coupling or magic number. Content still scrolls
+          beneath the translucent scrim. */}
+      <style>{`
+        .chat-pills-layout .chat-messages-scroll {
+          padding-top: var(--chat-top-clearance);
+          scroll-padding-top: var(--chat-top-clearance);
+        }
+      `}</style>
     </PageLayout>
     </FileOpenContext.Provider>
   )

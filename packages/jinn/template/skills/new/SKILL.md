@@ -11,7 +11,7 @@ This skill activates when the user sends `/new`. It resets the current chat and 
 
 ## How It Works
 
-- **Web UI**: The frontend handles `/new` locally — it clears the current session and resets the chat view. No message is sent to the engine.
+- **Web UI**: The frontend handles `/new` locally - it clears the current session and resets the chat view. No message is sent to the engine.
 - **Connectors (Slack, etc.)**: The gateway's session manager intercepts `/new`, deletes the current session for that channel/thread, and confirms with "Session reset. Starting fresh."
 
 ## Your Behavior

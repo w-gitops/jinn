@@ -1,6 +1,6 @@
 import http from "node:http";
 import https from "node:https";
-import { createHash } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import { logger } from "../shared/logger.js";
 
 /** Shared keep-alive agent so concurrent turns (and sub-agent fan-out) reuse a
@@ -9,10 +9,9 @@ import { logger } from "../shared/logger.js";
  *  errors under sub-agent concurrency. */
 const upstreamAgent = new https.Agent({ keepAlive: true, maxSockets: 64 });
 
-/** Kill an upstream connection that goes silent this long (no bytes). Generous so
- *  long extended-thinking pauses and slow first-token never trip it; only a truly
- *  hung/half-open socket is reaped. */
-const UPSTREAM_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+/** Kill an upstream connection that goes silent this long (no bytes). Long enough
+ *  for extended-thinking/tool gaps, while still reaping genuinely stuck sockets. */
+const UPSTREAM_IDLE_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** A parsed Anthropic SSE event's `data:` JSON payload (already JSON.parsed). */
 export interface SseDataEvent {
@@ -20,54 +19,12 @@ export interface SseDataEvent {
   [k: string]: unknown;
 }
 
-/** Per-request stream context handed to onEvent. `subAgent` is set when the request
- *  is a Task sub-agent (so the chat pane can route its deltas into a card); absent
- *  for the main agent. */
-export interface StreamCtx {
-  subAgent?: { id: string; label?: string };
-}
-
-/** A per-agent-identity signature for the request's `system`, using ONLY the first
- *  system content block (the static role/instruction prompt). Claude Code appends a
- *  DYNAMIC env/date block to `system` that changes per request — hashing the whole
- *  thing would mint a new id every turn (→ a flood of duplicate sub-agent cards) and
- *  could even drift the main agent's fingerprint. The first block is byte-stable
- *  across an agent's turns and distinct per agent type. Fail-open: unknown shape →
- *  stringify the whole value. */
-function stableSystemSignature(system: unknown): string {
-  if (typeof system === "string") return system;
-  if (Array.isArray(system)) {
-    const first = system.find(
-      (b): b is { type?: string; text?: string } =>
-        !!b && typeof b === "object" && (b as { type?: string }).type === "text" && typeof (b as { text?: string }).text === "string",
-    );
-    if (first?.text) return first.text;
-  }
-  return JSON.stringify(system);
-}
-
-/** Extract the first user message's text from a request body's `messages`. For a
- *  sub-agent this is its task prompt — constant across the sub-agent's turns, so it
- *  yields a STABLE per-sub-agent id and a human-readable card label. */
-function firstUserText(messages: unknown): string {
-  if (!Array.isArray(messages)) return "";
-  for (const m of messages) {
-    if (!m || typeof m !== "object") continue;
-    const msg = m as { role?: string; content?: unknown };
-    if (msg.role !== "user") continue;
-    if (typeof msg.content === "string") return msg.content;
-    if (Array.isArray(msg.content)) {
-      const txt = msg.content
-        .filter((b): b is { type?: string; text?: string } => !!b && typeof b === "object")
-        .filter((b) => b.type === "text" && typeof b.text === "string")
-        .map((b) => b.text as string)
-        .join(" ");
-      return txt;
-    }
-    return ""; // first user message located but not text — its position is the anchor
-  }
-  return "";
-}
+/** Gateway-controlled marker injected into the MAIN agent's appended system prompt.
+ *  The proxy tees only requests whose system carries it — Task sub-agents get Claude
+ *  Code's own system prompt (no sentinel) and are therefore suppressed. This is the
+ *  one main-vs-sub signal the gateway fully owns, so it cannot drift like a request
+ *  fingerprint does. It is an HTML comment so the model ignores it. */
+export const MAIN_AGENT_SENTINEL = "<!-- jinn-main-agent:5c1f -->";
 
 /** Signature of `https.request`/`http.request` — the seam we inject in tests so
  *  the proxy can target a local fake upstream instead of api.anthropic.com. */
@@ -76,6 +33,12 @@ type UpstreamRequestFn = (
   cb: (res: http.IncomingMessage) => void,
 ) => http.ClientRequest;
 
+/** Snapshot of the proxy's in-flight upstream work, fired on every change. */
+export interface UpstreamActivityInfo {
+  activeStreams: number;
+  lastActivityAt: number;
+}
+
 /** Test/override hooks. All optional; defaults reproduce production behavior
  *  (https → api.anthropic.com:443 over the shared keep-alive pool). */
 export interface SsePtyProxyOpts {
@@ -83,17 +46,29 @@ export interface SsePtyProxyOpts {
   upstream?: { hostname: string; port: number };
   /** Agent for the FIRST attempt. Default: the shared keep-alive pool. */
   primaryAgent?: https.Agent | http.Agent | false;
+  /** Fired whenever the in-flight upstream request count changes (start AND every
+   *  terminal path: response end, upstream error, client-gone abort). Counts ALL
+   *  requests through the proxy — main agent, Task sub-agents, and background
+   *  tasks alike (independent of the tee/sentinel decision) — so the gateway can
+   *  tell "CLI still working" apart from "truly idle" after the Stop hook. */
+  onUpstreamActivity?: (info: UpstreamActivityInfo) => void;
 }
 
-/** Is this upstream error the "stale pooled socket" symptom — a connection that
- *  was reset/torn before we got any response? Those are safe to retry on a fresh
- *  socket (request body fully buffered, nothing streamed to the client yet). We
- *  deliberately do NOT retry idle-timeouts or post-response errors. */
-function isRetriableUpstreamError(err: NodeJS.ErrnoException): boolean {
+/** Is this upstream error a transient connection fault safe to retry ONCE on a
+ *  fresh socket (request body fully buffered, nothing streamed to the client yet)?
+ *  Covers stale/torn pooled sockets (ECONNRESET/EPIPE/"socket hang up") AND a
+ *  CORRUPTED pooled TLS socket — "bad record mac" / "decrypt error" / EPROTO —
+ *  which surfaces under sub-agent fan-out when the keep-alive pool hands back a
+ *  socket whose TLS record state got clobbered; the retry uses agent:false, so a
+ *  brand-new socket is clean. We deliberately do NOT retry idle-timeouts or
+ *  post-response errors (can't retry once bytes have streamed to the client). */
+export function isRetriableUpstreamError(err: NodeJS.ErrnoException): boolean {
   return (
     err.code === "ECONNRESET" ||
     err.code === "EPIPE" ||
-    /socket hang up/i.test(err.message)
+    err.code === "EPROTO" ||
+    /socket hang up/i.test(err.message) ||
+    /bad record mac|decrypt error/i.test(err.message)
   );
 }
 
@@ -110,39 +85,48 @@ function isRetriableUpstreamError(err: NodeJS.ErrnoException): boolean {
  * SSE `data:` event to `onEvent` — this is the live streaming source for the web
  * chat pane (word-by-word text, tool markers in true order, live context tokens).
  *
- * Sub-agent tagging: Claude Code runs Task sub-agents IN-PROCESS, so their nested
- * /v1/messages streams inherit ANTHROPIC_BASE_URL and flow through this same proxy.
- * We distinguish the main agent from sub-agents by the request's `system` prompt:
- * Claude Code keeps the top-level agent's system prompt byte-stable across the whole
- * session (required for prompt-cache hits), while each sub-agent carries its own
- * distinct system prompt. We fingerprint the first request's system as "main";
- * every other system is a sub-agent. Sub-agent events are still teed, but TAGGED
- * with a stable per-sub-agent id (from its system fp + task prompt) via `StreamCtx`,
- * so the chat pane routes them into a collapsible card instead of the main
- * transcript. Fail-open: an unparseable body / missing system prompt => main.
+ * Tee gate (main-agent only): besides the real conversation turn, Claude Code fires
+ * extra requests through this same proxy — haiku topic/title detection and quota
+ * checks (NO tools), plus Task sub-agents (which run in-process, so their nested
+ * /v1/messages flow through here too). We tee to `onEvent` ONLY the main agent's
+ * turns, identified by a gateway-controlled sentinel (MAIN_AGENT_SENTINEL) that the
+ * gateway injects into the main agent's appended system prompt. Sub-agents get
+ * Claude Code's own system prompt (no sentinel) and aux calls carry no tools, so
+ * both are suppressed — their output never leaks into the transcript.
+ *
+ * Why a gateway-owned sentinel and not a request fingerprint: the main agent's own
+ * requests do NOT share a stable signature (tool set and system drift across a turn
+ * as MCP tools/instructions load and per-request reminders are injected), so every
+ * fingerprint heuristic we tried either dropped real turns (broke streaming) or
+ * leaked sub-agents. The sentinel is the one signal the gateway fully controls.
  */
 export class SsePtyProxy {
   private server: http.Server;
   /** Resolved listening port (0 until start() completes). */
   port = 0;
-  /** Fingerprint of the top-level (main) agent's system prompt, captured from the
-   *  first classifiable request. Streams whose system prompt differs are sub-agents. */
-  private mainSystemFp: string | null = null;
 
   private readonly requestFn: UpstreamRequestFn;
   private readonly upstreamHost: string;
   private readonly upstreamPort: number;
   private readonly primaryAgent: https.Agent | http.Agent | false;
+  private readonly onUpstreamActivity?: (info: UpstreamActivityInfo) => void;
+
+  /** Upstream requests currently in flight (incremented at request start,
+   *  decremented exactly once per request on end/error/client-abort). */
+  activeStreams = 0;
+  /** Epoch ms of the most recent upstream request start or completion. */
+  lastUpstreamActivityAt = 0;
 
   constructor(
     private readonly label: string,
-    private readonly onEvent: (e: SseDataEvent, ctx: StreamCtx) => void,
+    private readonly onEvent: (e: SseDataEvent) => void,
     opts: SsePtyProxyOpts = {},
   ) {
     this.requestFn = opts.requestFn ?? https.request;
     this.upstreamHost = opts.upstream?.hostname ?? "api.anthropic.com";
     this.upstreamPort = opts.upstream?.port ?? 443;
     this.primaryAgent = opts.primaryAgent ?? upstreamAgent;
+    this.onUpstreamActivity = opts.onUpstreamActivity;
     this.server = http.createServer((req, res) => this.handle(req, res));
     // node http servers throw on unhandled 'clientError'; swallow so a flaky
     // client socket can never crash the daemon.
@@ -171,11 +155,41 @@ export class SsePtyProxy {
     try { this.server.close(); } catch { /* already closed */ }
   }
 
+  /** Mark one upstream request started. Returns a ONCE-guarded `finish` that
+   *  decrements on whichever terminal path fires first (response end, upstream
+   *  error, client-gone abort) — later calls are no-ops, so overlapping terminal
+   *  events can never double-decrement. Both edges notify onUpstreamActivity. */
+  private streamStarted(): () => void {
+    this.activeStreams += 1;
+    this.lastUpstreamActivityAt = Date.now();
+    this.notifyActivity();
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      this.activeStreams = Math.max(0, this.activeStreams - 1);
+      this.lastUpstreamActivityAt = Date.now();
+      this.notifyActivity();
+    };
+  }
+
+  private notifyActivity(): void {
+    try {
+      this.onUpstreamActivity?.({ activeStreams: this.activeStreams, lastActivityAt: this.lastUpstreamActivityAt });
+    } catch (err) {
+      logger.warn(`SsePtyProxy[${this.label}] onUpstreamActivity threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private handle(req: http.IncomingMessage, res: http.ServerResponse): void {
     const chunks: Buffer[] = [];
     // Holder (not a plain `let`) so the req-close handler always destroys the
     // CURRENT in-flight upstream even after a retry swapped it out.
     const inflight: { current?: http.ClientRequest } = {};
+    // ONE in-flight unit per CLIENT request (the retry reuses it — same logical
+    // stream, so the count never double-dips on the fresh-socket attempt). Set
+    // when the body is fully read and we actually go upstream.
+    const tracked: { finish?: () => void } = {};
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("error", () => { try { res.destroy(); } catch { /* ignore */ } });
     // Client (the claude CLI) hung up mid-turn — abort the in-flight upstream so
@@ -186,20 +200,26 @@ export class SsePtyProxy {
     // kill the retry). `res` 'close' with `!writableFinished` is the real
     // "client went away before we finished" signal.
     res.on("close", () => {
-      if (!res.writableFinished) { try { inflight.current?.destroy(); } catch { /* ignore */ } }
+      if (!res.writableFinished) {
+        try { inflight.current?.destroy(); } catch { /* ignore */ }
+        // destroy() doesn't reliably emit 'error' on the upstream — settle the
+        // in-flight count here too (finish is once-guarded, double-call safe).
+        tracked.finish?.();
+      }
     });
     req.on("end", () => {
       const body = Buffer.concat(chunks);
-      // Classify once per request: main agent (untagged) vs Task sub-agent (tagged
-      // with a stable id so the chat pane routes it into a card). Decided from the
-      // body's system prompt; the events are teed either way.
-      const ctx = this.classifyRequest(body);
+      // Decide once per request whether to tee its events to the UI. Tool-bearing
+      // requests (real agent turns) are teed; no-tools auxiliary calls are still
+      // forwarded upstream but suppressed from the chat pane.
+      const tee = this.shouldTeeToUi(body);
       const headers: Record<string, unknown> = { ...req.headers, host: this.upstreamHost };
       // Plaintext SSE so we can parse it; we then forward the (uncompressed)
       // upstream response headers as-is, so the client sees consistent framing.
       delete headers["accept-encoding"];
 
-      this.sendUpstream(req, res, body, ctx, headers, inflight, 0);
+      tracked.finish = this.streamStarted();
+      this.sendUpstream(req, res, body, tee, headers, inflight, 0, tracked.finish);
     });
   }
 
@@ -213,10 +233,11 @@ export class SsePtyProxy {
     req: http.IncomingMessage,
     res: http.ServerResponse,
     body: Buffer,
-    ctx: StreamCtx,
+    tee: boolean,
     headers: Record<string, unknown>,
     inflight: { current?: http.ClientRequest },
     attempt: number,
+    finish: () => void,
   ): void {
     // First try over the shared keep-alive pool; the retry forces a brand-new
     // socket so we can't be handed the same dead one again.
@@ -234,26 +255,52 @@ export class SsePtyProxy {
         res.writeHead(uRes.statusCode || 502, uRes.headers);
         const isSSE = String(uRes.headers["content-type"] || "").includes("text/event-stream");
         let sseBuf = "";
+        const sseDecoder = isSSE && tee ? new StringDecoder("utf8") : undefined;
         uRes.on("data", (chunk: Buffer) => {
           // Forward UNCHANGED to the client first (never let parsing affect the stream).
-          try { res.write(chunk); } catch { /* client gone */ }
-          if (isSSE) sseBuf = this.parseSse(sseBuf + chunk.toString("utf-8"), ctx);
+          // Standard backpressure: if the client's write buffer is full, pause the
+          // upstream until 'drain' so a slow client can't balloon memory.
+          try {
+            if (!res.write(chunk)) {
+              uRes.pause();
+              res.once("drain", () => uRes.resume());
+            }
+          } catch { /* client gone */ }
+          if (sseDecoder) sseBuf = this.parseSse(sseBuf + sseDecoder.write(chunk));
         });
-        uRes.on("end", () => { try { res.end(); } catch { /* already ended */ } });
-        uRes.on("error", () => { try { res.end(); } catch { /* ignore */ } });
+        uRes.on("end", () => {
+          if (sseDecoder) sseBuf = this.parseSse(sseBuf + sseDecoder.end());
+          finish();
+          try { res.end(); } catch { /* already ended */ }
+        });
+        uRes.on("error", (err) => {
+          logger.warn(`SsePtyProxy[${this.label}] upstream response error: ${err instanceof Error ? err.message : String(err)}`);
+          finish();
+          try { res.destroy(err instanceof Error ? err : undefined); } catch { /* ignore */ }
+        });
       },
     );
     inflight.current = upstream;
     upstream.on("error", (err: NodeJS.ErrnoException) => {
       // Retry only a connection that died before we committed any response, and
-      // only once — a fresh socket can't fix a genuinely-down upstream.
+      // only once — a fresh socket can't fix a genuinely-down upstream. The retry
+      // is the SAME logical stream, so `finish` is not called on this path (the
+      // in-flight count carries over to the second attempt).
       if (attempt === 0 && !res.headersSent && isRetriableUpstreamError(err)) {
         logger.warn(`SsePtyProxy[${this.label}] upstream ${err.message} — retrying on fresh socket`);
-        this.sendUpstream(req, res, body, ctx, headers, inflight, attempt + 1);
+        this.sendUpstream(req, res, body, tee, headers, inflight, attempt + 1, finish);
         return;
       }
       logger.warn(`SsePtyProxy[${this.label}] upstream error: ${err.message}`);
-      try { if (!res.headersSent) res.writeHead(502); res.end(); } catch { /* ignore */ }
+      finish();
+      try {
+        if (!res.headersSent) {
+          res.writeHead(502);
+          res.end();
+        } else {
+          res.destroy(err);
+        }
+      } catch { /* ignore */ }
     });
     upstream.setTimeout(UPSTREAM_IDLE_TIMEOUT_MS, () => {
       logger.warn(`SsePtyProxy[${this.label}] upstream idle-timeout — destroying`);
@@ -263,30 +310,23 @@ export class SsePtyProxy {
     upstream.end();
   }
 
-  /** Classify a request as main agent vs Task sub-agent by comparing its system-
-   *  prompt fingerprint to the first-seen (main) one. Sub-agents get a StreamCtx
-   *  with a stable id (system fp + first user message) + a short label (the task).
-   *  Fail-open: unparseable body / no system prompt => {} (treated as main). */
-  private classifyRequest(body: Buffer): StreamCtx {
-    let json: { system?: unknown; messages?: unknown } | null = null;
-    try { json = JSON.parse(body.toString("utf-8")) as { system?: unknown; messages?: unknown }; }
-    catch { return {}; }
-    if (!json || json.system == null) return {};                 // can't classify → main
-    const fp = createHash("sha1").update(stableSystemSignature(json.system)).digest("hex");
-    if (this.mainSystemFp == null) { this.mainSystemFp = fp; return {}; } // first = main
-    if (fp === this.mainSystemFp) return {};                     // main agent
-    // Sub-agent. Stable id from system fp + its task prompt: distinct tasks → distinct
-    // ids (separates same-type parallel agents), constant across the sub-agent's turns.
-    const task = firstUserText(json.messages);
-    const id = createHash("sha1").update(`${fp} ${task}`).digest("hex").slice(0, 12);
-    const label = task.slice(0, 80).trim() || undefined;
-    return { subAgent: { id, label } };
+  /** Is this request the MAIN agent's stream (the only one teed to the UI)? Main =
+   *  a tool-bearing request whose system carries the gateway's sentinel. No/empty
+   *  tools => an auxiliary call (haiku topic/title detection, quota check); tools but
+   *  no sentinel => a Task sub-agent (it gets Claude Code's own system prompt). Both
+   *  are suppressed so only the main agent streams to the transcript. */
+  private shouldTeeToUi(body: Buffer): boolean {
+    let json: { tools?: unknown; system?: unknown } | null = null;
+    try { json = JSON.parse(body.toString("utf-8")) as { tools?: unknown; system?: unknown }; }
+    catch { return false; }                                          // non-JSON (e.g. count_tokens) — never a turn
+    if (!Array.isArray(json?.tools) || json.tools.length === 0) return false; // aux call (no tools)
+    return systemHasSentinel(json?.system);                          // sentinel present => main agent
   }
 
-  /** Consume complete SSE frames (separated by a blank line) from `buf`,
-   *  JSON.parse each event's `data:` payload, fire onEvent (with the request's
-   *  StreamCtx), and return the trailing incomplete remainder for the next chunk. */
-  private parseSse(buf: string, ctx: StreamCtx): string {
+  /** Consume complete SSE frames (separated by a blank line) from `buf`, JSON.parse
+   *  each event's `data:` payload, fire onEvent, and return the trailing incomplete
+   *  remainder for the next chunk. Only ever called for the main agent's stream. */
+  private parseSse(buf: string): string {
     let idx: number;
     // Frames are delimited by a blank line. Handle both \n\n and \r\n\r\n.
     while ((idx = indexOfFrameEnd(buf)) !== -1) {
@@ -299,12 +339,26 @@ export class SsePtyProxy {
       if (!dataStr || dataStr === "[DONE]") continue;
       let parsed: SseDataEvent;
       try { parsed = JSON.parse(dataStr) as SseDataEvent; } catch { continue; }
-      try { this.onEvent(parsed, ctx); } catch (err) {
+      try { this.onEvent(parsed); } catch (err) {
         logger.warn(`SsePtyProxy[${this.label}] onEvent threw: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     return buf;
   }
+}
+
+/** Does the request's `system` (a string or a content-block array) carry the
+ *  gateway's main-agent sentinel? */
+function systemHasSentinel(system: unknown): boolean {
+  if (typeof system === "string") return system.includes(MAIN_AGENT_SENTINEL);
+  if (Array.isArray(system)) {
+    return system.some(
+      (b) =>
+        typeof (b as { text?: unknown })?.text === "string" &&
+        (b as { text: string }).text.includes(MAIN_AGENT_SENTINEL),
+    );
+  }
+  return false;
 }
 
 /** Index of the first blank-line frame delimiter (\n\n or \r\n\r\n), or -1. */

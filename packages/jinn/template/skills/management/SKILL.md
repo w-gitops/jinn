@@ -1,6 +1,6 @@
 ---
 name: management
-description: Manage the AI organization — hire, fire, promote, delegate, and review boards
+description: Manage the AI organization - hire, fire, promote, delegate, and review boards
 ---
 
 # Management Skill
@@ -28,10 +28,10 @@ org/
 
 ## Rank Definitions
 
-- **executive** — Full access. Can see all departments and boards. Can hire and fire anyone across the entire organization.
-- **manager** — Can manage their own department. Can hire within their department. Can see and manage their department's board.
-- **senior** — Can update their own tasks. Can mentor other employees in the department.
-- **employee** — Can update their own tasks only.
+- **executive** - Full access. Can see all departments and boards. Can hire and fire anyone across the entire organization.
+- **manager** - Can manage their own department. Can hire within their department. Can see and manage their department's board.
+- **senior** - Can update their own tasks. Can mentor other employees in the department.
+- **employee** - Can update their own tasks only.
 
 ## Operations
 
@@ -40,14 +40,14 @@ org/
 Create a persona YAML file at `org/<department>/<name>.yaml`.
 
 Required fields:
-- `name` — kebab-case identifier (must match filename without extension)
-- `displayName` — human-readable name
-- `department` — department this employee belongs to (must match parent directory name)
-- `rank` — one of: executive, manager, senior, employee
-- `engine` — AI engine to use: `claude` or `codex`
-- `model` — model identifier (e.g., `sonnet`, `opus`, `o3`)
-- `persona` — multiline description of who this employee is and how they behave
-- `reportsTo` — (optional) who this employee reports to (employee name)
+- `name` - kebab-case identifier (must match filename without extension)
+- `displayName` - human-readable name
+- `department` - department this employee belongs to (must match parent directory name)
+- `rank` - one of: executive, manager, senior, employee
+- `engine` - AI engine to use: `claude` or `codex`
+- `model` - model identifier (e.g., `sonnet`, `opus`, `o3`)
+- `persona` - multiline description of who this employee is and how they behave
+- `reportsTo` - (optional) who this employee reports to (employee name)
 
 **Auto-determining `reportsTo`** when the user does not specify:
 1. Find the highest-ranked employee in the target department (manager > senior > employee)
@@ -115,7 +115,7 @@ Steps:
 4. Write the updated YAML back to the file.
 5. Confirm the change to the user, stating the old and new rank.
 
-### Promoting to Manager — Report Reassignment
+### Promoting to Manager - Report Reassignment
 
 When promoting an employee to manager rank:
 
@@ -136,9 +136,9 @@ persona: |
   - Manage and delegate tasks to employees in your department
   - You can spawn child sessions via the gateway API to delegate work
   - Apply oversight levels to your reports' work:
-    - TRUST: simple lookups, status checks — relay directly
-    - VERIFY: code changes, routine work — spot-check key outputs
-    - THOROUGH: architecture, breaking changes — full review, multi-turn
+    - TRUST: simple lookups, status checks - relay directly
+    - VERIFY: code changes, routine work - spot-check key outputs
+    - THOROUGH: architecture, breaking changes - full review, multi-turn
   - Report summaries back to the COO ({{portalName}}), not raw employee output
   - Use the department board (board.json) to track task status
   - When given a task by the COO, decide whether to do it yourself or
@@ -177,14 +177,14 @@ Task object schema:
 ```
 
 Field details:
-- `id` — generate a UUID v4
-- `title` — short, descriptive title
-- `assignee` — the `name` field from the employee's YAML (must match an existing employee in the department)
-- `status` — one of: `todo`, `in-progress`, `review`, `done`
-- `priority` — one of: `high`, `medium`, `low`
-- `description` — detailed task description
-- `createdAt` — ISO 8601 timestamp when the task was created
-- `updatedAt` — ISO 8601 timestamp, same as createdAt initially
+- `id` - generate a UUID v4
+- `title` - short, descriptive title
+- `assignee` - the `name` field from the employee's YAML (must match an existing employee in the department)
+- `status` - one of: `todo`, `in-progress`, `review`, `done`
+- `priority` - one of: `high`, `medium`, `low`
+- `description` - detailed task description
+- `createdAt` - ISO 8601 timestamp when the task was created
+- `updatedAt` - ISO 8601 timestamp, same as createdAt initially
 
 Steps:
 1. Read the current `board.json` for the department.

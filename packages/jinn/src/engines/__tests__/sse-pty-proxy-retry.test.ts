@@ -1,7 +1,30 @@
 import { describe, it, expect, afterEach } from "vitest";
 import http from "node:http";
 import { AddressInfo } from "node:net";
-import { SsePtyProxy } from "../sse-pty-proxy.js";
+import { SsePtyProxy, isRetriableUpstreamError } from "../sse-pty-proxy.js";
+
+describe("isRetriableUpstreamError — corrupted TLS socket is retriable", () => {
+  const mk = (code: string | undefined, message: string): NodeJS.ErrnoException =>
+    Object.assign(new Error(message), code ? { code } : {});
+
+  it("retries TLS 'bad record mac' (corrupted pooled socket under fan-out)", () => {
+    expect(isRetriableUpstreamError(mk(undefined,
+      "C0E0E1F4:error:0A0003FC:SSL routines:ssl3_read_bytes:ssl/tls alert bad record mac"))).toBe(true);
+  });
+  it("retries TLS 'decrypt error' and EPROTO", () => {
+    expect(isRetriableUpstreamError(mk(undefined, "tlsv1 alert decrypt error"))).toBe(true);
+    expect(isRetriableUpstreamError(mk("EPROTO", "write EPROTO"))).toBe(true);
+  });
+  it("still retries the original stale-socket cases", () => {
+    expect(isRetriableUpstreamError(mk("ECONNRESET", "read ECONNRESET"))).toBe(true);
+    expect(isRetriableUpstreamError(mk("EPIPE", "write EPIPE"))).toBe(true);
+    expect(isRetriableUpstreamError(mk(undefined, "socket hang up"))).toBe(true);
+  });
+  it("does NOT retry unrelated/fatal errors", () => {
+    expect(isRetriableUpstreamError(mk("ENOTFOUND", "getaddrinfo ENOTFOUND api"))).toBe(false);
+    expect(isRetriableUpstreamError(mk(undefined, "certificate has expired"))).toBe(false);
+  });
+});
 
 // These tests target the "stale pooled socket" failure mode: the keep-alive pool
 // occasionally hands the proxy a connection the server already half-closed, which

@@ -5,6 +5,7 @@ import { EmployeeAvatar } from "@/components/ui/employee-avatar";
 import { useSettings } from "@/routes/settings-provider";
 import { emojiForName } from "@/lib/emoji-pool";
 import { EmojiPicker } from "@/components/ui/emoji-picker";
+import { EmployeeEditor } from "@/components/org/employee-editor";
 
 interface SessionData {
   id: string;
@@ -46,17 +47,27 @@ function RankBadge({ rank }: { rank: string }) {
   );
 }
 
-export function EmployeeDetail({ name, prefetched }: { name: string; prefetched?: Employee }) {
+export function EmployeeDetail({
+  name,
+  prefetched,
+  onUpdated,
+}: {
+  name: string;
+  prefetched?: Employee;
+  onUpdated?: (emp: Employee) => void;
+}) {
   const [employee, setEmployee] = useState<Employee | null>(prefetched ?? null);
   const [sessions, setSessions] = useState<SessionData[]>([]);
   const [loading, setLoading] = useState(!prefetched);
   const [error, setError] = useState<string | null>(null);
   const [personaExpanded, setPersonaExpanded] = useState(false);
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
+  const [editing, setEditing] = useState(false);
   const { settings, setEmployeeOverride } = useSettings();
 
   useEffect(() => {
     setPersonaExpanded(false);
+    setEditing(false);
 
     if (prefetched) {
       setEmployee(prefetched);
@@ -102,6 +113,20 @@ export function EmployeeDetail({ name, prefetched }: { name: string; prefetched?
 
   if (!employee) return null;
 
+  if (editing) {
+    return (
+      <EmployeeEditor
+        employee={employee}
+        onCancel={() => setEditing(false)}
+        onSaved={(emp) => {
+          setEmployee(emp);
+          setEditing(false);
+          onUpdated?.(emp);
+        }}
+      />
+    );
+  }
+
   const rank = employee.rank || "employee";
   const persona = employee.persona || "";
   const currentEmoji = settings.employeeOverrides[employee.name]?.emoji || emojiForName(employee.name);
@@ -142,7 +167,19 @@ export function EmployeeDetail({ name, prefetched }: { name: string; prefetched?
               </p>
             </div>
           </div>
-          <RankBadge rank={rank} />
+          <div className="flex items-center gap-[var(--space-2)]">
+            <RankBadge rank={rank} />
+            {/* The COO node is injected client-side (no YAML) — not editable. */}
+            {rank !== "executive" && (
+              <button
+                onClick={() => setEditing(true)}
+                aria-label="Edit employee"
+                className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] px-[10px] py-[3px] rounded-[10px] border border-[var(--separator)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] bg-transparent cursor-pointer transition-colors"
+              >
+                Edit
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-[var(--space-4)]">

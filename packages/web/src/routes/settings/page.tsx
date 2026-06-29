@@ -10,6 +10,8 @@ import type { ThemeId } from "@/lib/themes"
 import { api } from "@/lib/api"
 import { EmojiPicker } from "@/components/ui/emoji-picker"
 import { useModelRegistry } from "@/hooks/use-model-registry"
+import { RemoteAccessPanel } from "@/components/auth/remote-access-panel"
+import { useAuth } from "@/routes/auth-provider"
 
 // ---------------------------------------------------------------------------
 // Accent color presets
@@ -40,6 +42,7 @@ interface Config {
     default?: string
     claude?: { bin?: string; model?: string; effortLevel?: string }
     codex?: { bin?: string; model?: string; effortLevel?: string }
+    grok?: { bin?: string; model?: string; effortLevel?: string }
   }
   sessions?: {
     maxDurationMinutes?: number
@@ -120,7 +123,7 @@ function Section({
         {title}
       </div>
       <div
-        className="bg-[var(--material-regular)] rounded-[var(--radius-md)] border border-[var(--separator)] p-[var(--space-4)]"
+        className="rounded-[var(--radius-lg)] bg-[var(--material-regular)] p-[var(--space-4)] shadow-[inset_0_0_0_1px_var(--separator)]"
       >
         {children}
       </div>
@@ -137,14 +140,14 @@ function FieldRow({
 }) {
   return (
     <div
-      className="flex items-center justify-between py-[var(--space-2)] gap-[var(--space-4)]"
+      className="flex flex-col items-stretch gap-[var(--space-2)] py-[var(--space-2)] sm:flex-row sm:items-center sm:justify-between sm:gap-[var(--space-4)]"
     >
       <label
-        className="text-[length:var(--text-subheadline)] text-[var(--text-secondary)] shrink-0"
+        className="shrink-0 text-[length:var(--text-subheadline)] text-[var(--text-secondary)]"
       >
         {label}
       </label>
-      <div className="w-[240px] shrink-0">{children}</div>
+      <div className="min-w-0 w-full sm:w-[240px] sm:shrink-0">{children}</div>
     </div>
   )
 }
@@ -440,6 +443,7 @@ export default function SettingsPage() {
     resetAll,
   } = useSettings()
   const { theme, setTheme } = useTheme()
+  const auth = useAuth()
 
   // Local branding inputs
   const [nameValue, setNameValue] = useState(settings.portalName ?? "")
@@ -611,7 +615,7 @@ export default function SettingsPage() {
               Theme
             </div>
             <div
-              className="grid grid-cols-5 gap-[var(--space-2)] mb-[var(--space-4)]"
+              className="grid grid-cols-3 gap-[var(--space-2)] mb-[var(--space-4)]"
             >
               {THEMES.map((t) => {
                 const isActive = theme === t.id
@@ -865,6 +869,17 @@ export default function SettingsPage() {
             </div>
           </Section>
 
+          {/* -- Pairing -- */}
+          <Section title="Pairing">
+            <RemoteAccessPanel
+              authState={auth.authState}
+              devices={auth.devices}
+              onCreatePairingCode={auth.createPairingCode}
+              onLogout={auth.logout}
+              onUnpairDevice={auth.unpairDevice}
+            />
+          </Section>
+
           {/* Gateway config feedback */}
           {feedback && (
             <div
@@ -937,6 +952,7 @@ export default function SettingsPage() {
                     options={[
                       { value: "claude", label: "Claude" },
                       { value: "codex", label: "Codex" },
+                      { value: "grok", label: "Grok" },
                     ]}
                   />
                 </FieldRow>
@@ -965,6 +981,7 @@ export default function SettingsPage() {
                       updateConfig(["engines", "claude", "model"], v)
                     }
                     options={modelOptions("claude", [
+                      { value: "claude-fable-5", label: "Fable 5" },
                       { value: "opus", label: "Opus" },
                       { value: "sonnet", label: "Sonnet" },
                       { value: "haiku", label: "Haiku" },
@@ -1006,11 +1023,12 @@ export default function SettingsPage() {
                 </FieldRow>
                 <FieldRow label="Model">
                   <SettingsSelect
-                    value={config.engines?.codex?.model ?? "gpt-5.4"}
+                    value={config.engines?.codex?.model ?? "gpt-5.5"}
                     onChange={(v) =>
                       updateConfig(["engines", "codex", "model"], v)
                     }
                     options={modelOptions("codex", [
+                      { value: "gpt-5.5", label: "GPT-5.5" },
                       { value: "gpt-5.4", label: "GPT-5.4" },
                       { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
                       { value: "gpt-5.2-codex", label: "GPT-5.2 Codex" },
@@ -1032,6 +1050,37 @@ export default function SettingsPage() {
                       { value: "medium", label: "Medium" },
                       { value: "high", label: "High" },
                       { value: "xhigh", label: "Extra High" },
+                    ])}
+                  />
+                </FieldRow>
+
+                <div
+                  className="border-t border-[var(--separator)] mt-[var(--space-3)] pt-[var(--space-3)]"
+                />
+
+                <div
+                  className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]"
+                >
+                  Grok
+                </div>
+                <FieldRow label="Binary Path">
+                  <SettingsInput
+                    value={config.engines?.grok?.bin ?? ""}
+                    onChange={(v) =>
+                      updateConfig(["engines", "grok", "bin"], v)
+                    }
+                    placeholder="grok"
+                  />
+                </FieldRow>
+                <FieldRow label="Model">
+                  <SettingsSelect
+                    value={config.engines?.grok?.model ?? "grok-build"}
+                    onChange={(v) =>
+                      updateConfig(["engines", "grok", "model"], v)
+                    }
+                    options={modelOptions("grok", [
+                      { value: "grok-build", label: "Grok Build" },
+                      { value: "grok-composer-2.5-fast", label: "Grok Composer 2.5 Fast" },
                     ])}
                   />
                 </FieldRow>

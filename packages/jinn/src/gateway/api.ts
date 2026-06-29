@@ -4,10 +4,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
-import type { CronJob, Engine, IncomingMessage, JinnConfig, Session, StreamDelta, Target } from "../shared/types.js";
+import type { ChatBlock, ChatBlockEnvelope, CronJob, Engine, IncomingMessage, JinnConfig, JsonObject, Session, StreamDelta, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
-import { getModelRegistry, invalidateModelRegistry, effortLevelsForModel } from "../shared/models.js";
-import { validateSessionPatch } from "../sessions/session-patch.js";
+import { getModelRegistry, invalidateModelRegistry, effortLevelsForModel, refreshGrokModels, refreshPiModels, refreshHermesModels, engineAvailable, isKnownEngine, engineUnavailableMessage } from "../shared/models.js";
+import { validateNewSessionSelection, validateSessionPatch } from "../sessions/session-patch.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
 import {
@@ -15,6 +15,7 @@ import {
   listRecentPerGroup,
   listSessionsForGroup,
   getSessionGroupCounts,
+  coercePortalEmployee,
   searchSessions,
   listChildSessions,
   getSession,
@@ -25,6 +26,11 @@ import {
   deleteSessions,
   duplicateSession,
   insertMessage,
+  insertPartialMessage,
+  updatePartialMessage,
+  applyBlockEnvelope,
+  deletePartialMessages,
+  finalizePartialMessages,
   getMessages,
   enqueueQueueItem,
   cancelQueueItem,
@@ -34,6 +40,7 @@ import {
   getFile,
   initDb,
 } from "../sessions/registry.js";
+import { blockFallbackText, validateBlockEnvelope } from "../shared/blocks.js";
 import { forkEngineSession } from "../sessions/fork.js";
 import {
   CONFIG_PATH,
@@ -45,12 +52,15 @@ import {
   TMP_DIR,
   FILES_DIR,
 } from "../shared/paths.js";
+import { saveConfigAtomic } from "../shared/config.js";
 import { logger } from "../shared/logger.js";
+import { redactText } from "../shared/redact.js";
 import { getSttStatus, downloadModel, transcribe as sttTranscribe, resolveLanguages, WHISPER_LANGUAGES } from "../stt/stt.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { resolveEffort } from "../shared/effort.js";
 import { detectRateLimit } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt } from "../shared/usageAwareness.js";
+import { collectEngineLimits } from "../shared/engine-limits.js";
 import { handleRateLimit } from "../sessions/rate-limit-handler.js";
 import { pickEncoding, compressBuffer, MIN_COMPRESS_BYTES } from "./compress.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
@@ -59,12 +69,96 @@ import { runCronJob } from "../cron/runner.js";
 import QRCode from "qrcode";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, handleSessionAttachment, fileIdsToMedia, rehomeAttachmentsToSession, ensureFilesDir } from "./files.js";
-import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
+import { readJsonBody, readBodyRaw } from "./http-helpers.js";
+import { readJsonlTail } from "./jsonl-tail.js";
+import { resultAlreadyInStreamedBlocks, shouldPreserveStreamedBlocks } from "./streamed-blocks.js";
+import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel, notifyAttachedTalkSessions } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
-import { handleHookPost, LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
+import { handleHookPost, isLoopback } from "./hook-endpoint.js";
+import {
+  authenticateGatewayRequest,
+  authCookieHeaders,
+  clearAuthCookieHeaders,
+  consumePairingCode,
+  createAuthSession,
+  createAuthState,
+  currentAuthDeviceId,
+  hasGatewayBearerAuth,
+  issuePairingCode,
+  isLoopbackHost,
+  listAuthSessions,
+  matchesGatewayAuthToken,
+  revokeAuthSession,
+  touchAuthSession,
+} from "./auth.js";
+import { markTranscriptSyncedThrough, scheduleOnLoadTailSync, transcriptEntryText } from "./external-turns.js";
+import { handleTalkApi } from "../talk/routes.js";
+import { getOrchestratorPersona } from "../talk/orchestrator-persona.js";
+import {
+  feedTalkText,
+  flushTalkSpeech,
+  discardTalkSpeech,
+  streamTtsSentences,
+  ttsStatus,
+  validateTtsText,
+} from "../talk/tts-stream.js";
+import { isTalkMuted } from "../talk/mute-state.js";
+import { maybeEmitTalkGraph } from "../talk/graph.js";
+import { onboardingNeeded, applyEngineChoice } from "./onboarding-policy.js";
 
 /** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
 const HOOK_BODY_MAX_BYTES = 64 * 1024;
+/** Max bytes accepted by public auth helpers. Codes/tokens are tiny. */
+const AUTH_BODY_MAX_BYTES = 16 * 1024;
+const SESSION_LIST_PER_GROUP = 50;
+const BACKGROUND_ACTIVITY_STALE_MS = 5 * 60 * 1000;
+const SUPERSEDED_TURN_META_KEY = "supersededRunningTurnAt";
+
+function scopeBlockEnvelopeForTurn(envelope: ChatBlockEnvelope, turnStartedAt: number): ChatBlockEnvelope {
+  const suffix = `t${turnStartedAt.toString(36)}`;
+  if (envelope.block.id.endsWith(`:${suffix}`)) return envelope;
+  const maxBaseLength = Math.max(1, 96 - suffix.length - 1);
+  const baseId = envelope.block.id.slice(0, maxBaseLength);
+  return {
+    ...envelope,
+    block: {
+      ...envelope.block,
+      id: `${baseId}:${suffix}`,
+    },
+  };
+}
+
+export function normalizeBlockDeltaForTurn(delta: StreamDelta, turnStartedAt: number): { ok: true; delta: StreamDelta } | { ok: false; error: string } {
+  if (delta.type !== "block") return { ok: true, delta };
+  const initial = validateBlockEnvelope(delta.block);
+  if (!initial.ok) return initial;
+  const scoped = scopeBlockEnvelopeForTurn(initial.envelope, turnStartedAt);
+  const validated = validateBlockEnvelope(scoped);
+  if (!validated.ok) return validated;
+  return {
+    ok: true,
+    delta: {
+      ...delta,
+      content: delta.content || blockFallbackText(validated.envelope.block),
+      block: validated.envelope,
+    },
+  };
+}
+
+export function shouldPersistFinalAssistantMessage(options: {
+  resultText: string;
+  finalBlockCount: number;
+  resultAlreadyPersisted: boolean;
+  quietPreempted: boolean;
+}): boolean {
+  if (options.resultAlreadyPersisted || options.quietPreempted) return false;
+  return options.resultText.trim().length > 0 || options.finalBlockCount > 0;
+}
+
+export function finalBlocksForAssistantMessage(blocks: ChatBlock[], preservedBlockIds: Set<string>): ChatBlock[] {
+  if (preservedBlockIds.size === 0) return blocks;
+  return blocks.filter((block) => !preservedBlockIds.has(block.id));
+}
 
 export interface ApiContext {
   config: JinnConfig;
@@ -74,6 +168,10 @@ export interface ApiContext {
   emit: (event: string, payload: unknown) => void;
   connectors: Map<string, import("../shared/types.js").Connector>;
   reloadConnectorInstances?: () => Promise<{ started: string[]; stopped: string[]; errors: string[] }>;
+  /** Re-read config.yaml into memory immediately (same as the file-watcher does,
+   *  but synchronous). Call after a handler writes config.yaml so getConfig()
+   *  reflects the change without waiting on the debounced watcher (~1s). */
+  reloadConfig?: () => void;
   hookRegistry?: import("./hook-registry.js").HookRegistry;
   hookSecret?: string;
   /** Command gate — supplies the PreToolUse verdict for the relay. */
@@ -82,6 +180,33 @@ export interface ApiContext {
    *  prompt + response stream into the live xterm. Distinct from the headless
    *  "claude" engine in sessionManager (which chat/cron/connectors use). */
   interactiveClaudeEngine?: import("../engines/claude-interactive.js").InteractiveClaudeEngine;
+  /** PTY-capable engines keyed by engine name. Used by CLI-mode web sends. */
+  ptyViewEngines?: Record<string, Engine & import("../engines/pty-view-engine.js").PtyViewEngine>;
+  /** Synchronously re-scan org/ into the gateway's in-memory employee registry
+   *  (and drop warm PTYs). Called after an employee YAML write so the next session
+   *  spawn sees the new persona/model immediately, rather than waiting ~800ms for
+   *  the chokidar watcher. Wired in server.ts; same body as the watcher's onOrgChange. */
+  reloadOrg?: () => void;
+  /** In-memory (never persisted) post-settle background activity per session,
+   *  maintained in server.ts from the interactive engine's onBackgroundActivity
+   *  callback. lastActivityAt is epoch ms; serializeSession converts to ISO. */
+  backgroundActivity?: Map<string, { activeStreams: number; lastActivityAt: number }>;
+  /** Gateway auth token for seamless browser/CLI access when auth is required. */
+  gatewayAuthToken?: string;
+  /** Test-injectable Jinn home for auth device storage. Defaults to shared JINN_HOME. */
+  jinnHome?: string;
+}
+
+function killSessionEngines(context: ApiContext, session: Session, reason: string): void {
+  const engines = new Set<Engine>();
+  const primary = context.sessionManager.getEngine(session.engine);
+  const pty = context.ptyViewEngines?.[session.engine];
+  if (primary) engines.add(primary);
+  if (pty) engines.add(pty);
+
+  for (const engine of engines) {
+    if (isInterruptibleEngine(engine)) engine.kill(session.id, reason);
+  }
 }
 
 export function resumePendingWebQueueItems(context: ApiContext): void {
@@ -190,7 +315,7 @@ function dispatchWebSessionRun(
     run().catch((err) => {
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.error(`Web session ${session.id} dispatch error: ${errMsg}`);
-      updateSession(session.id, {
+      const erroredOnDispatch = updateSession(session.id, {
         status: "error",
         lastActivity: new Date().toISOString(),
         lastError: errMsg,
@@ -200,6 +325,11 @@ function dispatchWebSessionRun(
         result: null,
         error: errMsg,
       });
+      // This outer dispatch-error path bypasses notifyParentSession (run() failed
+      // before its own completion handling), so wake any attached talk sessions
+      // here too — otherwise an attachment wake is silently lost on a hard failure.
+      if (erroredOnDispatch) notifyAttachedTalkSessions(erroredOnDispatch, { error: errMsg });
+      maybeEmitTalkGraph(session.id, "completed", { getSession, emit: context.emit });
     });
   };
 
@@ -210,69 +340,41 @@ function dispatchWebSessionRun(
   }
 }
 
-/** Signals that a request body exceeded the per-handler size cap. */
-class BodyTooLargeError extends Error {
-  constructor() {
-    super("Request body exceeds maximum allowed size");
-    this.name = "BodyTooLargeError";
-  }
-}
+/**
+ * GET /api/skills description cache, keyed by skill dir name and invalidated
+ * by SKILL.md mtime (statSync is far cheaper than re-reading + re-parsing ~70
+ * files per request). Mirrors the mtime-cache in talk/orchestrator-persona.ts.
+ */
+const skillDescriptionCache = new Map<string, { mtimeMs: number; description: string }>();
 
-interface ReadBodyOpts {
-  /** Hard cap on bytes accepted from the stream; rejects with BodyTooLargeError when exceeded. */
-  maxBytes?: number;
-}
-
-function readBody(req: HttpRequest, opts: ReadBodyOpts = {}): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let total = 0;
-    const max = opts.maxBytes;
-    req.on("data", (chunk: Buffer) => {
-      total += chunk.length;
-      if (max !== undefined && total > max) {
-        // Bail out — destroy the socket so the sender stops shoveling bytes.
-        req.destroy();
-        reject(new BodyTooLargeError());
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString()));
-    req.on("error", reject);
-  });
-}
-
-function readBodyRaw(req: HttpRequest): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
-  });
-}
-
-async function readJsonBody(
-  req: HttpRequest,
-  res: ServerResponse,
-  opts: ReadBodyOpts = {},
-): Promise<{ ok: true; body: unknown } | { ok: false }> {
-  let raw: string;
-  try {
-    raw = await readBody(req, opts);
-  } catch (err) {
-    if (err instanceof BodyTooLargeError) {
-      json(res, { error: "Payload too large" }, 413);
-      return { ok: false };
+/** Extract a skill description from YAML frontmatter, ## Trigger section, or first paragraph. */
+function parseSkillDescription(content: string): string {
+  let description = "";
+  const frontmatterMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (frontmatterMatch) {
+    const descMatch = frontmatterMatch[1].match(/^description:\s*(.+)$/m);
+    if (descMatch) {
+      description = descMatch[1].trim();
     }
-    throw err;
   }
-  try {
-    return { ok: true, body: JSON.parse(raw) };
-  } catch {
-    badRequest(res, "Invalid JSON in request body");
-    return { ok: false };
+  if (!description) {
+    const triggerMatch = content.match(/##\s*Trigger\s*\n+([^\n#]+)/);
+    if (triggerMatch) {
+      description = triggerMatch[1].trim();
+    } else {
+      // Use first non-heading, non-empty, non-frontmatter line
+      const bodyContent = frontmatterMatch ? content.slice(frontmatterMatch[0].length) : content;
+      const lines = bodyContent.split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith("#")) {
+          description = trimmed;
+          break;
+        }
+      }
+    }
   }
+  return description;
 }
 
 /** Resolve an array of file IDs to local filesystem paths for engine consumption. */
@@ -332,21 +434,40 @@ function serverError(res: ServerResponse, message: string): void {
   json(res, { error: message }, 500);
 }
 
-const SANITIZED_KEYS = new Set(["token", "botToken", "signingSecret", "appToken"]);
+const REDACTED_SECRET = "***";
+
+export function isSensitiveConfigKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return (
+    normalized.includes("token") ||
+    normalized.includes("secret") ||
+    normalized.includes("apikey") ||
+    normalized.includes("privatekey") ||
+    normalized.includes("password") ||
+    normalized === "authorization"
+  );
+}
 
 /**
- * Replace any secret-bearing string fields in a connector-shaped object with
- * the "***" sentinel. Used by GET /api/config to sanitize per-connector
- * config blocks and individual instance entries before sending to the UI.
+ * Replace any secret-bearing fields with the "***" sentinel before sending
+ * config to the UI.
  * deepMerge round-trips the sentinel back to the original value on PUT.
  */
-function sanitizeConnectorObj<T extends Record<string, unknown>>(obj: T): T {
-  const out: Record<string, unknown> = { ...obj };
-  for (const key of SANITIZED_KEYS) {
-    if (out[key]) out[key] = "***";
-    else out[key] = undefined;
+export function sanitizeConfigForApi<T>(value: T, key = ""): T {
+  if (isSensitiveConfigKey(key) && value !== undefined && value !== null && value !== "") {
+    return REDACTED_SECRET as T;
   }
-  return out as T;
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeConfigForApi(item)) as T;
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+      out[childKey] = sanitizeConfigForApi(childValue, childKey);
+    }
+    return out as T;
+  }
+  return value;
 }
 
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
@@ -355,7 +476,7 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
     const sv = source[key];
     const tv = target[key];
     // Skip sanitized secret placeholders — keep original value
-    if (SANITIZED_KEYS.has(key) && sv === "***") continue;
+    if (isSensitiveConfigKey(key) && sv === REDACTED_SECRET) continue;
     if (Array.isArray(sv)) {
       // For arrays (e.g. instances), preserve secrets from matching items
       if (Array.isArray(tv)) {
@@ -382,7 +503,7 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
   return result;
 }
 
-function matchRoute(
+export function matchRoute(
   pattern: string,
   pathname: string,
 ): Record<string, string> | null {
@@ -393,7 +514,18 @@ function matchRoute(
   const params: Record<string, string> = {};
   for (let i = 0; i < patternParts.length; i++) {
     if (patternParts[i].startsWith(":")) {
-      params[patternParts[i].slice(1)] = decodeURIComponent(pathParts[i]);
+      const raw = pathParts[i];
+      if (/%2f|%5c/i.test(raw)) return null;
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(raw);
+      } catch {
+        return null;
+      }
+      if (!decoded || decoded === "." || decoded === ".." || decoded.includes("/") || decoded.includes("\\") || decoded.includes("\0")) {
+        return null;
+      }
+      params[patternParts[i].slice(1)] = decoded;
     } else if (patternParts[i] !== pathParts[i]) {
       return null;
     }
@@ -405,11 +537,57 @@ function serializeSession(session: Session, context: ApiContext): Session {
   const queue = context.sessionManager.getQueue();
   const queueDepth = queue.getPendingCount(session.sessionKey || session.sourceRef);
   const transportState = queue.getTransportState(session.sessionKey || session.sourceRef, session.status);
+  const bg = context.backgroundActivity?.get(session.id);
+  const bgIsStale = bg && Date.now() - bg.lastActivityAt > BACKGROUND_ACTIVITY_STALE_MS;
+  if (bgIsStale) context.backgroundActivity?.delete(session.id);
   return {
     ...session,
     queueDepth,
     transportState,
+    backgroundActivity: bg && !bgIsStale
+      ? { activeStreams: bg.activeStreams, lastActivityAt: new Date(bg.lastActivityAt).toISOString() }
+      : null,
   };
+}
+
+function withTransportMeta(session: Session, updates: JsonObject): JsonObject {
+  const base =
+    session.transportMeta && typeof session.transportMeta === "object" && !Array.isArray(session.transportMeta)
+      ? session.transportMeta
+      : {};
+  return { ...base, ...updates };
+}
+
+function supersedeRunningTurn(session: Session): void {
+  updateSession(session.id, {
+    transportMeta: withTransportMeta(session, {
+      [SUPERSEDED_TURN_META_KEY]: new Date().toISOString(),
+    }),
+  });
+}
+
+function clearSupersededTurnMeta(sessionId: string): void {
+  const session = getSession(sessionId);
+  const meta = session?.transportMeta;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta) || !(SUPERSEDED_TURN_META_KEY in meta)) return;
+  const next = { ...meta };
+  delete next[SUPERSEDED_TURN_META_KEY];
+  updateSession(sessionId, { transportMeta: next });
+}
+
+function isTurnSuperseded(sessionId: string, turnStartedAt: number): boolean {
+  const marker = getSession(sessionId)?.transportMeta?.[SUPERSEDED_TURN_META_KEY];
+  if (typeof marker !== "string") return false;
+  const markedAt = new Date(marker).getTime();
+  return Number.isFinite(markedAt) && markedAt >= turnStartedAt;
+}
+
+function isSessionLiveRunning(session: Session, context: ApiContext): boolean {
+  if (session.status !== "running") return false;
+  const engine = context.sessionManager.getEngine(session.engine);
+  if (!engine || !isInterruptibleEngine(engine)) return true;
+  if ("isTurnRunning" in engine) return Boolean((engine as any).isTurnRunning(session.id));
+  return engine.isAlive(session.id);
 }
 
 function checkInstanceHealth(port: number): Promise<boolean> {
@@ -436,11 +614,108 @@ export async function handleApiRequest(
   (res as ResWithEncoding).__acceptEncoding = req.headers["accept-encoding"];
 
   try {
+    const jinnHome = context.jinnHome ?? JINN_HOME;
+
+    // GET /api/auth/state — safe browser boot metadata. Never includes the token.
+    if (method === "GET" && pathname === "/api/auth/state") {
+      const state = createAuthState(context.getConfig(), req, context.gatewayAuthToken, jinnHome);
+      if (state.authenticated) touchAuthSession(jinnHome, req);
+      return json(res, state);
+    }
+
+    // POST /api/auth/bootstrap — loopback/local convenience: set the browser cookie
+    // from a local browser session so daily local use does not require a login form.
+    if (method === "POST" && pathname === "/api/auth/bootstrap") {
+      if (!context.gatewayAuthToken) return json(res, { authRequired: false });
+      if (!isLoopback(req.socket.remoteAddress) || !isLoopbackHost(Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host)) {
+        return json(res, { error: "Bootstrap is loopback-only" }, 403);
+      }
+      const session = createAuthSession(jinnHome, req, { kind: "local" });
+      res.setHeader("Set-Cookie", authCookieHeaders(session.secret, session.device.id));
+      return json(res, { status: "ok", authRequired: true, device: { ...session.device, current: true } });
+    }
+
+    // POST /api/auth/pairing-codes — local authenticated helper for pairing a
+    // second browser. Codes are short-lived, single-use, and only stored hashed.
+    if (method === "POST" && pathname === "/api/auth/pairing-codes") {
+      const parsed = await readJsonBody(req, res, { allowEmpty: true, maxBytes: AUTH_BODY_MAX_BYTES });
+      if (!parsed.ok) return;
+      if (!context.gatewayAuthToken) return json(res, { error: "Gateway auth token is not configured" }, 503);
+      const auth = authenticateGatewayRequest(req, context.gatewayAuthToken, jinnHome);
+      if (!auth.ok) return json(res, { error: auth.reason || "Unauthorized" }, 401);
+      const bearer = hasGatewayBearerAuth(req.headers, context.gatewayAuthToken);
+      const localBrowser = isLoopback(req.socket.remoteAddress)
+        && isLoopbackHost(Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host);
+      if (!bearer && !localBrowser) return json(res, { error: "Pairing codes can only be created locally" }, 403);
+      const issued = issuePairingCode();
+      return json(res, {
+        status: "ok",
+        code: issued.code,
+        expiresAt: new Date(issued.expiresAt).toISOString(),
+        ttlSeconds: Math.floor((issued.expiresAt - Date.now()) / 1000),
+      });
+    }
+
+    // POST /api/auth/pair — exchange a one-time pairing code (or advanced token
+    // fallback) for the HttpOnly browser cookie used by APIs and WebSockets.
+    if (method === "POST" && pathname === "/api/auth/pair") {
+      const parsed = await readJsonBody(req, res, { maxBytes: AUTH_BODY_MAX_BYTES });
+      if (!parsed.ok) return;
+      const body = parsed.body && typeof parsed.body === "object" ? parsed.body as Record<string, unknown> : {};
+      const code = typeof body.code === "string" ? body.code : undefined;
+      const token = typeof body.token === "string" ? body.token : undefined;
+      const pairedWithToken = matchesGatewayAuthToken(token, context.gatewayAuthToken);
+      const ok = consumePairingCode(undefined, code) || pairedWithToken;
+      if (!ok || !context.gatewayAuthToken) return json(res, { error: "Invalid or expired pairing code" }, 401);
+      const session = createAuthSession(jinnHome, req, { kind: pairedWithToken ? "token" : "remote" });
+      res.setHeader("Set-Cookie", authCookieHeaders(session.secret, session.device.id));
+      return json(res, { status: "ok", authRequired: true, device: { ...session.device, current: true } });
+    }
+
+    // GET /api/auth/devices — authenticated browser list for Settings > Pairing.
+    if (method === "GET" && pathname === "/api/auth/devices") {
+      const auth = authenticateGatewayRequest(req, context.gatewayAuthToken, jinnHome);
+      if (!auth.ok) return json(res, { error: auth.reason || "Unauthorized" }, 401);
+      touchAuthSession(jinnHome, req);
+      return json(res, { devices: listAuthSessions(jinnHome, currentAuthDeviceId(req.headers)) });
+    }
+
+    // DELETE /api/auth/devices/:id — shared unpair primitive used by Settings
+    // and the CLI. Deleting the current browser also clears its cookies.
+    if (method === "DELETE" && pathname.startsWith("/api/auth/devices/")) {
+      const auth = authenticateGatewayRequest(req, context.gatewayAuthToken, jinnHome);
+      if (!auth.ok) return json(res, { error: auth.reason || "Unauthorized" }, 401);
+      const rawDeviceId = pathname.slice("/api/auth/devices/".length);
+      let deviceId = "";
+      try {
+        deviceId = decodeURIComponent(rawDeviceId);
+      } catch {
+        return badRequest(res, "Invalid paired browser id");
+      }
+      if (!deviceId) return badRequest(res, "Missing paired browser id");
+      const currentDevice = currentAuthDeviceId(req.headers);
+      const removed = revokeAuthSession(jinnHome, deviceId);
+      if (!removed) return json(res, { error: "Paired browser not found" }, 404);
+      const current = Boolean(currentDevice && currentDevice === deviceId);
+      if (current) res.setHeader("Set-Cookie", clearAuthCookieHeaders());
+      return json(res, { status: "ok", current });
+    }
+
+    // POST /api/auth/logout — forget this browser by clearing the auth cookie.
+    if (method === "POST" && pathname === "/api/auth/logout") {
+      const parsed = await readJsonBody(req, res, { allowEmpty: true, maxBytes: AUTH_BODY_MAX_BYTES });
+      if (!parsed.ok) return;
+      const currentDevice = currentAuthDeviceId(req.headers);
+      if (currentDevice) revokeAuthSession(jinnHome, currentDevice);
+      res.setHeader("Set-Cookie", clearAuthCookieHeaders());
+      return json(res, { status: "ok" });
+    }
+
     // GET /api/status
     if (method === "GET" && pathname === "/api/status") {
       const config = context.getConfig();
       const sessions = listSessions();
-      const running = sessions.filter((s) => s.status === "running").length;
+      const running = sessions.filter((s) => isSessionLiveRunning(s, context)).length;
       const connectors = Object.fromEntries(
         Array.from(context.connectors.values()).map((connector) => [connector.name, connector.getHealth()]),
       );
@@ -448,11 +723,16 @@ export async function handleApiRequest(
         status: "ok",
         uptime: Math.floor((Date.now() - context.startTime) / 1000),
         port: config.gateway.port || 7777,
+        // Derived from the model registry (single source of truth) so engine
+        // availability stays consistent with /api/engines instead of drifting.
         engines: {
           default: config.engines.default,
-          claude: { model: config.engines.claude.model, available: true },
-          codex: { model: config.engines.codex.model, available: true },
-          ...(config.engines.antigravity ? { antigravity: { model: config.engines.antigravity.model ?? "gemini-3-flash-preview", available: true } } : {}),
+          ...Object.fromEntries(
+            Object.entries(getModelRegistry(config)).map(([name, entry]) => [
+              name,
+              { model: entry.defaultModel, available: entry.available },
+            ]),
+          ),
         },
         sessions: { total: sessions.length, running, active: running },
         connectors,
@@ -477,7 +757,7 @@ export async function handleApiRequest(
     // GET /api/sessions
     //   ?group=<employee|__direct__|__cron__>&offset=M&limit=N → one group's page (sidebar "load more")
     //   ?limit=0                                              → every session (power-user escape hatch)
-    //   (default)                                             → top PER_GROUP recent per group + counts
+    //   (default)                                             → top SESSION_LIST_PER_GROUP recent per group + counts
     if (method === "GET" && pathname === "/api/sessions") {
       const query = url.searchParams.get("q");
       if (query && query.trim()) {
@@ -486,22 +766,24 @@ export async function handleApiRequest(
       }
       const group = url.searchParams.get("group");
       const rawLimit = url.searchParams.get("limit");
+      // Portal-slug-tagged rows fold into the direct group (defensive +
+      // retroactive backstop to the create-time coercion above).
+      const portalSlug = context.getConfig().portal?.portalName;
       if (group) {
         const limit = Math.max(1, parseInt(rawLimit || "50", 10) || 50);
         const offset = Math.max(0, parseInt(url.searchParams.get("offset") || "0", 10) || 0);
-        const page = listSessionsForGroup(group, limit, offset);
+        const page = listSessionsForGroup(group, limit, offset, portalSlug);
         return json(res, page.map((session) => serializeSession(session, context)));
       }
       if (rawLimit === "0") {
         const all = listSessions();
         return json(res, all.map((session) => serializeSession(session, context)));
       }
-      const PER_GROUP = 8;
-      const sessions = listRecentPerGroup(PER_GROUP);
+      const sessions = listRecentPerGroup(SESSION_LIST_PER_GROUP, portalSlug);
       return json(res, {
         sessions: sessions.map((session) => serializeSession(session, context)),
-        counts: getSessionGroupCounts(),
-        perGroup: PER_GROUP,
+        counts: getSessionGroupCounts(portalSlug),
+        perGroup: SESSION_LIST_PER_GROUP,
       });
     }
 
@@ -525,6 +807,12 @@ export async function handleApiRequest(
       // once the backfill finishes; this one returns whatever is in DB now.
       if (messages.length === 0 && session.engineSessionId) {
         scheduleTranscriptBackfill(params.id, session.engineSessionId, context);
+      } else if (session.engine === "claude") {
+        // On-load safety net for PTY-native (CLI-typed) turns whose unclaimed
+        // Stop was missed entirely: fire-and-forget a transcript tail sync.
+        // Cheap (one stat() in the common case) and never delays this GET —
+        // the frontend refetches on `session:external-turn`.
+        scheduleOnLoadTailSync(params.id, context.emit);
       }
 
       // Support ?last=N to return only the N most recent messages
@@ -555,7 +843,13 @@ export async function handleApiRequest(
       // Mid-chat model / effort switch (applies from the next turn). Engine is
       // new-chat-only, so it's not mutable here. Validated against the registry.
       if (body.model !== undefined || body.effortLevel !== undefined) {
-        const patch = validateSessionPatch(context.getConfig(), session.engine, session.model, body);
+        const configForPatch = context.getConfig();
+        const engineConfigForPatch =
+          (configForPatch.engines as unknown as Record<string, { model?: string } | undefined>)[session.engine] ?? {};
+        const patch = validateSessionPatch(configForPatch, session.engine, session.model, body, {
+          engineSessionId: session.engineSessionId,
+          defaultModel: engineConfigForPatch.model,
+        });
         if (!patch.ok) return badRequest(res, patch.error || "invalid model/effort");
         if (patch.updates?.model !== undefined) updates.model = patch.updates.model;
         if (patch.updates?.effortLevel !== undefined) updates.effortLevel = patch.updates.effortLevel;
@@ -563,9 +857,6 @@ export async function handleApiRequest(
       if (Object.keys(updates).length === 0) return badRequest(res, "no valid fields to update");
       const updated = updateSession(params.id, updates);
       if (!updated) return notFound(res);
-      if (updates.model !== undefined && session.engine === "antigravity") {
-        logger.info(`Session ${params.id}: model set to "${updates.model}" but antigravity ignores model flags today — runtime no-op.`);
-      }
       context.emit("session:updated", { sessionId: params.id });
       return json(res, serializeSession(updated, context));
     }
@@ -576,14 +867,13 @@ export async function handleApiRequest(
       const session = getSession(params.id);
       if (!session) return notFound(res);
 
-      // Tear down any live/warm engine process for this session before deleting it.
+      // Tear down any live/warm engine processes for this session before deleting it.
       // kill() is safe to call unconditionally — it's a no-op when nothing is running.
-      const engine = context.sessionManager.getEngine(session.engine);
-      if (engine && isInterruptibleEngine(engine)) {
-        logger.info(`Killing engine process for deleted session ${params.id}`);
-        engine.kill(params.id, "Interrupted: session deleted");
-      }
+      logger.info(`Killing engine process for deleted session ${params.id}`);
+      killSessionEngines(context, session, "Interrupted: session deleted");
+      context.sessionManager.getQueue().clearQueue(session.sessionKey || session.sourceRef || session.id);
 
+      maybeEmitTalkGraph(params.id, "removed", { getSession, emit: context.emit });
       const deleted = deleteSession(params.id);
       if (!deleted) return notFound(res);
       logger.info(`Session deleted: ${params.id}`);
@@ -596,10 +886,7 @@ export async function handleApiRequest(
     if (method === "POST" && params) {
       const session = getSession(params.id);
       if (!session) return notFound(res);
-      const engine = context.sessionManager.getEngine(session.engine);
-      if (engine && isInterruptibleEngine(engine)) {
-        engine.kill(params.id, "Interrupted by user");
-      }
+      killSessionEngines(context, session, "Interrupted by user");
       context.sessionManager.getQueue().clearQueue(session.sessionKey || session.sourceRef || session.id);
       updateSession(params.id, { status: "idle", lastActivity: new Date().toISOString(), lastError: null });
       context.emit("session:stopped", { sessionId: params.id });
@@ -611,10 +898,7 @@ export async function handleApiRequest(
     if (method === "POST" && params) {
       const session = getSession(params.id);
       if (!session) return notFound(res);
-      const engine = context.sessionManager.getEngine(session.engine);
-      if (engine && isInterruptibleEngine(engine)) {
-        engine.kill(params.id, "Interrupted: session reset");
-      }
+      killSessionEngines(context, session, "Interrupted: session reset");
       context.sessionManager.getQueue().clearQueue(session.sessionKey || session.sourceRef || session.id);
       const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
       delete meta["engineSessions"];
@@ -752,12 +1036,13 @@ export async function handleApiRequest(
       for (const id of ids) {
         const session = getSession(id);
         if (!session) continue;
-        const engine = context.sessionManager.getEngine(session.engine);
-        if (engine && isInterruptibleEngine(engine)) {
-          engine.kill(id, "Interrupted: session deleted");
-        }
+        killSessionEngines(context, session, "Interrupted: session deleted");
+        context.sessionManager.getQueue().clearQueue(session.sessionKey || session.sourceRef || session.id);
       }
 
+      for (const id of ids) {
+        maybeEmitTalkGraph(id, "removed", { getSession, emit: context.emit });
+      }
       const count = deleteSessions(ids);
       for (const id of ids) {
         context.emit("session:deleted", { sessionId: id });
@@ -792,8 +1077,28 @@ export async function handleApiRequest(
       const prompt = body.prompt || body.message;
       if (!prompt) return badRequest(res, "prompt or message is required");
       const config = context.getConfig();
-      const engineName = body.engine || config.engines.default;
+      const employeeName = coercePortalEmployee(body.employee, config.portal?.portalName);
+      let employeeDefaults: { engine: string; model: string; effortLevel?: string } | undefined;
+      if (employeeName) {
+        const { scanOrg } = await import("./org.js");
+        const emp = scanOrg().get(employeeName);
+        if (emp) {
+          employeeDefaults = { engine: emp.engine, model: emp.model };
+          if (emp.effortLevel) employeeDefaults.effortLevel = emp.effortLevel;
+        }
+      }
+      const selection = validateNewSessionSelection(config, {
+        engine: body.engine,
+        model: body.model,
+        effortLevel: body.effortLevel,
+      }, employeeDefaults);
+      if (!selection.ok) return badRequest(res, selection.error || "invalid engine/model/effort");
+      const engineName = selection.engine || config.engines.default;
       const sessionKey = `web:${Date.now()}`;
+      // Opt-in SSO identity capture: when an auth proxy fronts the gateway and
+      // `gateway.userHeader` is configured, persist the forwarded identity on the
+      // session. Unset config → undefined → stored as NULL (single-user no-op).
+      const userId = resolveUserHeader(req.headers, config.gateway.userHeader);
       const session = createSession({
         engine: engineName,
         source: "web",
@@ -801,19 +1106,38 @@ export async function handleApiRequest(
         connector: "web",
         sessionKey,
         replyContext: { source: "web" },
-        employee: body.employee,
+        userId,
+        // A session tagged with the portal name is a direct/COO session, not a
+        // pseudo-employee (there is no org employee by the portal's name).
+        // Coerce it to null so it buckets into the direct group rather than
+        // spawning a phantom group that renders with the portal's own title.
+        employee: employeeName,
         parentSessionId: body.parentSessionId,
-        effortLevel: body.effortLevel,
+        effortLevel: selection.effortLevel,
         // Honor body.model so API clients can pin per-employee models
         // (e.g. MCP servers that look up org/<employee>.yaml and pass the
         // employee's configured model). Without this, runWebSession falls
         // back to config.engines.claude.model, breaking per-employee routing.
         // Fixes #38.
-        model: body.model,
+        model: selection.model,
         prompt,
+        // Optional excerpt override (talk delegation passes the operator's
+        // verbatim ask so list UIs don't show the scaffolded prompt).
+        promptExcerpt: typeof body.promptExcerpt === "string" ? body.promptExcerpt : undefined,
         portalName: config.portal?.portalName,
       });
-      logger.info(`Web session created: ${session.id} (model=${body.model || "default"})`);
+      logger.info(`Web session created: ${session.id} (model=${selection.model || "default"})`);
+      // Voice mode: when the hands-free orchestrator (source:"talk") spawns a COO
+      // child, tell the Talk UI which channel to animate to. Auto-derived here so
+      // the orchestrator persona carries zero focus-signalling burden.
+      if (session.parentSessionId) {
+        const talkParent = getSession(session.parentSessionId);
+        if (talkParent?.source === "talk") {
+          const label = String(body.employee || prompt || "task").replace(/\s+/g, " ").trim().slice(0, 48);
+          context.emit("talk:focus", { cooId: session.id, label, parentId: talkParent.id });
+        }
+      }
+      maybeEmitTalkGraph(session.id, "added", { getSession, emit: context.emit });
       // First-message attachments were uploaded before the session existed (FILES_DIR).
       // Re-home them under uploads/<date>/<sessionId>/ now that we have an id, then persist
       // the media on the user message so the bubble renders chips/thumbnails on reload.
@@ -822,12 +1146,10 @@ export async function handleApiRequest(
       insertMessage(session.id, "user", prompt, newSessionMedia.length > 0 ? newSessionMedia : undefined);
 
       // Run engine asynchronously — respond immediately, push result via WebSocket.
-      // CLI-mode session creation (mode: "interactive") uses the PTY-backed engine
-      // so the first turn streams into the live xterm; chat/cron/connectors use headless.
-      const wantInteractive = body.mode === "interactive" && engineName === "claude";
-      const engine = wantInteractive && context.interactiveClaudeEngine
-        ? context.interactiveClaudeEngine
-        : context.sessionManager.getEngine(engineName);
+      // CLI-mode session creation uses the engine's PTY view when one exists
+      // (Claude, Antigravity). Engines without a PTY view fall back to normal chat.
+      const ptyEngine = body.mode === "interactive" ? context.ptyViewEngines?.[engineName] : undefined;
+      const engine = ptyEngine ?? context.sessionManager.getEngine(engineName);
       if (!engine) {
         updateSession(session.id, {
           status: "error",
@@ -869,6 +1191,18 @@ export async function handleApiRequest(
       const prompt = body.message || body.prompt;
       if (!prompt) return badRequest(res, "message is required");
 
+      // Voice mode: when the orchestrator CONTINUES an existing COO child (a
+      // thread switch/reuse), re-signal focus so the Talk UI relights that
+      // satellite + morphs the main orb to its channel — mirroring the
+      // talk:focus emitted on new-session spawn in POST /api/sessions.
+      if (session.parentSessionId) {
+        const talkParent = getSession(session.parentSessionId);
+        if (talkParent?.source === "talk") {
+          context.emit("talk:focus", { cooId: session.id, label: session.title || "", parentId: talkParent.id });
+        }
+      }
+      maybeEmitTalkGraph(session.id, "status", { getSession, emit: context.emit });
+
       // Allow internal callers (e.g. child session callbacks) to specify a non-user role
       const messageRole: string = body.role === "notification" ? "notification" : "user";
       const isNotification = messageRole === "notification";
@@ -880,14 +1214,22 @@ export async function handleApiRequest(
           : prompt;
 
       const config = context.getConfig();
-      // CLI-mode sends route to the interactive PTY engine so the user sees their
-      // prompt injected + claude's response stream in the live xterm. All other
-      // sends (chat, connectors, cron) use the headless engine.
-      const wantInteractive = body.mode === "interactive" && session.engine === "claude";
-      const engine = wantInteractive && context.interactiveClaudeEngine
-        ? context.interactiveClaudeEngine
-        : context.sessionManager.getEngine(session.engine);
+      // CLI-mode sends route to the engine's PTY view when one exists so the
+      // prompt/response are visible in xterm. Engines without a PTY view fall back.
+      const ptyEngine = body.mode === "interactive" ? context.ptyViewEngines?.[session.engine] : undefined;
+      const engine = ptyEngine ?? context.sessionManager.getEngine(session.engine);
       if (!engine) return serverError(res, `Engine "${session.engine}" not available`);
+
+      // Only interrupt if a turn is actually in flight. With warm PTYs, isAlive is
+      // also true for an idle-but-warm engine — isTurnRunning distinguishes them.
+      // Headless engines lack isTurnRunning; their isAlive ≈ "turn running".
+      const turnRunning = session.status === "running" && isInterruptibleEngine(engine)
+        && ("isTurnRunning" in engine ? (engine as any).isTurnRunning(session.id) : engine.isAlive(session.id));
+      const shouldInterruptRunningTurn =
+        !isNotification &&
+        (config.sessions?.interruptOnNewMessage ?? true) &&
+        turnRunning;
+      if (shouldInterruptRunningTurn) supersedeRunningTurn(session);
 
       // Persist the message immediately. For notifications, store the clean
       // human-facing `displayMessage` (what the UI banner renders) — the engine
@@ -926,12 +1268,7 @@ export async function handleApiRequest(
       // If a turn is already running, check whether we should interrupt or queue.
       // Notifications (child completion callbacks) should never interrupt — just queue.
       if (session.status === "running") {
-        // Only interrupt if a turn is actually in flight. With warm PTYs, isAlive is
-        // also true for an idle-but-warm engine — isTurnRunning distinguishes them.
-        // Headless engines lack isTurnRunning; their isAlive ≈ "turn running".
-        const turnRunning = isInterruptibleEngine(engine)
-          && ("isTurnRunning" in engine ? (engine as any).isTurnRunning(session.id) : engine.isAlive(session.id));
-        if (!isNotification && (config.sessions?.interruptOnNewMessage ?? true) && turnRunning) {
+        if (shouldInterruptRunningTurn) {
           logger.info(`Interrupting running session ${session.id} for new message`);
           engine.kill(session.id, "Interrupted: new message received");
           // SessionQueue serializes per-session; the new turn enqueued below will
@@ -989,33 +1326,26 @@ export async function handleApiRequest(
     // GET /api/cron
     if (method === "GET" && pathname === "/api/cron") {
       const jobs = loadJobs();
-      // Enrich with last run status
-      const enriched = jobs.map((job) => {
+      // Enrich with last run status — tail-read only the newest entry, the
+      // run logs are append-only JSONL that grows forever.
+      const enriched = await Promise.all(jobs.map(async (job) => {
         const runFile = path.join(CRON_RUNS, `${job.id}.jsonl`);
-        let lastRun = null;
-        if (fs.existsSync(runFile)) {
-          const lines = fs.readFileSync(runFile, "utf-8").trim().split("\n").filter(Boolean);
-          if (lines.length > 0) {
-            try { lastRun = JSON.parse(lines[lines.length - 1]); } catch {}
-          }
-        }
-        return { ...job, lastRun };
-      });
+        const { entries } = await readJsonlTail(runFile, 1);
+        return { ...job, lastRun: entries[0] ?? null };
+      }));
       return json(res, enriched);
     }
 
-    // GET /api/cron/:id/runs
+    // GET /api/cron/:id/runs?limit=N — newest first (the UI shows "Recent Runs").
+    // Run history is append-only JSONL that grows forever, so only the file's
+    // tail is read; corrupt lines (crash mid-write) are skipped, not 500'd.
     params = matchRoute("/api/cron/:id/runs", pathname);
     if (method === "GET" && params) {
+      const limit = Math.min(500, Math.max(1, parseInt(url.searchParams.get("limit") || "", 10) || 50));
       const runFile = path.join(CRON_RUNS, `${params.id}.jsonl`);
-      if (!fs.existsSync(runFile)) return json(res, []);
-      const lines = fs
-        .readFileSync(runFile, "utf-8")
-        .trim()
-        .split("\n")
-        .filter(Boolean)
-        .map((l) => JSON.parse(l));
-      return json(res, lines);
+      const { entries: runs, skipped } = await readJsonlTail(runFile, limit);
+      if (skipped) logger.warn(`GET /api/cron/${params.id}/runs: skipped ${skipped} corrupt line(s)`);
+      return json(res, runs);
     }
 
     // POST /api/cron — create new cron job
@@ -1152,19 +1482,32 @@ export async function handleApiRequest(
       });
     }
 
-    // PATCH /api/org/employees/:name — update employee fields (currently only alwaysNotify)
+    // PATCH /api/org/employees/:name — update employee fields (whitelisted, validated)
     params = matchRoute("/api/org/employees/:name", pathname);
     if (method === "PATCH" && params) {
       const _parsed = await readJsonBody(req, res);
       if (!_parsed.ok) return;
-      const body = _parsed.body as any;
-      const { updateEmployeeYaml } = await import("./org.js");
-      const updated = updateEmployeeYaml(params.name, {
-        alwaysNotify: typeof body.alwaysNotify === "boolean" ? body.alwaysNotify : undefined,
-      });
-      if (!updated) return notFound(res);
+      const body = _parsed.body as Record<string, unknown>;
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return badRequest(res, "update body must be a JSON object");
+      }
+      const { scanOrg, updateEmployeeYaml, validateEmployeeUpdate } = await import("./org.js");
+      const current = scanOrg().get(params.name);
+      if (!current) return notFound(res);
+
+      const result = validateEmployeeUpdate(context.getConfig(), current, body);
+      if (!result.ok) return badRequest(res, result.error || "invalid update");
+
+      const wrote = updateEmployeeYaml(params.name, result.updates!);
+      if (!wrote) return notFound(res);
+
+      // G1: synchronously refresh the in-memory registry (and drop warm PTYs) so an
+      // immediate session spawn sees the new persona/model — don't wait for the watcher.
+      context.reloadOrg?.();
       context.emit("org:updated", { employee: params.name });
-      return json(res, { status: "ok" });
+
+      const updated = scanOrg().get(params.name);
+      return json(res, { status: "ok", employee: updated ?? null });
     }
 
     // GET /api/org/departments/:name/board
@@ -1172,7 +1515,12 @@ export async function handleApiRequest(
     if (method === "GET" && params) {
       const boardPath = path.join(ORG_DIR, params.name, "board.json");
       if (!fs.existsSync(boardPath)) return notFound(res);
-      const board = JSON.parse(fs.readFileSync(boardPath, "utf-8"));
+      let board: unknown;
+      try { board = JSON.parse(fs.readFileSync(boardPath, "utf-8")); }
+      catch (err) {
+        logger.warn(`GET /api/org/departments/${params.name}/board: corrupt board.json — ${err instanceof Error ? err.message : String(err)}`);
+        return serverError(res, "board.json is corrupt");
+      }
       return json(res, board);
     }
 
@@ -1197,35 +1545,15 @@ export async function handleApiRequest(
       const entries = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
       const skills = entries.filter((e) => e.isDirectory()).map((e) => {
         const skillMdPath = path.join(SKILLS_DIR, e.name, "SKILL.md");
-        let description = "";
-        if (fs.existsSync(skillMdPath)) {
-          const content = fs.readFileSync(skillMdPath, "utf-8");
-          // Extract description from YAML frontmatter, ## Trigger section, or first paragraph
-          const frontmatterMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
-          if (frontmatterMatch) {
-            const descMatch = frontmatterMatch[1].match(/^description:\s*(.+)$/m);
-            if (descMatch) {
-              description = descMatch[1].trim();
-            }
-          }
-          if (!description) {
-            const triggerMatch = content.match(/##\s*Trigger\s*\n+([^\n#]+)/);
-            if (triggerMatch) {
-              description = triggerMatch[1].trim();
-            } else {
-              // Use first non-heading, non-empty, non-frontmatter line
-              const bodyContent = frontmatterMatch ? content.slice(frontmatterMatch[0].length) : content;
-              const lines = bodyContent.split("\n");
-              for (const line of lines) {
-                const trimmed = line.trim();
-                if (trimmed && !trimmed.startsWith("#")) {
-                  description = trimmed;
-                  break;
-                }
-              }
-            }
-          }
+        const st = fs.statSync(skillMdPath, { throwIfNoEntry: false });
+        if (!st) {
+          skillDescriptionCache.delete(e.name);
+          return { name: e.name, description: "" };
         }
+        const hit = skillDescriptionCache.get(e.name);
+        if (hit && hit.mtimeMs === st.mtimeMs) return { name: e.name, description: hit.description };
+        const description = parseSkillDescription(fs.readFileSync(skillMdPath, "utf-8"));
+        skillDescriptionCache.set(e.name, { mtimeMs: st.mtimeMs, description });
         return { name: e.name, description };
       });
       return json(res, skills);
@@ -1261,28 +1589,38 @@ export async function handleApiRequest(
       return json(res, { default: config.engines.default, engines: registry });
     }
 
+    // POST /api/engines/refresh — re-run dynamic model discovery and return the
+    // rebuilt registry. Lets the UI pick up models added to dynamic CLIs without
+    // restarting the gateway.
+    if (method === "POST" && pathname === "/api/engines/refresh") {
+      const config = context.getConfig();
+      await refreshPiModels(config);
+      await refreshGrokModels(config);
+      await refreshHermesModels(config);
+      context.emit("engines:updated", {});
+      return json(res, { default: config.engines.default, engines: getModelRegistry(config) });
+    }
+
+    // GET /api/engine-limits — live/snapshot quota windows and static capability
+    // metadata for each engine. Some CLIs expose full quota buckets (Codex), some
+    // only expose session snapshots (Claude), and some expose no aggregate quota.
+    if (method === "GET" && pathname === "/api/engine-limits") {
+      const engine = url.searchParams.get("engine") || undefined;
+      return json(res, await collectEngineLimits(context.getConfig(), { engine }));
+    }
+
+    // POST /api/engine-limits/refresh — currently identical to GET for live
+    // sources. Kept as a command-shaped endpoint so the UI/CLI can request a
+    // deliberate refresh without changing the public contract later.
+    if (method === "POST" && pathname === "/api/engine-limits/refresh") {
+      const engine = url.searchParams.get("engine") || undefined;
+      return json(res, await collectEngineLimits(context.getConfig(), { engine }));
+    }
+
     // GET /api/config
     if (method === "GET" && pathname === "/api/config") {
       const config = context.getConfig();
-      // Sanitize: remove any secrets/tokens from connectors
-      const rawConnectors = config.connectors || {};
-      const sanitizedConnectors: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(rawConnectors)) {
-        if (k === "instances" && Array.isArray(v)) {
-          sanitizedConnectors.instances = v.map((inst: any) =>
-            inst && typeof inst === "object" ? sanitizeConnectorObj(inst) : inst,
-          );
-        } else if (v && typeof v === "object") {
-          sanitizedConnectors[k] = sanitizeConnectorObj(v as Record<string, unknown>);
-        } else {
-          sanitizedConnectors[k] = v;
-        }
-      }
-      const sanitized = {
-        ...config,
-        connectors: sanitizedConnectors,
-      };
-      return json(res, sanitized);
+      return json(res, sanitizeConfigForApi(config));
     }
 
     // PUT /api/config
@@ -1311,6 +1649,7 @@ export async function handleApiRequest(
         "portal",
         "context",
         "stt",
+        "talk",
         "skills",
         "remotes",
       ];
@@ -1337,8 +1676,8 @@ export async function handleApiRequest(
         existing = yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown> || {};
       } catch { /* start fresh if unreadable */ }
       const merged = deepMerge(existing, body);
-      const yamlStr = yaml.dump(merged);
-      fs.writeFileSync(CONFIG_PATH, yamlStr);
+      saveConfigAtomic(merged);
+      context.reloadConfig?.(); // refresh in-memory config now (don't wait on the watcher)
       invalidateModelRegistry(); // models/engines may have changed — rebuild on next read
       logger.info("Config updated via API");
       return json(res, { status: "ok" });
@@ -1357,7 +1696,7 @@ export async function handleApiRequest(
       const buf = Buffer.alloc(readSize);
       fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
       fs.closeSync(fd);
-      const allLines = buf.toString("utf-8").split("\n").filter(Boolean);
+      const allLines = redactText(buf.toString("utf-8")).split("\n").filter(Boolean);
       const lines = allLines.slice(-n);
       return json(res, { lines });
     }
@@ -1448,15 +1787,15 @@ export async function handleApiRequest(
       switch (action) {
         case "sendMessage":
           if (!target || !body.text) return badRequest(res, "target and text are required");
-          messageId = (await connector.sendMessage(target, body.text)) as string | undefined;
+          messageId = (await connector.sendMessage(target, redactText(String(body.text)))) as string | undefined;
           break;
         case "replyMessage":
           if (!target || !body.text) return badRequest(res, "target and text are required");
-          messageId = (await connector.replyMessage(target, body.text)) as string | undefined;
+          messageId = (await connector.replyMessage(target, redactText(String(body.text)))) as string | undefined;
           break;
         case "editMessage":
           if (!target || !body.text) return badRequest(res, "target and text are required");
-          await connector.editMessage(target, body.text);
+          await connector.editMessage(target, redactText(String(body.text)));
           break;
         case "addReaction":
           if (!target || !body.emoji) return badRequest(res, "target and emoji are required");
@@ -1490,7 +1829,7 @@ export async function handleApiRequest(
       if (!body.channel || !body.text) return badRequest(res, "channel and text are required");
       await connector.sendMessage(
         { channel: body.channel, thread: body.thread },
-        body.text,
+        redactText(String(body.text)),
       );
       return json(res, { status: "sent" });
     }
@@ -1546,9 +1885,12 @@ export async function handleApiRequest(
         );
       const config = context.getConfig();
       const onboarded = config.portal?.onboarded === true;
+      const setupComplete = config.portal?.setupComplete === true || onboarded;
       return json(res, {
-        needed: !onboarded && sessions.length === 0 && !hasEmployees,
+        needed: onboardingNeeded(onboarded),
         onboarded,
+        setupComplete,
+        conversationNeeded: !setupComplete,
         sessionsCount: sessions.length,
         hasEmployees,
         portalName: config.portal?.portalName ?? null,
@@ -1562,24 +1904,27 @@ export async function handleApiRequest(
       if (!_parsed.ok) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
-      const { portalName, operatorName, language } = body;
+      const { portalName, operatorName, language, engine, model, effortLevel } = body;
 
-      // Read current config and merge portal settings
+      // Read current config and merge engine choice + portal settings
       const config = context.getConfig();
       const updated = {
-        ...config,
+        ...applyEngineChoice(config, { engine, model, effortLevel }),
         portal: {
           ...config.portal,
           onboarded: true,
+          setupComplete: true,
           ...(portalName !== undefined && { portalName: portalName || undefined }),
           ...(operatorName !== undefined && { operatorName: operatorName || undefined }),
           ...(language !== undefined && { language: language || undefined }),
         },
       };
 
-      // Write updated config
-      const yamlStr = yaml.dump(updated, { lineWidth: -1 });
-      fs.writeFileSync(CONFIG_PATH, yamlStr);
+      // Write updated config, then refresh the in-memory copy synchronously so
+      // GET /api/onboarding reflects onboarded:true immediately (not after the
+      // debounced file-watcher fires ~1s later).
+      saveConfigAtomic(updated, { lineWidth: -1 });
+      context.reloadConfig?.();
       logger.info(`Onboarding: portal name="${portalName}", operator="${operatorName}", language="${language}"`);
 
       const effectiveName = portalName || "Jinn";
@@ -1587,38 +1932,30 @@ export async function handleApiRequest(
         ? `\n\n## Language\nAlways respond in ${language}. All communication with the user must be in ${language}.`
         : "";
 
-      // Update CLAUDE.md with personalized COO name and language
-      const claudeMdPath = path.join(JINN_HOME, "CLAUDE.md");
-      if (fs.existsSync(claudeMdPath)) {
-        let claudeMd = fs.readFileSync(claudeMdPath, "utf-8");
-        // Replace the identity line in CLAUDE.md
-        claudeMd = claudeMd.replace(
-          /^You are \w+, the COO of the user's AI organization\.$/m,
-          `You are ${effectiveName}, the COO of the user's AI organization.`,
-        );
-        // Remove existing language section if present, then add new one if needed
-        claudeMd = claudeMd.replace(/\n\n## Language\nAlways respond in .+\. All communication with the user must be in .+\./m, "");
-        if (languageSection) {
-          claudeMd = claudeMd.trimEnd() + languageSection + "\n";
-        }
-        fs.writeFileSync(claudeMdPath, claudeMd);
-      }
+      // Personalize the operating manual with the chosen COO name + language.
+      // The shipped identity line is bold, e.g.
+      //   "You are **Jinn**, a personal AI assistant and COO of an AI organization."
+      // (The previous CLAUDE.md regex expected unbolded "...the COO of the user's
+      // AI organization." and never matched, so the rename silently no-op'd.)
+      const personalizeManual = (filePath: string) => {
+        let md = fs.readFileSync(filePath, "utf-8");
+        // Replace just the bold name token; `[^*]+` supports multi-word names.
+        md = md.replace(/^You are \*\*[^*]+\*\*/m, `You are **${effectiveName}**`);
+        // Reset any prior language section, then append the new one if needed.
+        md = md.replace(/\n\n## Language\nAlways respond in .+\. All communication with the user must be in .+\./m, "");
+        if (languageSection) md = md.trimEnd() + languageSection + "\n";
+        fs.writeFileSync(filePath, md);
+      };
 
-      // Update AGENTS.md with personalized name and language
+      // CLAUDE.md is canonical. AGENTS.md is normally a symlink → CLAUDE.md, so we
+      // edit CLAUDE.md directly and skip the symlink (avoids double-processing the
+      // same file). Only the rare non-symlink fallback copy is personalized too.
+      const claudeMdPath = path.join(JINN_HOME, "CLAUDE.md");
+      if (fs.existsSync(claudeMdPath)) personalizeManual(claudeMdPath);
+
       const agentsMdPath = path.join(JINN_HOME, "AGENTS.md");
-      if (fs.existsSync(agentsMdPath)) {
-        let agentsMd = fs.readFileSync(agentsMdPath, "utf-8");
-        // Replace the bold identity line (e.g. "You are **Jinn**")
-        agentsMd = agentsMd.replace(
-          /You are \*\*\w+\*\*/,
-          `You are **${effectiveName}**`,
-        );
-        // Remove existing language section if present, then add new one if needed
-        agentsMd = agentsMd.replace(/\n\n## Language\nAlways respond in .+\. All communication with the user must be in .+\./m, "");
-        if (languageSection) {
-          agentsMd = agentsMd.trimEnd() + languageSection + "\n";
-        }
-        fs.writeFileSync(agentsMdPath, agentsMd);
+      if (fs.existsSync(agentsMdPath) && !fs.lstatSync(agentsMdPath).isSymbolicLink()) {
+        personalizeManual(agentsMdPath);
       }
 
       context.emit("config:updated", { portal: updated.portal });
@@ -1629,7 +1966,7 @@ export async function handleApiRequest(
     if (method === "GET" && pathname === "/api/stt/status") {
       const config = context.getConfig();
       const languages = resolveLanguages(config.stt);
-      const status = getSttStatus(config.stt, languages);
+      const status = getSttStatus(config.stt?.model, languages);
       return json(res, status);
     }
 
@@ -1649,7 +1986,7 @@ export async function handleApiRequest(
           sttCfg.enabled = true;
           sttCfg.model = model;
           if (!sttCfg.languages) sttCfg.languages = ["en"];
-          fs.writeFileSync(CONFIG_PATH, yaml.dump(cfg, { lineWidth: -1 }));
+          saveConfigAtomic(cfg, { lineWidth: -1 });
         } catch (err) {
           logger.error(`Failed to update config after STT download: ${err}`);
         }
@@ -1686,7 +2023,7 @@ export async function handleApiRequest(
       fs.writeFileSync(tmpFile, audioBuffer);
 
       try {
-        const text = await sttTranscribe(tmpFile, model, language, config.stt);
+        const text = await sttTranscribe(tmpFile, model, language);
         return json(res, { text });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -1721,12 +2058,72 @@ export async function handleApiRequest(
         sttCfg.languages = langs;
         // Remove deprecated language field if present
         delete sttCfg.language;
-        fs.writeFileSync(CONFIG_PATH, yaml.dump(cfg, { lineWidth: -1 }));
+        saveConfigAtomic(cfg, { lineWidth: -1 });
         return json(res, { status: "ok", languages: langs });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return serverError(res, `Failed to update STT config: ${msg}`);
       }
+    }
+
+    // ── TTS (per-message read-aloud) ──────────────────────────
+    // GET /api/tts — engine readiness so the client can pick Kokoro vs the
+    // browser Web Speech fallback WITHOUT a failed POST. Reuses the shared Kokoro
+    // engine (also driving the /talk voice loop); gated on weights + venv present.
+    if (method === "GET" && pathname === "/api/tts") {
+      const { available, voice } = ttsStatus(context.getConfig().talk?.kokoro);
+      return json(res, { available, voice });
+    }
+
+    // POST /api/tts {text} — STREAM one length-prefixed WAV frame per sentence as
+    // each is synthesized, so the client plays sentence 1 while 2..N are still
+    // synthesizing (time-to-first-audio ≈ one sentence, not the whole message).
+    // Frame = 4-byte big-endian length + WAV bytes. 503 {available:false} when
+    // Kokoro can't run (client then falls back to browser Web Speech).
+    if (method === "POST" && pathname === "/api/tts") {
+      const kokoroOpts = context.getConfig().talk?.kokoro;
+      if (!ttsStatus(kokoroOpts).available) {
+        return json(res, { available: false }, 503);
+      }
+      const parsed = await readJsonBody(req, res);
+      if (!parsed.ok) return;
+      const valid = validateTtsText((parsed.body as { text?: unknown } | null)?.text);
+      if (!valid.ok) return badRequest(res, valid.error);
+
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Cache-Control": "no-store",
+        "X-Accel-Buffering": "no", // don't let a proxy buffer the stream
+      });
+      // A client abort (pause / navigate) closes the request → stop synthesizing
+      // the rest of the message instead of wasting Kokoro on audio nobody hears.
+      let cancelled = false;
+      req.on("close", () => {
+        cancelled = true;
+      });
+      try {
+        await streamTtsSentences(
+          valid.text,
+          kokoroOpts,
+          (wav) => {
+            const header = Buffer.allocUnsafe(4);
+            header.writeUInt32BE(wav.length, 0);
+            res.write(header);
+            res.write(wav);
+          },
+          () => cancelled || res.writableEnded,
+        );
+      } catch (err) {
+        logger.warn(`TTS stream failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (!res.writableEnded) res.end();
+      return;
+    }
+
+    // ── Talk (/talk voice loop) ───────────────────────────────
+    if (pathname.startsWith("/api/talk/")) {
+      const handled = await handleTalkApi(req, res, context);
+      if (handled) return;
     }
 
     // /api/files — file upload/download/management
@@ -1743,7 +2140,7 @@ export async function handleApiRequest(
       // Loopback check FIRST — before reading the body — so a non-loopback
       // caller can't force unbounded body buffering by sending a huge POST.
       const remote = req.socket.remoteAddress;
-      if (!remote || !HOOK_LOOPBACK.has(remote)) {
+      if (!isLoopback(remote)) {
         return json(res, { message: "forbidden" }, 403);
       }
       // Reject oversized bodies up front via Content-Length, then enforce
@@ -1948,21 +2345,8 @@ function loadTranscriptMessages(engineSessionId: string): Array<{ role: string; 
     for (const line of lines) {
       try {
         const obj = JSON.parse(line);
-        const type = obj.type;
-        if (type !== "user" && type !== "assistant") continue;
-        const msg = obj.message;
-        if (!msg) continue;
-
-        let content = msg.content;
-        if (Array.isArray(content)) {
-          content = content
-            .filter((b: Record<string, unknown>) => b.type === "text")
-            .map((b: Record<string, unknown>) => b.text)
-            .join("");
-        }
-        if (typeof content === "string" && content.trim()) {
-          messages.push({ role: type, content: content.trim() });
-        }
+        const text = transcriptEntryText(obj);
+        if (text) messages.push(text);
       } catch {
         continue;
       }
@@ -1970,6 +2354,66 @@ function loadTranscriptMessages(engineSessionId: string): Array<{ role: string; 
     return messages;
   }
   return [];
+}
+
+/**
+ * Sources that are NOT backed by an external chat connector. Anything else
+ * (slack, telegram, discord, whatsapp, …) is connector-sourced and its turn
+ * results must be relayed back to the originating channel.
+ */
+const NON_CONNECTOR_SOURCES = new Set(["web", "talk", "cron"]);
+
+/**
+ * Resolve the forwarded SSO identity from request headers, given the configured
+ * `gateway.userHeader` (a single header name or a priority-ordered list). Node
+ * lowercases incoming header keys, so we look up case-insensitively. Returns the
+ * first present, non-empty, trimmed value; `undefined` when the config is unset
+ * or no configured header is present. Unset config = single-user no-op: the
+ * header is never read and the caller falls back to "web-user".
+ */
+export function resolveUserHeader(
+  headers: Record<string, string | string[] | undefined>,
+  userHeaderConfig: string | string[] | undefined,
+): string | undefined {
+  if (!userHeaderConfig) return undefined;
+  const names = Array.isArray(userHeaderConfig) ? userHeaderConfig : [userHeaderConfig];
+  for (const name of names) {
+    if (!name) continue;
+    const raw = headers[name.toLowerCase()];
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) return trimmed;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Relay a completed turn's assistant text back to the connector channel that
+ * originated the session. Inbound connector messages reply via `manager.route`,
+ * but turns completed through `runWebSession` (parent callbacks, cron
+ * follow-ups, rate-limit resumes) otherwise never reach the channel. No-ops for
+ * web/talk/cron sources, empty text, or a missing connector/replyContext; errors
+ * are logged and swallowed so delivery failure never breaks completion.
+ */
+export async function deliverConnectorReply(
+  session: Pick<Session, "source" | "connector" | "replyContext"> & { id?: string },
+  text: string,
+  connectors: Map<string, import("../shared/types.js").Connector>,
+): Promise<void> {
+  if (!text || NON_CONNECTOR_SOURCES.has(session.source)) return;
+  if (!session.connector || !session.replyContext) return;
+  const connector = connectors.get(session.connector);
+  if (!connector) return;
+  try {
+    const target = connector.reconstructTarget(session.replyContext);
+    await connector.replyMessage(target, text);
+  } catch (err) {
+    logger.warn(
+      `Connector reply delivery failed for session ${session.id ?? "?"}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 async function runWebSession(
@@ -1985,6 +2429,26 @@ async function runWebSession(
     logger.info(`Skipping deleted web session ${session.id} before run start`);
     return;
   }
+  config = context.getConfig();
+  const preferredPtyView = context.ptyViewEngines?.[session.engine] === engine;
+  const runtimeEngine =
+    (preferredPtyView ? context.ptyViewEngines?.[currentSession.engine] : undefined)
+    ?? context.sessionManager.getEngine(currentSession.engine);
+  if (!runtimeEngine) {
+    const errMsg = `Engine "${currentSession.engine}" not available`;
+    logger.error(`Web session ${currentSession.id} blocked: ${errMsg}`);
+    insertMessage(currentSession.id, "assistant", `⛔ ${errMsg}`);
+    const erroredSession = updateSession(currentSession.id, {
+      status: "error",
+      lastActivity: new Date().toISOString(),
+      lastError: errMsg,
+    });
+    context.emit("session:completed", { sessionId: currentSession.id, result: null, error: errMsg });
+    maybeEmitTalkGraph(currentSession.id, "completed", { getSession, emit: context.emit });
+    if (erroredSession) notifyParentSession(erroredSession, { error: errMsg });
+    return;
+  }
+  engine = runtimeEngine;
   logger.info(`Web session ${currentSession.id} running engine "${currentSession.engine}" (model: ${currentSession.model || "default"})`);
 
   // Ensure status is "running" (may already be set by the POST handler)
@@ -2005,6 +2469,30 @@ async function runWebSession(
     employee = findEmployee(currentSession.employee, registry);
   }
 
+  // Pre-flight: fail fast with an actionable error if the engine's CLI binary
+  // isn't installed. Otherwise the (interactive PTY) engine spawns a missing
+  // command, exits silently, and the turn produces no output and no error.
+  // We surface it the way runWebSession reports errors and return normally
+  // (throwing here would escape the queue task as an unhandled rejection).
+  if (isKnownEngine(currentSession.engine) && !engineAvailable(config, currentSession.engine)) {
+    const errMsg = engineUnavailableMessage(config, currentSession.engine);
+    logger.error(`Web session ${currentSession.id} blocked: ${errMsg}`);
+    insertMessage(currentSession.id, "assistant", `⛔ ${errMsg}`);
+    const erroredSession = updateSession(currentSession.id, {
+      status: "error",
+      lastActivity: new Date().toISOString(),
+      lastError: errMsg,
+    });
+    context.emit("session:completed", { sessionId: currentSession.id, result: null, error: errMsg });
+    maybeEmitTalkGraph(currentSession.id, "completed", { getSession, emit: context.emit });
+    // Wake the parent COO if this was a delegated child session (parity with
+    // the normal error path; no-op for top-level sessions).
+    if (erroredSession) {
+      notifyParentSession(erroredSession, { error: errMsg }, { alwaysNotify: employee?.alwaysNotify });
+    }
+    return;
+  }
+
   const { scanOrg: scanOrgForHierarchy } = await import("./org.js");
   const { resolveOrgHierarchy } = await import("./org-hierarchy.js");
   const orgHierarchy = resolveOrgHierarchy(scanOrgForHierarchy());
@@ -2012,21 +2500,35 @@ async function runWebSession(
   try {
 
     const systemPrompt = buildContext({
-      source: "web",
+      source: currentSession.source,
       channel: currentSession.sourceRef,
-      user: "web-user",
+      user: currentSession.userId ?? "web-user",
       employee,
       connectors: Array.from(context.connectors.keys()),
       config,
       sessionId: currentSession.id,
       hierarchy: orgHierarchy,
+      // Hands-free voice orchestrator: layer the AURA persona on top of the
+      // base identity so it behaves as the thin voice layer above the COO.
+      voicePersona: currentSession.source === "talk" ? getOrchestratorPersona() : undefined,
+      talkThreads:
+        currentSession.source === "talk"
+          ? listChildSessions(currentSession.id).slice(0, 12).map((c) => ({
+              id: c.id,
+              label: c.title || "(untitled)",
+              status: c.status,
+              lastActivity: c.lastActivity,
+            }))
+          : undefined,
     });
 
-    const engineConfig = currentSession.engine === "codex"
-      ? config.engines.codex
-      : currentSession.engine === "antigravity"
-        ? (config.engines.antigravity ?? {})
-        : config.engines.claude;
+    // Per-engine config is keyed by engine name; unconfigured optional engines
+    // (antigravity/pi) resolve to {} so the engine falls back to dynamic bin/model
+    // resolution. Adding an engine needs no change here.
+    const engineConfig =
+      (config.engines as unknown as Record<string, { bin?: string; model?: string; effortLevel?: string; childEffortOverride?: string } | undefined>)[
+        currentSession.engine
+      ] ?? {};
     const effortLevel = resolveEffort(
       engineConfig,
       currentSession,
@@ -2050,6 +2552,54 @@ async function runWebSession(
       });
     }, 5000);
 
+    // Mid-turn persistence: mirror the live stream into `partial` DB rows so a
+    // refresh restores in-progress blocks. Coalesced — text grows ONE row
+    // (debounced, never per-token, so SQLite isn't hammered); each tool call is
+    // its own row. All wiped + replaced by the single final message at turn end
+    // (deletePartialMessages below). Only the primary engine stream is mirrored;
+    // the rate-limit fallback stream stays WS-only (rare path).
+    let partialSeq = 0;
+    let curTextId: string | null = null; // the growing text-block row, null between blocks
+    let curText = "";
+    let lastToolId: string | null = null; // last tool row, for the tool_result → "Used" update
+    let lastToolName: string | null = null;
+    let partialFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushPartialText = () => {
+      partialFlushTimer = null;
+      if (!curText.trim()) return;
+      if (curTextId) updatePartialMessage(curTextId, curText);
+      else curTextId = insertPartialMessage(currentSession.id, "assistant", curText, partialSeq++);
+    };
+    const persistPartialDelta = (delta: StreamDelta) => {
+      if (delta.type === "text" || delta.type === "text_snapshot") {
+        if (typeof delta.content !== "string") return;
+        if (delta.type === "text_snapshot") {
+          if (delta.content.length > curText.length) curText = delta.content;
+        } else {
+          curText += delta.content;
+        }
+        if (!partialFlushTimer) partialFlushTimer = setTimeout(flushPartialText, 600);
+      } else if (delta.type === "tool_use") {
+        flushPartialText(); // finalize the text block before the tool
+        if (partialFlushTimer) { clearTimeout(partialFlushTimer); partialFlushTimer = null; }
+        const tool = delta.toolName || String(delta.content ?? "");
+        lastToolName = tool;
+        lastToolId = insertPartialMessage(currentSession.id, "assistant", `Using ${tool}`, partialSeq++, tool);
+        curTextId = null; curText = ""; // a fresh text block begins after the tool
+      } else if (delta.type === "tool_result") {
+        const tool = delta.toolName || lastToolName || String(delta.content ?? "");
+        if (lastToolId) updatePartialMessage(lastToolId, `Used ${tool}`);
+      } else if (delta.type === "block" && delta.block) {
+        flushPartialText();
+        if (partialFlushTimer) { clearTimeout(partialFlushTimer); partialFlushTimer = null; }
+        applyBlockEnvelope(currentSession.id, delta.block, delta.content, {
+          partial: true,
+          seq: partialSeq++,
+        });
+        curTextId = null; curText = "";
+      }
+    };
+
     const syncSinceIso = (currentSession.transportMeta as any)?.claudeSyncSince;
     const syncSinceMs = typeof syncSinceIso === "string" ? new Date(syncSinceIso).getTime() : NaN;
     const syncRequested = currentSession.engine === "claude" && typeof syncSinceIso === "string" && Number.isFinite(syncSinceMs);
@@ -2063,6 +2613,7 @@ async function runWebSession(
       })()
       : prompt;
 
+    const turnStartedAt = Date.now();
     const result = await engine.run({
       prompt: promptToRun,
       resumeSessionId: currentSession.engineSessionId ?? undefined,
@@ -2079,14 +2630,20 @@ async function runWebSession(
         // Same guard as runHeartbeat: a delta may arrive after the user
         // deleted the session; don't resurrect registry state for it.
         if (!getSession(currentSession.id)) return;
+        const normalized = normalizeBlockDeltaForTurn(delta, turnStartedAt);
+        if (!normalized.ok) {
+          logger.warn(`Dropped invalid block delta for session ${currentSession.id}: ${normalized.error}`);
+          return;
+        }
+        const outgoingDelta = normalized.delta;
         // Live context-meter: message_start.usage arrives as a `context` delta
         // (once per assistant message — infrequent). Persist it immediately so the
         // meter ticks during the turn, not just at completion. The delta also flows
         // to the FE below for an instant in-pane update.
-        if (delta.type === "context" && !delta.subAgent) {
-          // Only the MAIN agent's usage drives the session meter; a sub-agent's
-          // message_start.usage must not overwrite the main session's context count.
-          const ctx = Number(delta.content);
+        if (outgoingDelta.type === "context") {
+          // Only the MAIN agent's stream reaches here (the proxy suppresses
+          // sub-agent/auxiliary streams), so its usage drives the session meter.
+          const ctx = Number(outgoingDelta.content);
           if (Number.isFinite(ctx) && ctx > 0) {
             updateSession(currentSession.id, { lastContextTokens: ctx });
           }
@@ -2102,18 +2659,72 @@ async function runWebSession(
         try {
           context.emit("session:delta", {
             sessionId: currentSession.id,
-            type: delta.type,
-            content: delta.content,
-            toolName: delta.toolName,
-            toolId: delta.toolId,
-            subAgent: delta.subAgent,
+            type: outgoingDelta.type,
+            content: outgoingDelta.content,
+            toolName: outgoingDelta.toolName,
+            toolId: outgoingDelta.toolId,
+            input: outgoingDelta.input,
+            block: outgoingDelta.block,
           });
         } catch (err) {
           logger.warn(`Failed to emit stream delta for session ${currentSession.id}: ${err instanceof Error ? err.message : err}`);
         }
+        // Mirror the block into a persisted partial row (refresh survival). Guarded
+        // so a DB hiccup never breaks the live stream above.
+        try {
+          persistPartialDelta(outgoingDelta);
+        } catch (err) {
+          logger.warn(`Failed to persist partial block for session ${currentSession.id}: ${err instanceof Error ? err.message : err}`);
+        }
+        // Voice mode: stream the orchestrator's spoken text — complete sentences
+        // synthesize immediately (per-sentence streaming); the flush at completion
+        // speaks the remainder. Only `text` deltas are spoken; tool_use/context
+        // are not. Skip entirely when the client is muted (silent/read mode) —
+        // there's no point buffering or synthesizing audio the browser will discard.
+        if (
+          currentSession.source === "talk" &&
+          !isTalkMuted(currentSession.id) &&
+          outgoingDelta.type === "text" &&
+          typeof outgoingDelta.content === "string"
+        ) {
+          feedTalkText(currentSession.id, outgoingDelta.content, config.talk?.kokoro, context.emit);
+        }
+      },
+      // A turn that settled as failed but whose CLI later finished delivers the
+      // recovered text here. Append it and restore a clean idle status — unless
+      // the session is gone or a NEW turn owns it (status back to "running").
+      onLateRecovery: ({ result: lateText, sessionId: engineSid }) => {
+        const live = getSession(currentSession.id);
+        if (!live || live.status === "running") return;
+        insertMessage(currentSession.id, "assistant", lateText);
+        const recovered = updateSession(currentSession.id, {
+          ...(engineSid.trim() ? { engineSessionId: engineSid } : {}),
+          status: "idle",
+          lastActivity: new Date().toISOString(),
+          lastError: null,
+        });
+        // The parent/channel already saw this turn fail — label the late answer
+        // so it reads as a supersede, not a fresh unprompted turn.
+        const labelled = `(recovered — this supersedes the earlier reported failure)\n\n${lateText}`;
+        if (recovered) {
+          notifyParentSession(recovered, { result: labelled, error: null }, { alwaysNotify: employee?.alwaysNotify });
+          void deliverConnectorReply(recovered, labelled, context.connectors);
+        }
+        context.emit("session:completed", {
+          sessionId: currentSession.id,
+          employee: currentSession.employee || config.portal?.portalName || "Jinn",
+          title: currentSession.title,
+          result: lateText,
+          error: null,
+        });
+        logger.info(`Web session ${currentSession.id} recovered by late Stop after a failed turn`);
       },
     }).finally(() => {
       clearInterval(runHeartbeat);
+      // Stop any pending debounced text flush so it can't re-insert a partial row
+      // after the turn-end cleanup below deletes them.
+      if (partialFlushTimer) { clearTimeout(partialFlushTimer); partialFlushTimer = null; }
+      flushPartialText();
     });
 
     if (!getSession(currentSession.id)) {
@@ -2122,15 +2733,52 @@ async function runWebSession(
     }
 
     const wasInterrupted = result.error?.startsWith("Interrupted");
-    const rateLimit = !wasInterrupted ? detectRateLimit(result) : { limited: false as const };
+    const wasSuperseded = !wasInterrupted && isTurnSuperseded(currentSession.id, turnStartedAt);
+    const quietPreempted = wasInterrupted || wasSuperseded;
+
+    // Turn settled. Mid-turn rows are refresh-only, including tool rows: durable
+    // chat history collapses to the final assistant message. If the turn was
+    // preempted by a newer user message, drop stale partials/results so the old
+    // assistant answer cannot land after the new user bubble.
+    const streamedBlocks = getMessages(currentSession.id).filter((m) => m.partial);
+    const finalBlocksById = new Map<string, ChatBlock>();
+    for (const message of streamedBlocks) {
+      for (const block of message.blocks ?? []) {
+        finalBlocksById.set(block.id, block);
+      }
+    }
+    const allStreamedBlocks = [...finalBlocksById.values()];
+    const preserveStreamedBlocks = shouldPreserveStreamedBlocks({ quietPreempted, streamedBlocks });
+    const preservedBlockIds = new Set<string>(
+      preserveStreamedBlocks
+        ? streamedBlocks
+          .flatMap((message) => (message.blocks ?? []).map((block) => block.id))
+        : [],
+    );
+    const finalBlocks = finalBlocksForAssistantMessage(allStreamedBlocks, preservedBlockIds);
+    const resultAlreadyPersisted = preserveStreamedBlocks && resultAlreadyInStreamedBlocks(result.result, streamedBlocks);
+    if (preserveStreamedBlocks) finalizePartialMessages(currentSession.id);
+    else deletePartialMessages(currentSession.id);
+
+    const rateLimit = !quietPreempted ? detectRateLimit(result) : { limited: false as const };
 
     if (rateLimit.limited) {
+      // Drop any buffered voice text — we won't speak a rate-limited turn.
+      if (currentSession.source === "talk") discardTalkSpeech(currentSession.id);
       const emitDelta = (delta: StreamDelta) => {
+        const normalized = normalizeBlockDeltaForTurn(delta, turnStartedAt);
+        if (!normalized.ok) {
+          logger.warn(`Dropped invalid rate-limit block delta for session ${currentSession.id}: ${normalized.error}`);
+          return;
+        }
+        const outgoingDelta = normalized.delta;
         context.emit("session:delta", {
           sessionId: currentSession.id,
-          type: delta.type,
-          content: delta.content,
-          toolName: delta.toolName,
+          type: outgoingDelta.type,
+          content: outgoingDelta.content,
+          toolName: outgoingDelta.toolName,
+          toolId: outgoingDelta.toolId,
+          block: outgoingDelta.block,
         });
       };
 
@@ -2160,6 +2808,14 @@ async function runWebSession(
             notifyDiscordChannel(
               `⚠️ Claude usage limit reached. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} switching to GPT.`,
             );
+
+            // Switching away from Claude — drop any warm Claude PTY AND its armed
+            // late-recovery listener so the abandoned claude turn can't double-answer
+            // after the GPT fallback delivers.
+            const claudeEngine = context.sessionManager.getEngines().get("claude");
+            if (claudeEngine && isInterruptibleEngine(claudeEngine)) {
+              claudeEngine.kill(currentSession.id, "Interrupted: engine switched");
+            }
           },
           onFallbackStream: emitDelta,
           onFallbackComplete: (fallbackResult) => {
@@ -2175,6 +2831,8 @@ async function runWebSession(
             });
             if (completedFallback) {
               notifyParentSession(completedFallback, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+              // Relay the fallback turn to the originating connector channel (#51).
+              if (fallbackResult.result) void deliverConnectorReply(completedFallback, fallbackResult.result, context.connectors);
             }
 
             context.emit("session:completed", {
@@ -2186,6 +2844,7 @@ async function runWebSession(
               cost: fallbackResult.cost,
               durationMs: fallbackResult.durationMs,
             });
+            maybeEmitTalkGraph(currentSession.id, "completed", { getSession, emit: context.emit });
           },
           onWaitingStart: ({ resumeAt }) => {
             const resumeText = resumeAt
@@ -2237,6 +2896,8 @@ async function runWebSession(
                 `✅ Claude usage limit cleared. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} resumed.`,
               );
               notifyParentSession(completedAfterRetry, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+              // Relay the resumed (rate-limit-cleared) turn to the originating connector channel (#51).
+              if (retryResult.result) void deliverConnectorReply(completedAfterRetry, retryResult.result, context.connectors);
             }
 
             context.emit("session:completed", {
@@ -2248,6 +2909,7 @@ async function runWebSession(
               cost: retryResult.cost,
               durationMs: retryResult.durationMs,
             });
+            maybeEmitTalkGraph(currentSession.id, "completed", { getSession, emit: context.emit });
           },
           onTimeout: () => {
             notifyDiscordChannel(
@@ -2266,6 +2928,7 @@ async function runWebSession(
               result: null,
               error: "Claude usage limit did not clear in time",
             });
+            maybeEmitTalkGraph(currentSession.id, "completed", { getSession, emit: context.emit });
           },
         },
       });
@@ -2275,8 +2938,22 @@ async function runWebSession(
     }
 
     // Persist the assistant response
-    if (result.result) {
-      insertMessage(currentSession.id, "assistant", result.result);
+    if (shouldPersistFinalAssistantMessage({
+      resultText: result.result,
+      finalBlockCount: finalBlocks.length,
+      resultAlreadyPersisted,
+      quietPreempted,
+    })) {
+      insertMessage(currentSession.id, "assistant", result.result, undefined, finalBlocks.length > 0 ? finalBlocks : undefined);
+    }
+
+    // Voice mode: flush the remainder of the turn's spoken text (final chunk,
+    // carries last:true). Fire-and-forget so completion isn't blocked on audio.
+    // Discard (don't synthesize) on a half-finished interrupt OR when the client
+    // is muted — the browser plays nothing in silent mode.
+    if (currentSession.source === "talk") {
+      if (quietPreempted || isTalkMuted(currentSession.id)) discardTalkSpeech(currentSession.id);
+      else void flushTalkSpeech(currentSession.id, config.talk?.kokoro, context.emit);
     }
 
     const completedSession = updateSession(currentSession.id, {
@@ -2286,11 +2963,14 @@ async function runWebSession(
       // with no lastError, mirroring the connector path (manager.ts). Otherwise the
       // session would stick in "error" with a misleading "Interrupted" message and
       // fire a false parent-callback failure when the interrupt is the last action.
-      status: wasInterrupted ? "idle" : (result.error ? "error" : "idle"),
+      status: quietPreempted ? "idle" : (result.error ? "error" : "idle"),
       lastActivity: new Date().toISOString(),
-      lastError: wasInterrupted ? null : (result.error ?? null),
+      lastError: quietPreempted ? null : (result.error ?? null),
     });
-    if (syncRequested && !rateLimit.limited && !wasInterrupted) {
+    if (!quietPreempted && currentSession.engine === "claude") {
+      markTranscriptSyncedThrough(currentSession.id, result.sessionId);
+    }
+    if (syncRequested && !rateLimit.limited && !quietPreempted) {
       const meta = (getSession(currentSession.id)?.transportMeta || currentSession.transportMeta || {}) as Record<string, unknown>;
       if (meta && typeof meta === "object" && !Array.isArray(meta)) {
         const nextMeta = { ...meta } as Record<string, unknown>;
@@ -2298,20 +2978,29 @@ async function runWebSession(
         updateSession(currentSession.id, { transportMeta: nextMeta as any });
       }
     }
-    const reportedError = wasInterrupted ? null : (result.error ?? null);
-    if (completedSession) {
+    clearSupersededTurnMeta(currentSession.id);
+    const reportedError = quietPreempted ? null : (result.error ?? null);
+    if (completedSession && !quietPreempted) {
       notifyParentSession(completedSession, { result: result.result, error: reportedError, cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+    }
+
+    // Relay the turn back to the originating connector channel (#51). Only
+    // connector-sourced sessions reaching this path (parent callbacks, cron
+    // follow-ups) deliver; web/talk/cron + interrupted turns no-op.
+    if (completedSession && !quietPreempted && result.result) {
+      await deliverConnectorReply(completedSession, result.result, context.connectors);
     }
 
     context.emit("session:completed", {
       sessionId: currentSession.id,
       employee: currentSession.employee || config.portal?.portalName || "Jinn",
       title: currentSession.title,
-      result: result.result,
+      result: quietPreempted ? null : result.result,
       error: reportedError,
       cost: result.cost,
       durationMs: result.durationMs,
     });
+    maybeEmitTalkGraph(currentSession.id, "completed", { getSession, emit: context.emit });
 
     logger.info(
       `Web session ${currentSession.id} completed` +
@@ -2324,6 +3013,8 @@ async function runWebSession(
       logger.info(`Skipping error handling for deleted web session ${currentSession.id}: ${errMsg}`);
       return;
     }
+    // The run threw — drop any orphaned mid-turn partial blocks.
+    deletePartialMessages(currentSession.id);
     const erroredSession = updateSession(currentSession.id, {
       status: "error",
       lastActivity: new Date().toISOString(),
@@ -2337,6 +3028,7 @@ async function runWebSession(
       result: null,
       error: errMsg,
     });
+    maybeEmitTalkGraph(currentSession.id, "completed", { getSession, emit: context.emit });
     logger.error(`Web session ${currentSession.id} error: ${errMsg}`);
   }
 }

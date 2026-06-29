@@ -12,14 +12,14 @@ vi.mock('@/components/ui/employee-avatar', () => ({
 }))
 
 const mockEmployees = [
-  { name: 'jimmy-dev', displayName: 'Jimmy Dev', department: 'platform', rank: 'senior' as const },
-  { name: 'pravko-lead', displayName: 'Pravko Lead', department: 'pravko', rank: 'manager' as const },
-  { name: 'pravko-writer', displayName: 'Pravko Writer', department: 'pravko', rank: 'employee' as const },
-  { name: 'homy-lead', displayName: 'Homy Lead', department: 'homy', rank: 'manager' as const },
-  { name: 'homy-writer', displayName: 'Homy Writer', department: 'homy', rank: 'employee' as const },
-  { name: 'sqlnoir-lead', displayName: 'SQLNoir Lead', department: 'sqlnoir', rank: 'manager' as const },
-  { name: 'spycam-lead', displayName: 'SpyCam Lead', department: 'spycam', rank: 'manager' as const },
-  { name: 'movekit-lead', displayName: 'MoveKit Lead', department: 'movekit', rank: 'senior' as const },
+  { name: 'lead-developer', displayName: 'Lead Developer', department: 'platform', rank: 'senior' as const },
+  { name: 'content-lead', displayName: 'Content Lead', department: 'content', rank: 'manager' as const },
+  { name: 'content-writer', displayName: 'Content Writer', department: 'content', rank: 'employee' as const },
+  { name: 'demo-lead', displayName: 'Demo Lead', department: 'demo', rank: 'manager' as const },
+  { name: 'demo-writer', displayName: 'Demo Writer', department: 'demo', rank: 'employee' as const },
+  { name: 'acme-lead', displayName: 'Acme Lead', department: 'acme', rank: 'manager' as const },
+  { name: 'labs-lead', displayName: 'Labs Lead', department: 'labs', rank: 'manager' as const },
+  { name: 'studio-lead', displayName: 'Studio Lead', department: 'studio', rank: 'senior' as const },
   { name: 'reddit-scout', displayName: 'Reddit Scout', department: 'marketing', rank: 'employee' as const },
 ]
 
@@ -50,7 +50,7 @@ describe('ChatEmployeePicker', () => {
     render(
       <ChatEmployeePicker
         employees={mockEmployees}
-        selectedEmployee="jimmy-dev"
+        selectedEmployee="lead-developer"
         onSelect={onChange}
         portalName="Jinn"
       />
@@ -72,9 +72,9 @@ describe('ChatEmployeePicker', () => {
     )
     // Department headers should be present
     expect(screen.getByText('platform')).toBeDefined()
-    expect(screen.getByText('pravko')).toBeDefined()
-    expect(screen.getByText('homy')).toBeDefined()
-    expect(screen.getByText('sqlnoir')).toBeDefined()
+    expect(screen.getByText('content')).toBeDefined()
+    expect(screen.getByText('demo')).toBeDefined()
+    expect(screen.getByText('acme')).toBeDefined()
     expect(screen.getByText('marketing')).toBeDefined()
   })
 
@@ -88,10 +88,10 @@ describe('ChatEmployeePicker', () => {
       />
     )
     // All employees should be visible (no more/less toggle)
-    expect(screen.getByText('Jimmy Dev')).toBeDefined()
-    expect(screen.getByText('Pravko Lead')).toBeDefined()
-    expect(screen.getByText('Pravko Writer')).toBeDefined()
-    expect(screen.getByText('Homy Lead')).toBeDefined()
+    expect(screen.getByText('Lead Developer')).toBeDefined()
+    expect(screen.getByText('Content Lead')).toBeDefined()
+    expect(screen.getByText('Content Writer')).toBeDefined()
+    expect(screen.getByText('Demo Lead')).toBeDefined()
     expect(screen.getByText('Reddit Scout')).toBeDefined()
   })
 
@@ -106,15 +106,15 @@ describe('ChatEmployeePicker', () => {
         portalName="Jinn"
       />
     )
-    fireEvent.click(screen.getByText('Jimmy Dev'))
-    expect(onChange).toHaveBeenCalledWith('jimmy-dev')
+    fireEvent.click(screen.getByText('Lead Developer'))
+    expect(onChange).toHaveBeenCalledWith('lead-developer')
   })
 
   it('shows selected state on the chosen employee', () => {
     render(
       <ChatEmployeePicker
         employees={mockEmployees}
-        selectedEmployee="jimmy-dev"
+        selectedEmployee="lead-developer"
         onSelect={onChange}
         portalName="Jinn"
       />
@@ -123,17 +123,17 @@ describe('ChatEmployeePicker', () => {
     const cooRow = screen.getByRole('option', { name: /jinn/i })
     expect(cooRow.getAttribute('aria-selected')).toBe('false')
 
-    // Jimmy Dev should be selected
-    const jimmyRow = screen.getAllByRole('option').find(
-      el => el.textContent?.includes('Jimmy Dev')
+    // Lead Developer should be selected
+    const devRow = screen.getAllByRole('option').find(
+      el => el.textContent?.includes('Lead Developer')
     )
-    expect(jimmyRow).toBeDefined()
-    expect(jimmyRow!.getAttribute('aria-selected')).toBe('true')
+    expect(devRow).toBeDefined()
+    expect(devRow!.getAttribute('aria-selected')).toBe('true')
   })
 
-  // --- Search / filter ---
+  // --- Search reveal / collapse (picker, not composer) ---
 
-  it('has a search input that filters employees by name', () => {
+  it('hides the search field by default — shows a magnifier button instead', () => {
     render(
       <ChatEmployeePicker
         employees={mockEmployees}
@@ -142,14 +142,98 @@ describe('ChatEmployeePicker', () => {
         portalName="Jinn"
       />
     )
-    const searchInput = screen.getByPlaceholderText(/search/i)
-    expect(searchInput).toBeDefined()
+    // No prominent text input at rest (so it can't be mistaken for the composer)
+    expect(screen.queryByPlaceholderText(/filter|search/i)).toBeNull()
+    // A quiet magnifier action button is present
+    expect(screen.getByRole('button', { name: /search employees/i })).toBeDefined()
+  })
 
-    fireEvent.change(searchInput, { target: { value: 'jimmy' } })
-    // Only Jimmy Dev should be visible
-    expect(screen.getByText('Jimmy Dev')).toBeDefined()
-    expect(screen.queryByText('Pravko Lead')).toBeNull()
-    expect(screen.queryByText('Homy Lead')).toBeNull()
+  it('reveals the search field when the magnifier button is clicked', () => {
+    render(
+      <ChatEmployeePicker
+        employees={mockEmployees}
+        selectedEmployee={null}
+        onSelect={onChange}
+        portalName="Jinn"
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /search employees/i }))
+    expect(screen.getByPlaceholderText(/filter|search/i)).toBeDefined()
+  })
+
+  it('auto-reveals the search field seeded with the typed character', () => {
+    render(
+      <ChatEmployeePicker
+        employees={mockEmployees}
+        selectedEmployee={null}
+        onSelect={onChange}
+        portalName="Jinn"
+      />
+    )
+    const listbox = screen.getByRole('listbox')
+    // Power-user type-to-filter: start typing on the clean list
+    fireEvent.keyDown(listbox, { key: 'd' })
+    const searchInput = screen.getByPlaceholderText(/filter|search/i) as HTMLInputElement
+    expect(searchInput.value).toBe('d')
+    // And it actually filters
+    fireEvent.change(searchInput, { target: { value: 'developer' } })
+    expect(screen.getByText('Lead Developer')).toBeDefined()
+    expect(screen.queryByText('Content Lead')).toBeNull()
+  })
+
+  it('opens the search field on "/" without seeding a slash', () => {
+    render(
+      <ChatEmployeePicker
+        employees={mockEmployees}
+        selectedEmployee={null}
+        onSelect={onChange}
+        portalName="Jinn"
+      />
+    )
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: '/' })
+    const searchInput = screen.getByPlaceholderText(/filter|search/i) as HTMLInputElement
+    expect(searchInput.value).toBe('')
+  })
+
+  it('collapses the search field back to the clean list on Escape', () => {
+    render(
+      <ChatEmployeePicker
+        employees={mockEmployees}
+        selectedEmployee={null}
+        onSelect={onChange}
+        portalName="Jinn"
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /search employees/i }))
+    const searchInput = screen.getByPlaceholderText(/filter|search/i)
+    fireEvent.change(searchInput, { target: { value: 'demo' } })
+    fireEvent.keyDown(searchInput, { key: 'Escape' })
+
+    // Field gone, magnifier back, full list restored
+    expect(screen.queryByPlaceholderText(/filter|search/i)).toBeNull()
+    expect(screen.getByRole('button', { name: /search employees/i })).toBeDefined()
+    expect(screen.getByText('Lead Developer')).toBeDefined()
+  })
+
+  // --- Search / filter ---
+
+  it('filters employees by name once the search is revealed', () => {
+    render(
+      <ChatEmployeePicker
+        employees={mockEmployees}
+        selectedEmployee={null}
+        onSelect={onChange}
+        portalName="Jinn"
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /search employees/i }))
+    const searchInput = screen.getByPlaceholderText(/filter|search/i)
+
+    fireEvent.change(searchInput, { target: { value: 'developer' } })
+    // Only Lead Developer should be visible
+    expect(screen.getByText('Lead Developer')).toBeDefined()
+    expect(screen.queryByText('Content Lead')).toBeNull()
+    expect(screen.queryByText('Demo Lead')).toBeNull()
   })
 
   it('filters employees by department name', () => {
@@ -161,14 +245,15 @@ describe('ChatEmployeePicker', () => {
         portalName="Jinn"
       />
     )
-    const searchInput = screen.getByPlaceholderText(/search/i)
-    fireEvent.change(searchInput, { target: { value: 'pravko' } })
+    fireEvent.click(screen.getByRole('button', { name: /search employees/i }))
+    const searchInput = screen.getByPlaceholderText(/filter|search/i)
+    fireEvent.change(searchInput, { target: { value: 'content' } })
 
-    // Both pravko employees should be visible
-    expect(screen.getByText('Pravko Lead')).toBeDefined()
-    expect(screen.getByText('Pravko Writer')).toBeDefined()
+    // Both content employees should be visible
+    expect(screen.getByText('Content Lead')).toBeDefined()
+    expect(screen.getByText('Content Writer')).toBeDefined()
     // Others should not
-    expect(screen.queryByText('Jimmy Dev')).toBeNull()
+    expect(screen.queryByText('Lead Developer')).toBeNull()
   })
 
   it('shows empty state when search matches nothing', () => {
@@ -180,7 +265,8 @@ describe('ChatEmployeePicker', () => {
         portalName="Jinn"
       />
     )
-    const searchInput = screen.getByPlaceholderText(/search/i)
+    fireEvent.click(screen.getByRole('button', { name: /search employees/i }))
+    const searchInput = screen.getByPlaceholderText(/filter|search/i)
     fireEvent.change(searchInput, { target: { value: 'zzzzzzz' } })
 
     expect(screen.getByText(/no employees/i)).toBeDefined()
@@ -195,8 +281,9 @@ describe('ChatEmployeePicker', () => {
         portalName="Jinn"
       />
     )
-    const searchInput = screen.getByPlaceholderText(/search/i)
-    fireEvent.change(searchInput, { target: { value: 'jimmy' } })
+    fireEvent.click(screen.getByRole('button', { name: /search employees/i }))
+    const searchInput = screen.getByPlaceholderText(/filter|search/i)
+    fireEvent.change(searchInput, { target: { value: 'developer' } })
 
     // COO always visible
     expect(screen.getByRole('option', { name: /jinn/i })).toBeDefined()
@@ -246,8 +333,8 @@ describe('ChatEmployeePicker', () => {
         portalName="Jinn"
       />
     )
-    expect(screen.getByTestId('avatar-jimmy-dev')).toBeDefined()
-    expect(screen.getByTestId('avatar-pravko-lead')).toBeDefined()
+    expect(screen.getByTestId('avatar-lead-developer')).toBeDefined()
+    expect(screen.getByTestId('avatar-content-lead')).toBeDefined()
   })
 
   // --- Keyboard navigation ---
@@ -266,7 +353,25 @@ describe('ChatEmployeePicker', () => {
     // Arrow down once from COO → first employee
     fireEvent.keyDown(listbox, { key: 'ArrowDown' })
     fireEvent.keyDown(listbox, { key: 'Enter' })
-    expect(onChange).toHaveBeenCalledWith('jimmy-dev')
+    expect(onChange).toHaveBeenCalledWith('lead-developer')
+  })
+
+  it('keeps arrow/enter navigation working while the search field is open', () => {
+    render(
+      <ChatEmployeePicker
+        employees={mockEmployees}
+        selectedEmployee={null}
+        onSelect={onChange}
+        portalName="Jinn"
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /search employees/i }))
+    const searchInput = screen.getByPlaceholderText(/filter|search/i)
+
+    // Arrow down once from COO → first employee, Enter selects — all from the field
+    fireEvent.keyDown(searchInput, { key: 'ArrowDown' })
+    fireEvent.keyDown(searchInput, { key: 'Enter' })
+    expect(onChange).toHaveBeenCalledWith('lead-developer')
   })
 
   it('ArrowUp from first employee goes to COO', () => {

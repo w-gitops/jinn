@@ -13,6 +13,7 @@ import {
   accumulateSessionCost,
   createSession,
   deleteSession,
+  getSession,
   getSessionBySessionKey,
   getMessages,
   insertMessage,
@@ -24,12 +25,13 @@ import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
-import { effortLevelsForModel } from "../shared/models.js";
+import { effortLevelsForModel, engineAvailable, isKnownEngine, engineUnavailableMessage } from "../shared/models.js";
 import { detectRateLimit, isDeadSessionError } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit } from "../shared/usageAwareness.js";
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
 import { checkBudget } from "../gateway/budgets.js";
+import { markTranscriptSyncedThrough } from "../gateway/external-turns.js";
 import { resolveMcpServers, writeMcpConfigFile, cleanupMcpConfigFile } from "../mcp/resolver.js";
 import { handleRateLimit } from "./rate-limit-handler.js";
 
@@ -83,7 +85,7 @@ function maybeRevertEngineOverride(session: Session): Session {
   }) ?? session;
 }
 
-function mergeTransportMeta(
+export function mergeTransportMeta(
   existing: Session["transportMeta"],
   incoming: IncomingMessage["transportMeta"],
 ): Session["transportMeta"] {
@@ -97,7 +99,7 @@ function mergeTransportMeta(
   const merged: Record<string, unknown> = { ...baseExisting, ...baseIncoming };
 
   // Preserve Jinn internal keys from being overwritten by transport adapters.
-  for (const key of ["engineOverride", "engineSessions", "claudeSyncSince"]) {
+  for (const key of ["engineOverride", "engineSessions", "claudeSyncSince", "transcriptSyncedThrough"]) {
     if (baseExisting[key] !== undefined) merged[key] = baseExisting[key];
   }
 
@@ -123,6 +125,10 @@ export class SessionManager {
 
   setConnectorProvider(provider: () => Map<string, Connector>): void {
     this.connectorProvider = provider;
+  }
+
+  setConfig(config: JinnConfig): void {
+    this.config = config;
   }
 
   getEngine(name: string): Engine | undefined {
@@ -153,6 +159,7 @@ export class SessionManager {
         transportMeta: msg.transportMeta,
         employee: opts.employee?.name ?? undefined,
         model: opts.model ?? opts.employee?.model ?? undefined,
+        effortLevel: opts.employee?.effortLevel ?? undefined,
         title: opts.title,
         prompt: msg.text,
         portalName: this.config.portal?.portalName,
@@ -172,6 +179,7 @@ export class SessionManager {
     }
 
     session = maybeRevertEngineOverride(session);
+    this.queue.clearCancelled(msg.sessionKey);
 
     const target = connector.reconstructTarget(msg.replyContext);
     target.messageTs ??= msg.messageId;
@@ -212,6 +220,13 @@ export class SessionManager {
     target: Target,
     employee?: Employee,
   ): Promise<void> {
+    const liveSession = getSession(session.id);
+    if (!liveSession) {
+      logger.warn(`Skipping queued turn for deleted session ${session.id}`);
+      return;
+    }
+    session = liveSession;
+
     const engine = this.engines.get(session.engine);
     if (!engine) {
       logger.error(`Engine "${session.engine}" not found for session ${session.id}`);
@@ -220,6 +235,27 @@ export class SessionManager {
     }
 
     insertMessage(session.id, "user", msg.text);
+
+    // Pre-flight: fail fast with an actionable error if the engine's CLI binary
+    // isn't installed. Otherwise the (interactive PTY) engine spawns a missing
+    // command, exits silently, and the turn produces no output and no error.
+    if (isKnownEngine(session.engine) && !engineAvailable(this.config, session.engine)) {
+      const errMsg = engineUnavailableMessage(this.config, session.engine);
+      logger.error(`Session ${session.id} blocked: ${errMsg}`);
+      const erroredSession = updateSession(session.id, {
+        status: "error",
+        lastActivity: new Date().toISOString(),
+        lastError: errMsg,
+      });
+      insertMessage(session.id, "assistant", `⛔ ${errMsg}`);
+      await connector.replyMessage(target, `⛔ ${errMsg}`).catch(() => {});
+      // Wake the parent COO if this was a delegated child session (parity with
+      // the normal error path; no-op for top-level sessions).
+      if (erroredSession) {
+        notifyParentSession(erroredSession, { error: errMsg }, { alwaysNotify: employee?.alwaysNotify });
+      }
+      return;
+    }
 
     const capabilities = connector.getCapabilities();
     const decorateMessages = session.source !== "cron";
@@ -233,14 +269,6 @@ export class SessionManager {
     if (decorateMessages && connector.setTypingStatus) {
       await connector.setTypingStatus(target.channel, threadTs, "is thinking...").catch(() => {});
     }
-
-    updateSession(session.id, {
-      status: "running",
-      replyContext: msg.replyContext,
-      messageId: msg.messageId ?? null,
-      transportMeta: mergeTransportMeta(session.transportMeta, msg.transportMeta),
-      lastActivity: new Date().toISOString(),
-    });
 
     // Resolve MCP config before try block so it's accessible in catch for cleanup
     let mcpConfigPath: string | undefined;
@@ -266,11 +294,12 @@ export class SessionManager {
         hierarchy,
       });
 
-      const engineConfig = session.engine === "codex"
-        ? this.config.engines.codex
-        : session.engine === "antigravity"
-          ? (this.config.engines.antigravity ?? {})
-          : this.config.engines.claude;
+      // Per-engine config keyed by engine name; unconfigured optional engines
+      // resolve to {} (engine falls back to dynamic bin/model resolution).
+      const engineConfig =
+        (this.config.engines as unknown as Record<string, { bin?: string; model?: string; effortLevel?: string; childEffortOverride?: string } | undefined>)[
+          session.engine
+        ] ?? {};
       if (session.engine === "claude") {
         const mcpConfig = resolveMcpServers(this.config.mcp, employee);
         if (Object.keys(mcpConfig.mcpServers).length > 0) {
@@ -284,6 +313,17 @@ export class SessionManager {
         employee,
         effortLevelsForModel(this.config, session.engine, session.model ?? undefined),
       );
+
+      // Mark running only after preflight (system prompt / engine config / effort)
+      // succeeded — and inside the try, so any failure transitions to "error" in the
+      // catch below instead of leaving the session stuck looking "running".
+      updateSession(session.id, {
+        status: "running",
+        replyContext: msg.replyContext,
+        messageId: msg.messageId ?? null,
+        transportMeta: mergeTransportMeta(session.transportMeta, msg.transportMeta),
+        lastActivity: new Date().toISOString(),
+      });
 
       // If we previously switched to GPT while Claude was rate-limited, inject a sync transcript
       // so Claude can resume with full context when it comes back online.
@@ -357,8 +397,23 @@ export class SessionManager {
         attachments: attachments.length > 0 ? attachments : undefined,
         sessionId: session.id,
         source: session.source,
-        employeeName: employee?.name ?? session.employee ?? undefined,
-        department: employee?.department,
+        onLateRecovery: ({ result: lateText, sessionId: engineSid }) => {
+          const live = getSession(session.id);
+          if (!live || live.status === "running") return;
+          insertMessage(session.id, "assistant", lateText);
+          const recovered = updateSession(session.id, {
+            ...(engineSid.trim() ? { engineSessionId: engineSid } : {}),
+            status: "idle",
+            lastActivity: new Date().toISOString(),
+            lastError: null,
+          });
+          // The parent/channel already saw this turn fail — label the late answer
+          // so it reads as a supersede, not a fresh unprompted turn.
+          const labelled = `(recovered — this supersedes the earlier reported failure)\n\n${lateText}`;
+          notifyParentSession(recovered ?? live, { result: labelled, error: null }, { alwaysNotify: employee?.alwaysNotify });
+          void connector.replyMessage(target, labelled).catch(() => {});
+          logger.info(`Session ${session.id} recovered by late Stop after a failed turn`);
+        },
       });
 
       const wasInterrupted = result.error?.startsWith("Interrupted");
@@ -534,7 +589,7 @@ export class SessionManager {
                 status: retryResult.error ? "error" : "idle",
                 replyContext: msg.replyContext,
                 messageId: msg.messageId ?? null,
-                transportMeta: msg.transportMeta ?? null,
+                transportMeta: mergeTransportMeta(getSessionBySessionKey(msg.sessionKey)?.transportMeta ?? session.transportMeta, msg.transportMeta),
                 lastActivity: new Date().toISOString(),
                 lastError: retryResult.error ?? null,
               });
@@ -574,6 +629,11 @@ export class SessionManager {
         ? result.result
         : result.error || "(No response from engine)";
 
+      if (!getSession(session.id)) {
+        logger.warn(`Dropping engine result for deleted session ${session.id}`);
+        return;
+      }
+
       insertMessage(session.id, "assistant", responseText);
       if (result.cost || result.numTurns) {
         accumulateSessionCost(session.id, result.cost ?? 0, result.numTurns ?? 1);
@@ -603,6 +663,9 @@ export class SessionManager {
         lastActivity: new Date().toISOString(),
         lastError: wasInterrupted ? null : (result.error ?? null),
       });
+      if (!wasInterrupted && session.engine === "claude") {
+        markTranscriptSyncedThrough(session.id, result.sessionId);
+      }
       if (updatedSession) {
         notifyParentSession(updatedSession, { result: result.result, error: wasInterrupted ? null : (result.error ?? null), cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
       }
@@ -678,7 +741,7 @@ export class SessionManager {
         `Session: ${session.id}`,
         `Engine: ${session.engine}`,
         `Connector: ${session.connector || session.source}`,
-        `Model: ${session.model || this.config.engines[session.engine as "claude" | "codex" | "antigravity"]?.model || "default"}`,
+        `Model: ${session.model || this.config.engines[session.engine as "claude" | "codex" | "antigravity" | "grok" | "pi"]?.model || "default"}`,
         `State: ${transportState}`,
         `Queue depth: ${queueDepth}`,
         `Created: ${session.createdAt}`,
@@ -723,7 +786,8 @@ export class SessionManager {
         `Default engine: ${this.config.engines.default}`,
         `Claude: ${this.config.engines.claude.model}`,
         `Codex: ${this.config.engines.codex.model}`,
-        ...(this.config.engines.antigravity ? [`Antigravity: ${this.config.engines.antigravity.model ?? "gemini-3-flash-preview (default)"}`] : []),
+        ...(this.config.engines.antigravity ? [`Antigravity: ${this.config.engines.antigravity.model ?? "Gemini 3.5 Flash (Medium)"}`] : []),
+        ...(this.config.engines.grok ? [`Grok: ${this.config.engines.grok.model ?? "grok-build"}`] : []),
         "Connectors:",
         ...connectorLines,
       ].join("\n");

@@ -14,6 +14,7 @@ import {
   type KanbanStore,
 } from '@/lib/kanban/store'
 import { PageLayout, ToolbarActions } from '@/components/page-layout'
+import { useBreadcrumbs } from '@/context/breadcrumb-context'
 import {
   Dialog,
   DialogContent,
@@ -75,6 +76,7 @@ function DeleteConfirmDialog({
 }
 
 export default function KanbanPage() {
+  useBreadcrumbs([{ label: 'Kanban' }])
   const [tickets, setTickets] = useState<KanbanStore>({})
   const [employees, setEmployees] = useState<Employee[]>([])
   const [departments, setDepartments] = useState<string[]>([])

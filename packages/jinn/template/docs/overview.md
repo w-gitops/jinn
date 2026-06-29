@@ -4,7 +4,7 @@
 
 ## Core Principle
 
-**{{portalName}} is a bus, not a brain.** All AI intelligence comes from the engines natively. {{portalName}} adds no custom agentic loop, no prompt engineering layer, no opinions on how AI should behave. It delegates everything to professional tools (Claude Code CLI, Codex SDK) and focuses solely on routing, scheduling, and connectivity.
+**{{portalName}} is a bus, not a brain.** All AI intelligence comes from the engines natively. {{portalName}} adds no custom agentic loop, no prompt engineering layer, no opinions on how AI should behave. It delegates everything to professional tools (Claude Code CLI, Codex SDK, and the Antigravity engine for Gemini models) and focuses solely on routing, scheduling, and connectivity.
 
 ## What {{portalName}} Does
 
@@ -17,14 +17,15 @@
 
 ## How It Differs from Custom Agentic Frameworks
 
-Traditional approaches build custom tool-calling loops, manage context windows, and implement retry logic. {{portalName}} does none of that. The engines (Claude Code, Codex) already handle tool use, file editing, command execution, and multi-step reasoning. {{portalName}} just connects them to the outside world.
+Traditional approaches build custom tool-calling loops, manage context windows, and implement retry logic. {{portalName}} does none of that. The engines (Claude Code, Codex, and Antigravity for Gemini models) already handle tool use, file editing, command execution, and multi-step reasoning. {{portalName}} just connects them to the outside world.
 
 ## Directory Structure
 
 ```
 ~/.jinn/
   config.yaml          # Gateway configuration
-  jinn.db             # SQLite session registry
+  sessions/
+    registry.db        # SQLite session registry
   docs/                # These reference docs
   skills/              # Skill directories with SKILL.md files
   cron/

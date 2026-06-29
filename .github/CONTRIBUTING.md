@@ -15,7 +15,7 @@ Thanks for your interest in contributing. This guide covers the basics.
    ```bash
    pnpm install
    ```
-3. Initialize Jinn (one-time — builds all packages and creates `~/.jinn`):
+3. Initialize Jinn (one-time - builds all packages and creates `~/.jinn`):
    ```bash
    pnpm setup
    ```

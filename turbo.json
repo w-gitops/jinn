@@ -17,6 +17,10 @@
       "dependsOn": ["^build"],
       "cache": false
     },
+    "coverage": {
+      "dependsOn": ["^build"],
+      "cache": false
+    },
     "clean": {
       "cache": false
     }

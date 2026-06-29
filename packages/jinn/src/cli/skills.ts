@@ -118,6 +118,13 @@ export function findExistingSkill(name: string): { name: string; dir: string } |
   return null;
 }
 
+export function runNpxSkills(args: string[], stdio: "inherit" | "pipe" = "inherit"): ReturnType<typeof spawnSync> {
+  return spawnSync("npx", ["skills", ...args], {
+    stdio,
+    shell: false,
+  });
+}
+
 export function copySkillToInstance(name: string, sourceDir: string): void {
   const destDir = path.join(SKILLS_DIR, name);
   fs.mkdirSync(destDir, { recursive: true });
@@ -141,12 +148,9 @@ function copyDirRecursive(src: string, dest: string): void {
 // ── CLI action functions ──────────────────────────────────────────
 
 export function skillsFind(query?: string): void {
-  const args = ["skills", "find"];
+  const args = ["find"];
   if (query) args.push(query);
-  const result = spawnSync("npx", args, {
-    stdio: "inherit",
-    shell: true,
-  });
+  const result = runNpxSkills(args);
   process.exitCode = result.status ?? 1;
 }
 
@@ -157,10 +161,7 @@ export function skillsAdd(pkg: string): void {
   const before = snapshotDirs();
 
   // Run npx skills add
-  const result = spawnSync("npx", ["skills", "add", pkg, "-g", "-y"], {
-    stdio: "inherit",
-    shell: true,
-  });
+  const result = runNpxSkills(["add", pkg, "-g", "-y"]);
 
   if (result.status !== 0) {
     console.error(`\n${RED}Failed to install skill.${RESET}`);
@@ -253,10 +254,7 @@ export function skillsUpdate(): void {
   for (const entry of manifest) {
     console.log(`  Updating ${entry.name} from ${entry.source}...`);
     const before = snapshotDirs();
-    const result = spawnSync("npx", ["skills", "add", entry.source, "-g", "-y"], {
-      stdio: "pipe",
-      shell: true,
-    });
+    const result = runNpxSkills(["add", entry.source, "-g", "-y"], "pipe");
 
     if (result.status !== 0) {
       console.log(`  ${RED}Failed to update ${entry.name}${RESET}`);
@@ -296,10 +294,7 @@ export function skillsRestore(): void {
 
     console.log(`  Installing ${entry.name} from ${entry.source}...`);
     const before = snapshotDirs();
-    const result = spawnSync("npx", ["skills", "add", entry.source, "-g", "-y"], {
-      stdio: "pipe",
-      shell: true,
-    });
+    const result = runNpxSkills(["add", entry.source, "-g", "-y"], "pipe");
 
     if (result.status !== 0) {
       console.log(`  ${RED}Failed to install ${entry.name}${RESET}`);

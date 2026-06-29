@@ -6,12 +6,20 @@ import { buildSessionSettings, writeSessionSettings, sessionSettingsPath, seedTr
 
 describe("claude-settings", () => {
   it("buildSessionSettings registers Stop/SessionStart/StopFailure hooks pointing at the relay with the session id", () => {
-    const s = buildSessionSettings({ sessionId: "jinn-abc", relayScript: "/h/relay.mjs", appendSystemPrompt: "SYS" });
+    const s = buildSessionSettings({ sessionId: "jinn-abc", relayScript: "/h/relay.mjs", statusLineDir: "/tmp/limits", appendSystemPrompt: "SYS" });
     const stop = s.hooks.Stop[0].hooks[0];
     expect(stop.type).toBe("command");
-    expect(stop.command).toMatch(/relay\.mjs.*jinn-abc/);
+    expect(stop.command).toBe("node '/h/relay.mjs' 'jinn-abc'");
     expect(s.hooks.SessionStart && s.hooks.PreToolUse && s.hooks.PostToolUse && s.hooks.StopFailure).toBeTruthy();
+    expect(s.statusLine?.command).toMatch(/jinn-abc/);
+    expect(s.statusLine?.command).toMatch(/\/tmp\/limits/);
     expect(s.appendSystemPrompt).toBe("SYS");
+  });
+
+  it("shell-quotes hook relay paths and session ids", () => {
+    const s = buildSessionSettings({ sessionId: "jinn ' tricky", relayScript: "/tmp/path with spaces/relay's.mjs" });
+    const stop = s.hooks.Stop[0].hooks[0];
+    expect(stop.command).toBe("node '/tmp/path with spaces/relay'\\''s.mjs' 'jinn '\\'' tricky'");
   });
 
   it("writeSessionSettings writes atomically and is readable", () => {
@@ -32,5 +40,29 @@ describe("claude-settings", () => {
     const d = JSON.parse(fs.readFileSync(claudeJson, "utf-8"));
     expect(d.projects[projectDir].hasTrustDialogAccepted).toBe(true);
     expect(d.projects[projectDir].hasCompletedProjectOnboarding).toBe(true);
+    expect(d.hasCompletedOnboarding).toBe(true);
+    expect(d.hasCompletedClaudeInChromeOnboarding).toBe(true);
+  });
+
+  it("seedTrust writes a one-time backup of a pre-existing ~/.claude.json before first modification", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "home-"));
+    const claudeJson = path.join(home, ".claude.json");
+    const backup = `${claudeJson}.jinn-backup`;
+    const original = JSON.stringify({ projects: {}, userSetting: "keep-me" });
+    fs.writeFileSync(claudeJson, original);
+    const projA = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "proj-")));
+    const projB = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "proj-")));
+    seedTrust(claudeJson, projA);
+    expect(fs.readFileSync(backup, "utf-8")).toBe(original); // pristine pre-Jinn copy
+    seedTrust(claudeJson, projB); // second modification must NOT overwrite the backup
+    expect(fs.readFileSync(backup, "utf-8")).toBe(original);
+  });
+
+  it("seedTrust does not create a backup when ~/.claude.json doesn't exist yet", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "home-"));
+    const claudeJson = path.join(home, ".claude.json");
+    const projectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "proj-")));
+    seedTrust(claudeJson, projectDir);
+    expect(fs.existsSync(`${claudeJson}.jinn-backup`)).toBe(false);
   });
 });

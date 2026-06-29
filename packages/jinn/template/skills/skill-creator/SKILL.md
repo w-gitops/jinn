@@ -68,7 +68,7 @@ Include example inputs, outputs, file contents, and commands wherever possible. 
 
 ## Template
 
-Use this template as a starting point. **YAML frontmatter is required** — both Claude Code and Codex CLIs discover skills by reading frontmatter from `SKILL.md` files. Without it, the skill won't be recognized by engines.
+Use this template as a starting point. **YAML frontmatter is required** - both Claude Code and Codex CLIs discover skills by reading frontmatter from `SKILL.md` files. Without it, the skill won't be recognized by engines.
 
 ```markdown
 ---
@@ -84,7 +84,7 @@ This skill activates when <specific trigger description>.
 
 ## Data Files
 
-- `~/.jinn/<path>` — <description of the file and its format>
+- `~/.jinn/<path>` - <description of the file and its format>
 
 ## Steps
 

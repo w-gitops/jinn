@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { convertOutsideCode, formatAndChunk } from "../shared/format.js";
 
 const SLACK_MAX_LENGTH = 3000;
 
@@ -10,30 +11,20 @@ const SLACK_MAX_LENGTH = 3000;
  * Preserves code blocks and inline code untouched.
  */
 export function markdownToSlackMrkdwn(text: string): string {
-  // Split text into code and non-code segments to protect code from conversion
-  const segments = text.split(/(```[\s\S]*?```|`[^`]+`)/g);
-
-  return segments
-    .map((segment, i) => {
-      // Odd indices are code matches — leave them untouched
-      if (i % 2 === 1) return segment;
-
-      return (
-        segment
-          // Headings: ## text → *text* (must be at start of line)
-          .replace(/^(#{1,6})\s+(.+)$/gm, (_match, _hashes, content) => `*${content}*`)
-          // Bold: **text** or __text__ → *text*
-          .replace(/\*\*(.+?)\*\*/g, "*$1*")
-          .replace(/__(.+?)__/g, "*$1*")
-          // Strikethrough: ~~text~~ → ~text~
-          .replace(/~~(.+?)~~/g, "~$1~")
-          // Links: [text](url) → <url|text>
-          .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "<$2|$1>")
-          // Bullet lists: - item or * item → • item (with optional indentation)
-          .replace(/^(\s*)[-*]\s+/gm, "$1• ")
-      );
-    })
-    .join("");
+  return convertOutsideCode(text, (segment) =>
+    segment
+      // Headings: ## text → *text* (must be at start of line)
+      .replace(/^(#{1,6})\s+(.+)$/gm, (_match, _hashes, content) => `*${content}*`)
+      // Bold: **text** or __text__ → *text*
+      .replace(/\*\*(.+?)\*\*/g, "*$1*")
+      .replace(/__(.+?)__/g, "*$1*")
+      // Strikethrough: ~~text~~ → ~text~
+      .replace(/~~(.+?)~~/g, "~$1~")
+      // Links: [text](url) → <url|text>
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "<$2|$1>")
+      // Bullet lists: - item or * item → • item (with optional indentation)
+      .replace(/^(\s*)[-*]\s+/gm, "$1• "),
+  );
 }
 
 /**
@@ -41,37 +32,7 @@ export function markdownToSlackMrkdwn(text: string): string {
  * Converts markdown to Slack mrkdwn format before chunking.
  */
 export function formatResponse(text: string): string[] {
-  const converted = markdownToSlackMrkdwn(text);
-
-  if (converted.length <= SLACK_MAX_LENGTH) {
-    return [converted];
-  }
-
-  const chunks: string[] = [];
-  let remaining = converted;
-
-  while (remaining.length > 0) {
-    if (remaining.length <= SLACK_MAX_LENGTH) {
-      chunks.push(remaining);
-      break;
-    }
-
-    // Try to split at a newline boundary within the limit
-    let splitIndex = remaining.lastIndexOf("\n", SLACK_MAX_LENGTH);
-    if (splitIndex <= 0) {
-      // Fall back to splitting at a space
-      splitIndex = remaining.lastIndexOf(" ", SLACK_MAX_LENGTH);
-    }
-    if (splitIndex <= 0) {
-      // Hard split if no good boundary found
-      splitIndex = SLACK_MAX_LENGTH;
-    }
-
-    chunks.push(remaining.slice(0, splitIndex));
-    remaining = remaining.slice(splitIndex).trimStart();
-  }
-
-  return chunks;
+  return formatAndChunk(text, SLACK_MAX_LENGTH, markdownToSlackMrkdwn);
 }
 
 /**

@@ -1,12 +1,12 @@
-# Jinn Growth Marketing — "Jinn Markets Itself"
+# Jinn Growth Marketing - "Jinn Markets Itself"
 
 > Date: 2026-03-12
 > Status: Approved
-> Author: Jimbo (COO) + Hristo
+> Author: Jimbo (COO) + the operator
 
 ## Summary
 
-Make jinn public and popular by building a self-marketing automation system using jinn's own multi-agent architecture. The marketing pipeline is both the go-to-market strategy AND the product demo — jinn proves its own value by orchestrating its own growth.
+Make jinn public and popular by building a self-marketing automation system using jinn's own multi-agent architecture. The marketing pipeline is both the go-to-market strategy AND the product demo - jinn proves its own value by orchestrating its own growth.
 
 ## Competitive Positioning
 
@@ -20,11 +20,11 @@ Frustrated OpenClaw users + Claude Code / Codex power users who want multi-agent
 | Cost | $300-750/mo API bills, runaway loops | $200/mo flat (Anthropic Max via Claude Code CLI) |
 | Max subscription | Banned since Jan 2026 (OAuth block) | Works natively (first-party CLI) |
 | Security | 512 vulnerabilities, malicious skill store | Local markdown skills, no plugin marketplace |
-| Cron scoping | Broken — jobs fire in wrong agent context | Agent-scoped in `jobs.json`, hot-reload |
+| Cron scoping | Broken - jobs fire in wrong agent context | Agent-scoped in `jobs.json`, hot-reload |
 | Memory | Compaction silently drops context | Delegates to Claude Code CLI's own compaction + persistent `knowledge/` files |
 | Slack routing | Agent-to-agent messages silently dropped | Native connector with proper thread/DM/channel routing |
 | Org isolation | No session-level access control | Departments, ranks, session isolation per employee |
-| Architecture | Custom agentic loop ("brain") | Bus, not brain — delegates to professional CLI tools |
+| Architecture | Custom agentic loop ("brain") | Bus, not brain - delegates to professional CLI tools |
 
 ### Sources (for backing claims in posts)
 - OpenClaw security: CrowdStrike blog, The Register, XDA
@@ -37,13 +37,13 @@ Frustrated OpenClaw users + Claude Code / Codex power users who want multi-agent
 ## Repo Foundation
 
 ### Rename
-- GitHub: `hristo2612/jimmy` → `hristo2612/jinn`
-- npm package already `jinn-cli` — no change needed
+- GitHub: `<owner>/legacy-cli` → `<owner>/jinn`
+- npm package already `jinn-cli` - no change needed
 
 ### README Updates
 - Keep current intro (already good)
-- Add demo GIF (`assets/jinn-showcase.gif` — converted from desktop recording)
-- Fix dev clone URL placeholder (`your-org/jinn` → `hristo2612/jinn`)
+- Add demo GIF (`assets/jinn-showcase.gif` - converted from desktop recording)
+- Fix dev clone URL placeholder (`<owner>/jinn` → `<owner>/jinn`)
 - Add "Why Jinn?" or "vs OpenClaw" comparison section (factual, link-backed)
 
 ## Marketing Architecture
@@ -60,27 +60,27 @@ Three employees in `~/.jinn/org/growth/`:
 
 ### Content Tones (A/B/C testing)
 
-**Tone A — Subtle Infiltrator:**
+**Tone A - Subtle Infiltrator:**
 Helpful technical answers in AI agent threads. Mention jinn only when organically relevant.
 Example: *"I ended up wrapping Claude Code CLI in a lightweight gateway so I could add cron + Slack routing. Open sourced it: [link]"*
 
-**Tone B — Direct Challenger:**
+**Tone B - Direct Challenger:**
 Comparison posts targeting OpenClaw pain points.
 Example: *"I switched from OpenClaw to a Claude Code wrapper and my monthly bill went from $400 to $200 (Max sub). Here's the architecture..."*
 
-**Tone C — Builder in Public:**
+**Tone C - Builder in Public:**
 Architecture stories and building journey.
 Example: *"I built an AI gateway that uses its own multi-agent system to market itself. Here's how the cron pipeline works..."*
 
 ### Target Channels
 
 **Reddit:**
-- r/ClaudeAI — primary (Claude users wanting more)
-- r/openclaw — frustrated users seeking alternatives
-- r/AI_Agents — general agent discussion
-- r/LocalLLaMA — self-hosting, cost-conscious users
-- r/SideProject — builder audience
-- r/selfhosted — infrastructure-minded users
+- r/ClaudeAI - primary (Claude users wanting more)
+- r/openclaw - frustrated users seeking alternatives
+- r/AI_Agents - general agent discussion
+- r/LocalLLaMA - self-hosting, cost-conscious users
+- r/SideProject - builder audience
+- r/selfhosted - infrastructure-minded users
 
 **X/Twitter:**
 - Threads about OpenClaw costs/security
@@ -107,7 +107,7 @@ Example: *"I built an AI gateway that uses its own multi-agent system to market 
 ### Approval Flow
 1. Scouts find opportunities → post summaries to Slack
 2. Growth-writer drafts content → posts drafts to Slack with tone label (A/B/C)
-3. Hristo approves/rejects/edits in Slack
+3. the operator approves/rejects/edits in Slack
 4. Approved content → Claude in Chrome posts to Reddit/X
 5. All posting is human-approved, automated execution
 
@@ -124,7 +124,7 @@ Example: *"I built an AI gateway that uses its own multi-agent system to market 
 
 ### Posting Method
 - Claude in Chrome browser automation
-- Opens Reddit/X in Chrome (logged in as Hristo's accounts)
+- Opens Reddit/X in Chrome (logged in as the operator's accounts)
 - Posts the approved content
 - Screenshots the posted content for records
 
@@ -154,7 +154,7 @@ Example: *"I built an AI gateway that uses its own multi-agent system to market 
 2. **Now:** Create growth department + employee personas
 3. **Now:** Create scout + writer skills with detailed playbooks
 4. **Now:** Set up cron jobs (disabled initially, manual testing first)
-5. **Day 2-3:** Test pipeline manually — run scouts, review output, post manually
+5. **Day 2-3:** Test pipeline manually - run scouts, review output, post manually
 6. **Day 4+:** Enable cron, start approval-based automated posting
 7. **Week 2+:** First feedback loop analysis, adjust strategy
 8. **Ongoing:** Evolve skills based on data

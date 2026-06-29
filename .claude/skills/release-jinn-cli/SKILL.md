@@ -1,6 +1,6 @@
 ---
 name: release-jinn-cli
-description: Use when cutting a new jinn-cli release for this repo — bumping the version, publishing to npm, creating the GitHub release, and letting the Homebrew formula auto-update. Covers the exact order that matters (npm publish BEFORE publishing the GitHub release).
+description: Use when cutting a new jinn-cli release for this repo - bumping the version, publishing to npm, creating the GitHub release, and letting the Homebrew formula auto-update. Covers the exact order that matters (npm publish BEFORE publishing the GitHub release).
 ---
 
 # Releasing jinn-cli
@@ -31,7 +31,7 @@ Version lives in **one place**: `packages/jinn/package.json`.
 2. **Pick the version.** This is `0.x`, so a minor bump (`0.N.0`) is fine even for
    small breaking changes; patch (`0.x.N`) for fixes only.
 
-3. **Bump + commit** (no `Co-Authored-By: Claude` trailer — repo convention):
+3. **Bump + commit** (no `Co-Authored-By: Claude` trailer - repo convention):
    ```bash
    # edit packages/jinn/package.json "version"
    git commit -am "chore(release): jinn-cli vX.Y.Z"
@@ -50,11 +50,11 @@ Version lives in **one place**: `packages/jinn/package.json`.
    ```bash
    cd packages/jinn && npm publish && cd -
    ```
-   - This is the irreversible step — confirm with the maintainer first.
+   - This is the irreversible step - confirm with the maintainer first.
    - If publish fails with `E401`/`EOTP`, the token file is missing or revoked.
      Recreate it at npmjs.com → Access Tokens → Classic → **Automation**, then
      write `//registry.npmjs.org/:_authToken=<token>` to `packages/jinn/.npmrc`
-     (it's already in `.gitignore` — never commit it).
+     (it's already in `.gitignore` - never commit it).
 
 6. **Tag + push:**
    ```bash
@@ -71,6 +71,6 @@ Version lives in **one place**: `packages/jinn/package.json`.
    (check the bump-formula workflow run), and `npm view jinn-cli version` is X.Y.Z.
 
 ## Notes
-- Don't bump `package.json` in the root or `packages/web` — only `packages/jinn`.
+- Don't bump `package.json` in the root or `packages/web` - only `packages/jinn`.
 - If the formula job fails, it's almost always the npm tarball not being live yet;
   re-run the workflow once `npm view jinn-cli@X.Y.Z` resolves.

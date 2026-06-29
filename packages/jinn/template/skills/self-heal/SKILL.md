@@ -28,9 +28,10 @@ Summarize any problems found to the user.
 
 Read `~/.jinn/config.yaml` and verify:
 - The file is valid YAML (no syntax errors)
-- The `port` field is a valid number (typically 3777)
-- Required fields are present: `port`, `engine`, `model`
-- Engine value is one of: `claude`, `codex`
+- The `gateway.port` field is a valid number (default `7777`)
+- Required sections are present: `gateway` (with `port`) and `engines` (with a `default` and a config block for that engine)
+- `engines.default` is one of: `claude`, `codex`, `antigravity`
+- The default engine has a model set under `engines.<name>.model` (e.g. `engines.claude.model`)
 - No duplicate keys or malformed values
 
 ### 3. Verify Engine Availability
@@ -38,13 +39,14 @@ Read `~/.jinn/config.yaml` and verify:
 Check that the configured AI engine is installed and accessible:
 - For Claude: run `claude --version` and confirm it returns a version number
 - For Codex: run `codex --version` and confirm it returns a version number
+- For Antigravity (Gemini models): confirm the configured `engines.antigravity.bin` is on the PATH
 
 If the engine command is not found, inform the user that the engine is not installed or not on their PATH.
 
 ### 4. Check Session Database
 
 Look at the session registry for stuck sessions:
-- Read `~/.jinn/sessions.db` or the session storage
+- Read the session registry at `~/.jinn/sessions/registry.db` (SQLite)
 - Look for sessions with status `running` that have not been updated recently (more than 30 minutes old)
 - These may be stuck and need to be reset
 
@@ -109,6 +111,6 @@ For understanding {{portalName}}'s architecture and component relationships, ref
 ## Error Handling
 
 - If log files do not exist, note that logging may not be configured and skip that check.
-- If config.yaml does not exist, this is likely a fresh install — suggest running the onboarding process instead.
+- If config.yaml does not exist, this is likely a fresh install - suggest running the onboarding process instead.
 - Always back up files before modifying them during repair.
 - Report all findings clearly to the user, even if no issues are found (a clean bill of health is useful information).

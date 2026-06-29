@@ -1,4 +1,4 @@
-import { markQueueItemRunning, markQueueItemCompleted } from "./registry.js";
+import { getQueueItem, markQueueItemRunning, markQueueItemCompleted } from "./registry.js";
 
 export class SessionQueue {
   private queues = new Map<string, Promise<void>>();
@@ -10,6 +10,8 @@ export class SessionQueue {
   private cancelled = new Set<string>();
   /** Track which session keys are paused - queued tasks wait until resumed. */
   private paused = new Set<string>();
+  /** Resolvers for tasks blocked on a paused session key, woken on resume. */
+  private pauseWaiters = new Map<string, Array<() => void>>();
 
   /**
    * Check if a session is currently running.
@@ -54,6 +56,11 @@ export class SessionQueue {
 
   resumeQueue(sessionKey: string): void {
     this.paused.delete(sessionKey);
+    const waiters = this.pauseWaiters.get(sessionKey);
+    if (waiters) {
+      this.pauseWaiters.delete(sessionKey);
+      for (const wake of waiters) wake();
+    }
   }
 
   isPaused(sessionKey: string): boolean {
@@ -68,12 +75,22 @@ export class SessionQueue {
     const prev = this.queues.get(sessionKey) || Promise.resolve();
     const runTask = async () => {
       this.running.add(sessionKey);
+      let queueItemStarted = false;
       try {
-        // Wait while paused (500ms poll)
+        // Wait while paused — blocks until resumeQueue() wakes us (no polling)
         while (this.paused.has(sessionKey)) {
-          await new Promise(resolve => setTimeout(resolve, 500));
+          await new Promise<void>(resolve => {
+            const waiters = this.pauseWaiters.get(sessionKey) ?? [];
+            waiters.push(resolve);
+            this.pauseWaiters.set(sessionKey, waiters);
+          });
         }
-        if (queueItemId) markQueueItemRunning(queueItemId);
+        if (queueItemId) {
+          const item = getQueueItem(queueItemId);
+          if (!item || item.status !== "pending") return;
+          markQueueItemRunning(queueItemId);
+          queueItemStarted = true;
+        }
         if (!this.cancelled.has(sessionKey)) {
           await fn();
         }
@@ -81,7 +98,7 @@ export class SessionQueue {
         // Mark the DB row done in finally so an errored/cancelled task can't
         // leave the item stuck as 'running' (getQueueItems returns 'running'
         // rows, so a stuck row would keep the UI badge from draining).
-        if (queueItemId) markQueueItemCompleted(queueItemId);
+        if (queueItemStarted && queueItemId) markQueueItemCompleted(queueItemId);
         this.running.delete(sessionKey);
         this.decrementPending(sessionKey);
       }

@@ -10,13 +10,13 @@
 
 **Spec:** `docs/superpowers/specs/2026-05-14-interactive-tui-engine-design.md`
 
-**Test commands:** single file — `npx tsx --test packages/jinn/src/<path>.test.ts`; full daemon suite — `pnpm --filter @jinn/jimmy test`; typecheck — `pnpm --filter @jinn/jimmy typecheck`.
+**Test commands:** single file - `npx tsx --test packages/jinn/src/<path>.test.ts`; full daemon suite - `pnpm --filter @jinnjinn-cli test`; typecheck - `pnpm --filter @jinnjinn-cli typecheck`.
 
 > **Assumptions to revisit after Phase 0** are tagged **[SPIKE-DEP]**. If a Phase 0 finding contradicts an assumption, update the affected task before implementing it.
 
 ---
 
-## Phase 0 — Validation Spike
+## Phase 0 - Validation Spike
 
 Exploratory, not TDD. Each task runs a real `claude` (v2.1.141 is installed) and records findings into the spec's "Open Questions / Validation Steps" section (mark each line RESOLVED/CHANGED with the finding). Reuse `/tmp/jinn-tui-poc/` from the original POC (hook scripts + settings.json already exist there; trust is seeded under `/private/tmp/jinn-tui-poc`).
 
@@ -45,7 +45,7 @@ git commit -m "spike: validate --resume auto-submit and bracketed-paste injectio
 
 - [ ] **Step 1: `--effort` / `--chrome` test.** Run `script -q /dev/null claude --effort high --chrome --settings .../settings.json --dangerously-skip-permissions "Reply with exactly FLAGS_OK"`. Confirm it reaches the `Stop` hook (no arg-parse error, no crash). Inspect `raw-pty-output.log` for any error banner. Record.
 
-- [ ] **Step 2: ARG_MAX test.** Generate a ~120 KB string and pass it via `--append-system-prompt "<bigstring>" "Reply with exactly ARG_OK"`. If it fails with `E2BIG`/`spawn` error, ARG_MAX is real. Then test the alternative: put the same string under `hooks`-less key... actually test `--settings` with an inline `appendSystemPrompt`-equivalent — write a settings file containing a large value and confirm it loads. Record which path works.
+- [ ] **Step 2: ARG_MAX test.** Generate a ~120 KB string and pass it via `--append-system-prompt "<bigstring>" "Reply with exactly ARG_OK"`. If it fails with `E2BIG`/`spawn` error, ARG_MAX is real. Then test the alternative: put the same string under `hooks`-less key... actually test `--settings` with an inline `appendSystemPrompt`-equivalent - write a settings file containing a large value and confirm it loads. Record which path works.
 
 - [ ] **Step 3: Record findings**, marking Open Questions. If `--effort` or `--chrome` is interactive-incompatible, note the regression and update Task 4.2's flag list. If ARG_MAX is real, Task 2.1 must carry the system prompt in the settings file.
 
@@ -63,9 +63,9 @@ git commit -m "spike: validate --effort/--chrome and system-prompt ARG_MAX"
 
 - [ ] **Step 1: Cost source.** After a POC turn, inspect the transcript JSONL at the `transcript_path` from the Stop payload: `cat <path> | python3 -c "import sys,json; [print(json.dumps(json.loads(l).get('message',{}).get('usage'))) for l in sys.stdin if l.strip()]"`. Confirm whether `assistant` lines carry a `usage` block (input/output/cache tokens). Also check `~/.claude.json` → `projects[<realpath>]` for `lastCost` / `lastModelUsage`. Record which is reliable.
 
-- [ ] **Step 2: Rate-limit source.** Inspect the POC `settings.json` hook list — add a `Notification` hook (same relay pattern) and a `SessionEnd` hook, rerun a turn, see what payloads arrive. Document whether any structured rate-limit signal is reachable. (A true rate-limit can't be forced on demand — document the *mechanism*, not a live hit.)
+- [ ] **Step 2: Rate-limit source.** Inspect the POC `settings.json` hook list - add a `Notification` hook (same relay pattern) and a `SessionEnd` hook, rerun a turn, see what payloads arrive. Document whether any structured rate-limit signal is reachable. (A true rate-limit can't be forced on demand - document the *mechanism*, not a live hit.)
 
-- [ ] **Step 3: Record findings.** Update the spec's "cost & turn tracking" and "rate-limit detection" components with the concrete chosen source. If neither cost source is reliable, the spec's fallback (disable budget enforcement in interactive mode + loud warning) becomes the plan — update Task 5.1.
+- [ ] **Step 3: Record findings.** Update the spec's "cost & turn tracking" and "rate-limit detection" components with the concrete chosen source. If neither cost source is reliable, the spec's fallback (disable budget enforcement in interactive mode + loud warning) becomes the plan - update Task 5.1.
 
 - [ ] **Step 4: Commit**
 
@@ -76,7 +76,7 @@ git commit -m "spike: identify cost and rate-limit data sources for interactive 
 
 ---
 
-## Phase 1 — Foundations: config, gateway.json, node-pty
+## Phase 1 - Foundations: config, gateway.json, node-pty
 
 ### Task 1.1: Extend config types + defaulting
 
@@ -139,7 +139,7 @@ test("normalizeClaudeEngineConfig keeps a valid interactive mode and applies tim
 - [ ] **Step 3: Run test to verify it fails**
 
 Run: `npx tsx --test packages/jinn/src/shared/config.test.ts`
-Expected: FAIL — `normalizeClaudeEngineConfig` not exported.
+Expected: FAIL - `normalizeClaudeEngineConfig` not exported.
 
 - [ ] **Step 4: Implement `normalizeClaudeEngineConfig`** in `config.ts`:
 
@@ -178,7 +178,7 @@ return config;
 - [ ] **Step 7: Add `source` to `EngineRunOpts`.** The interactive engine needs to know if a turn is cron-originated (cron sessions are KEEP-ALIVE-ineligible). In `types.ts`, add to `EngineRunOpts` (after `sessionId`):
 
 ```ts
-  /** Session source ("cron", "web", "slack", …) — used by the interactive engine for lifecycle policy. */
+  /** Session source ("cron", "web", "slack", …) - used by the interactive engine for lifecycle policy. */
   source?: string;
 ```
 
@@ -187,7 +187,7 @@ Then update the two `engine.run({...})` call sites to pass it: `manager.ts` `run
 - [ ] **Step 8: Run typecheck + commit**
 
 ```bash
-pnpm --filter @jinn/jimmy typecheck
+pnpm --filter @jinnjinn-cli typecheck
 git add packages/jinn/src/shared/types.ts packages/jinn/src/shared/config.ts packages/jinn/src/shared/config.test.ts packages/jinn/src/sessions/manager.ts packages/jinn/src/gateway/api.ts
 git commit -m "feat(config): interactive engine config keys + normalization + EngineRunOpts.source"
 ```
@@ -195,14 +195,14 @@ git commit -m "feat(config): interactive engine config keys + normalization + En
 ### Task 1.2: Add `mode: headless` to the setup default config
 
 **Files:**
-- Modify: `packages/jinn/src/cli/setup.ts` (the `DEFAULT_CONFIG` literal — search for `claude:` under `engines:`)
+- Modify: `packages/jinn/src/cli/setup.ts` (the `DEFAULT_CONFIG` literal - search for `claude:` under `engines:`)
 
 - [ ] **Step 1: Locate and update.** In `setup.ts`, find the `DEFAULT_CONFIG` YAML/object literal's `engines.claude` block and add `mode: headless` explicitly so new installs are unambiguous.
 
 - [ ] **Step 2: Typecheck + commit**
 
 ```bash
-pnpm --filter @jinn/jimmy typecheck
+pnpm --filter @jinnjinn-cli typecheck
 git add packages/jinn/src/cli/setup.ts
 git commit -m "feat(setup): emit explicit engines.claude.mode in default config"
 ```
@@ -213,7 +213,7 @@ git commit -m "feat(setup): emit explicit engines.claude.mode in default config"
 - Modify: `packages/jinn/package.json` (dependencies)
 - Modify: `packages/jinn/src/shared/paths.ts`
 
-- [ ] **Step 1: Add dependency.** Run `pnpm --filter @jinn/jimmy add node-pty`. Verify it installs a prebuild (no compiler error). Record the resolved version.
+- [ ] **Step 1: Add dependency.** Run `pnpm --filter @jinnjinn-cli add node-pty`. Verify it installs a prebuild (no compiler error). Record the resolved version.
 
 - [ ] **Step 2: Add paths.** In `paths.ts`, after `PID_FILE`:
 
@@ -233,7 +233,7 @@ git add packages/jinn/package.json packages/jinn/pnpm-lock.yaml packages/jinn/sr
 git commit -m "chore: add node-pty dependency and interactive-engine paths"
 ```
 
-### Task 1.4: `gateway-info.ts` — write/read `gateway.json`
+### Task 1.4: `gateway-info.ts` - write/read `gateway.json`
 
 **Files:**
 - Create: `packages/jinn/src/gateway/gateway-info.ts`
@@ -269,7 +269,7 @@ test("readGatewayInfo returns null when the file is missing", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npx tsx --test packages/jinn/src/gateway/gateway-info.test.ts`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
 - [ ] **Step 3: Implement**
 
@@ -324,9 +324,9 @@ git commit -m "feat(gateway): gateway.json writer/reader for hook-relay discover
 
 ---
 
-## Phase 2 — Hook infrastructure
+## Phase 2 - Hook infrastructure
 
-### Task 2.1: `claude-settings.ts` — per-session settings file + trust seeding
+### Task 2.1: `claude-settings.ts` - per-session settings file + trust seeding
 
 **Files:**
 - Create: `packages/jinn/src/shared/claude-settings.ts`
@@ -377,7 +377,7 @@ test("seedTrust is idempotent and uses the realpath", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npx tsx --test packages/jinn/src/shared/claude-settings.test.ts`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
 - [ ] **Step 3: Implement**
 
@@ -395,7 +395,7 @@ interface HookCommand { type: "command"; command: string; }
 interface HookMatcher { hooks: HookCommand[]; }
 
 // StopFailure fires INSTEAD of Stop when an API error ends the turn (rate_limit,
-// billing_error, server_error, …) — confirmed by the Phase 0 spike. It is the
+// billing_error, server_error, …) - confirmed by the Phase 0 spike. It is the
 // structured rate-limit signal, so it must be registered alongside Stop.
 export interface ClaudeSettings {
   hooks: Record<"SessionStart" | "Stop" | "StopFailure" | "PreToolUse" | "PostToolUse", HookMatcher[]>;
@@ -504,7 +504,7 @@ async function main() {
 main().catch(() => {}).finally(() => process.exit(0));
 ```
 
-- [ ] **Step 2: Manual smoke test.** `echo '{"hook_event_name":"Stop","session_id":"x"}' | JINN_HOME=/tmp node packages/jinn/assets/hook-relay.mjs jinn-test` — confirm it exits 0 cleanly even with no gateway running (the `fetch` rejection is swallowed).
+- [ ] **Step 2: Manual smoke test.** `echo '{"hook_event_name":"Stop","session_id":"x"}' | JINN_HOME=/tmp node packages/jinn/assets/hook-relay.mjs jinn-test` - confirm it exits 0 cleanly even with no gateway running (the `fetch` rejection is swallowed).
 
 - [ ] **Step 3: Commit**
 
@@ -567,7 +567,7 @@ test("HookRegistry drops buffered hooks past TTL", async () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npx tsx --test packages/jinn/src/gateway/hook-registry.test.ts`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
 - [ ] **Step 3: Implement**
 
@@ -579,7 +579,7 @@ export interface HookPayload {
   cwd?: string;
   last_assistant_message?: string;
   tool_name?: string;
-  /** Present on StopFailure: enum — rate_limit | authentication_failed | billing_error | invalid_request | server_error | max_output_tokens | unknown */
+  /** Present on StopFailure: enum - rate_limit | authentication_failed | billing_error | invalid_request | server_error | max_output_tokens | unknown */
   error?: string;
   error_details?: string;
   [k: string]: unknown;
@@ -682,7 +682,7 @@ test("handleHookPost delivers a valid hook to the registry and returns 200", () 
 - [ ] **Step 3: Run test to verify it fails**
 
 Run: `npx tsx --test packages/jinn/src/gateway/hook-endpoint.test.ts`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
 - [ ] **Step 4: Implement `hook-endpoint.ts`**
 
@@ -721,7 +721,7 @@ export function handleHookPost(
 Run: `npx tsx --test packages/jinn/src/gateway/hook-endpoint.test.ts`
 Expected: PASS (3 tests).
 
-- [ ] **Step 6: Wire the route into `api.ts`.** In `handleApiRequest`, near the other route blocks, add (using the `HookRegistry` instance and gateway secret which must be on `ApiContext` — add them there; populate at server boot in Task 6.x):
+- [ ] **Step 6: Wire the route into `api.ts`.** In `handleApiRequest`, near the other route blocks, add (using the `HookRegistry` instance and gateway secret which must be on `ApiContext` - add them there; populate at server boot in Task 6.x):
 
 ```ts
 if (method === "POST" && pathname === "/api/internal/hook") {
@@ -735,19 +735,19 @@ if (method === "POST" && pathname === "/api/internal/hook") {
 }
 ```
 
-(Match the exact `api.ts` response-sending convention found in Step 1 — adapt the last line.)
+(Match the exact `api.ts` response-sending convention found in Step 1 - adapt the last line.)
 
 - [ ] **Step 7: Typecheck + commit**
 
 ```bash
-pnpm --filter @jinn/jimmy typecheck
+pnpm --filter @jinnjinn-cli typecheck
 git add packages/jinn/src/gateway/hook-endpoint.ts packages/jinn/src/gateway/hook-endpoint.test.ts packages/jinn/src/gateway/api.ts
 git commit -m "feat(gateway): /api/internal/hook endpoint with loopback+secret auth"
 ```
 
 ---
 
-## Phase 3 — PTY lifecycle manager
+## Phase 3 - PTY lifecycle manager
 
 ### Task 3.1: Lifecycle decision logic (pure)
 
@@ -789,7 +789,7 @@ test("idle session with nothing set dies", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npx tsx --test packages/jinn/src/engines/pty-lifecycle-policy.test.ts`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
 - [ ] **Step 3: Implement**
 
@@ -831,7 +831,7 @@ git commit -m "feat(engine): pure PTY lifecycle decision policy"
 
 Owns live PTY handles **keyed by `session.id`**, the per-session `--settings` file lifetime, the idle/grace timers, and the global PTY cap. The actual `node-pty` spawn happens in the engine (Task 4); the manager stores an opaque handle and a `kill` callback.
 
-- [ ] **Step 1: Write the failing test** (uses a fake handle — no real PTY)
+- [ ] **Step 1: Write the failing test** (uses a fake handle - no real PTY)
 
 ```ts
 import test from "node:test";
@@ -910,7 +910,7 @@ test("killAll kills every live PTY", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npx tsx --test packages/jinn/src/engines/pty-lifecycle.test.ts`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
 - [ ] **Step 3: Implement**
 
@@ -927,7 +927,7 @@ export interface PtyLifecycleOpts {
   graceWindowMs: number;
   idleTimeoutMs: number;
   maxLivePtys: number;
-  /** Called after a PTY is killed/removed — used to clean the --settings file, hook registry, gateway.json pids. */
+  /** Called after a PTY is killed/removed - used to clean the --settings file, hook registry, gateway.json pids. */
   onCleanup?: (sessionId: string) => void;
 }
 
@@ -1049,7 +1049,7 @@ git commit -m "feat(engine): PtyLifecycleManager keyed on session.id"
 
 ---
 
-## Phase 4 — InteractiveClaudeEngine
+## Phase 4 - InteractiveClaudeEngine
 
 ### Task 4.1: Transcript tailer
 
@@ -1105,7 +1105,7 @@ test("ignores metadata lines and unparseable lines", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npx tsx --test packages/jinn/src/engines/transcript-tail.test.ts`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
 - [ ] **Step 3: Implement**
 
@@ -1185,7 +1185,7 @@ export function tailTranscript(filePath: string, onDelta: (d: StreamDelta) => vo
 
   let watcher: fs.FSWatcher | undefined;
   try { watcher = fs.watch(filePath, () => readNew()); } catch { /* file may not exist yet */ }
-  const poll = setInterval(readNew, 150); // 100ms batched writes — poll a bit slower
+  const poll = setInterval(readNew, 150); // 100ms batched writes - poll a bit slower
   if (poll.unref) poll.unref();
   readNew();
 
@@ -1260,7 +1260,7 @@ test("attachments are appended to the prompt text", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npx tsx --test packages/jinn/src/engines/interactive-args.test.ts`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
 - [ ] **Step 3: Implement**
 
@@ -1284,7 +1284,7 @@ export function buildInteractiveArgs(o: InteractiveArgsOpts): string[] {
   if (o.attachments?.length) {
     prompt += "\n\nAttached files:\n" + o.attachments.map((a) => `- ${a}`).join("\n");
   }
-  args.push(prompt); // positional — MUST precede variadic --mcp-config
+  args.push(prompt); // positional - MUST precede variadic --mcp-config
 
   args.push("--chrome");
   if (o.effortLevel && o.effortLevel !== "default") args.push("--effort", o.effortLevel);
@@ -1375,7 +1375,7 @@ test("TurnResolver settles immediately on StopFailure (does not wait for Session
 - [ ] **Step 3: Run test to verify it fails**
 
 Run: `npx tsx --test packages/jinn/src/engines/claude-interactive.test.ts`
-Expected: FAIL — module/class not found.
+Expected: FAIL - module/class not found.
 
 - [ ] **Step 4: Implement `TurnResolver` + `InteractiveClaudeEngine`.** Full file:
 
@@ -1428,7 +1428,7 @@ export class TurnResolver {
       this.maybeComplete();
     } else if (h.hook_event_name === "StopFailure") {
       // API error ended the turn (rate_limit, billing_error, …). Settle immediately
-      // with an error — do NOT wait for SessionStart (an early failure may never
+      // with an error - do NOT wait for SessionStart (an early failure may never
       // produce one). numTurns:1 keeps isDeadSessionError from false-positiving.
       this.stopFailurePayload = h;
       if (typeof h.session_id === "string" && !this.claudeSessionId) this.claudeSessionId = h.session_id;
@@ -1499,7 +1499,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     const settingsPath = writeSessionSettings(CLAUDE_SETTINGS_DIR, jinnSessionId, {
       sessionId: jinnSessionId,
       relayScript: HOOK_RELAY_SCRIPT,
-      appendSystemPrompt: opts.systemPrompt, // [SPIKE-DEP] argv vs settings — see Task 0.2
+      appendSystemPrompt: opts.systemPrompt, // [SPIKE-DEP] argv vs settings - see Task 0.2
     });
 
     const resolver = new TurnResolver({ turnTimeoutMs: this.cfg.turnTimeoutMs, fallbackSessionId: opts.resumeSessionId });
@@ -1563,7 +1563,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) continue;
       if (v !== undefined) env[k] = v;
     }
-    env.CLAUDE_CODE_NO_FLICKER = "1"; // fullscreen mode — discrete bottom slot for CLI rendering
+    env.CLAUDE_CODE_NO_FLICKER = "1"; // fullscreen mode - discrete bottom slot for CLI rendering
     const bin = opts.bin || "claude";
     logger.info(`InteractiveClaudeEngine spawning ${bin} (resume: ${opts.resumeSessionId || "none"})`);
     const proc = pty.spawn(bin, args, {
@@ -1579,7 +1579,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       kill: (signal?: string) => { try { proc.kill(signal); } catch { /* already gone */ } },
     } as PtyHandle;
     proc.onExit(() => {
-      // PTY exited without a Stop hook (crash / early exit) — settle as interrupted.
+      // PTY exited without a Stop hook (crash / early exit) - settle as interrupted.
       const e = this.active.get(jinnSessionId);
       e?.resolver.interrupt("Interrupted: claude process exited");
     });
@@ -1595,12 +1595,12 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     if (opts.attachments?.length) {
       text += "\n\nAttached files:\n" + opts.attachments.map((a) => `- ${a}`).join("\n");
     }
-    // Phase 0 finding: bracketed-paste does NOT neutralize a leading /, @, or ! —
+    // Phase 0 finding: bracketed-paste does NOT neutralize a leading /, @, or ! -
     // they still trigger the slash-command / mention / bash-mode handlers and the
     // turn is never submitted. Prepend a space so it's treated as a literal message.
     if (/^[/@!]/.test(text)) text = " " + text;
     proc.write(`\x1b[200~${text}\x1b[201~`);
-    setTimeout(() => proc.write("\r"), 50); // small delay before submit — see Task 0.1
+    setTimeout(() => proc.write("\r"), 50); // small delay before submit - see Task 0.1
   }
 
   kill(sessionId: string, reason = "Interrupted"): void {
@@ -1619,7 +1619,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     return this.active.has(sessionId);
   }
 
-  /** InterruptibleEngine.isAlive — kept for interface compat; true if a turn OR a warm PTY exists. */
+  /** InterruptibleEngine.isAlive - kept for interface compat; true if a turn OR a warm PTY exists. */
   isAlive(sessionId: string): boolean {
     return this.active.has(sessionId) || this.lifecycle.getWarm(sessionId) !== undefined;
   }
@@ -1634,14 +1634,14 @@ Expected: PASS (4 `TurnResolver` tests). The engine itself is integration-tested
 - [ ] **Step 6: Typecheck + commit**
 
 ```bash
-pnpm --filter @jinn/jimmy typecheck
+pnpm --filter @jinnjinn-cli typecheck
 git add packages/jinn/src/engines/claude-interactive.ts packages/jinn/src/engines/claude-interactive.test.ts
 git commit -m "feat(engine): InteractiveClaudeEngine + TurnResolver completion contract"
 ```
 
 ---
 
-## Phase 5 — Cost & rate-limit reconstruction
+## Phase 5 - Cost & rate-limit reconstruction
 
 ### Task 5.1: Interactive cost reconstruction
 
@@ -1649,7 +1649,7 @@ git commit -m "feat(engine): InteractiveClaudeEngine + TurnResolver completion c
 - Create: `packages/jinn/src/engines/interactive-cost.ts`
 - Test: `packages/jinn/src/engines/interactive-cost.test.ts`
 
-**[SPIKE-DEP]** Implementation depends on Task 0.3. The code below assumes transcript `assistant` lines carry `message.usage` with `input_tokens`/`output_tokens`/`cache_*`. If Task 0.3 found that unreliable, swap the source to `~/.claude.json` `lastCost`, OR if NO source is reliable: `computeInteractiveCost` returns `null` and a startup warning is logged (handled in Task 6.x) — and budget enforcement is documented as disabled in interactive mode.
+**[SPIKE-DEP]** Implementation depends on Task 0.3. The code below assumes transcript `assistant` lines carry `message.usage` with `input_tokens`/`output_tokens`/`cache_*`. If Task 0.3 found that unreliable, swap the source to `~/.claude.json` `lastCost`, OR if NO source is reliable: `computeInteractiveCost` returns `null` and a startup warning is logged (handled in Task 6.x) - and budget enforcement is documented as disabled in interactive mode.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1674,8 +1674,8 @@ test("sumTranscriptUsage sums usage across assistant lines", () => {
 });
 
 test("sumTranscriptUsage dedupes assistant lines sharing a message.id (effort-high thinking+text split)", () => {
-  // Phase 0 finding: --effort high emits TWO assistant lines per API response —
-  // one with the thinking block, one with the text block — same message.id, same usage.
+  // Phase 0 finding: --effort high emits TWO assistant lines per API response -
+  // one with the thinking block, one with the text block - same message.id, same usage.
   const lines = [
     JSON.stringify({ type: "assistant", message: { id: "m1", usage: { input_tokens: 100, output_tokens: 50 } } }),
     JSON.stringify({ type: "assistant", message: { id: "m1", usage: { input_tokens: 100, output_tokens: 50 } } }),
@@ -1703,7 +1703,7 @@ test("computeInteractiveCost produces a non-negative cost from a real transcript
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npx tsx --test packages/jinn/src/engines/interactive-cost.test.ts`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
 - [ ] **Step 3: Implement.** Read `packages/jinn/src/gateway/costs.ts` and look for an existing per-model price table; if one exists, import it. If not, define a minimal `MODEL_PRICES` map here (input/output $/Mtok) with a conservative default.
 
@@ -1777,7 +1777,7 @@ git commit -m "feat(engine): reconstruct per-turn cost from the transcript"
 - Create: `packages/jinn/src/engines/interactive-ratelimit.ts`
 - Test: `packages/jinn/src/engines/interactive-ratelimit.test.ts`
 
-Phase 0 resolved the source: the rate-limit signal is the **`StopFailure` hook** payload's `error` enum (`rate_limit | authentication_failed | billing_error | invalid_request | server_error | max_output_tokens | unknown`) — `StopFailure` fires *instead of* `Stop` when an API error ends the turn. NOT transcript scanning. This module is a pure mapping from a `StopFailure` payload to `EngineRateLimitInfo`, shaped exactly like what `ClaudeEngine` produces from `rate_limit_event` JSON, so the existing `detectRateLimit` / wait-retry-fallback machinery in `manager.ts` and `api.ts` works unchanged. (`TurnResolver` already captures the `StopFailure` payload — Task 4.3; this maps it; Task 5.3 wires it into `run()`.)
+Phase 0 resolved the source: the rate-limit signal is the **`StopFailure` hook** payload's `error` enum (`rate_limit | authentication_failed | billing_error | invalid_request | server_error | max_output_tokens | unknown`) - `StopFailure` fires *instead of* `Stop` when an API error ends the turn. NOT transcript scanning. This module is a pure mapping from a `StopFailure` payload to `EngineRateLimitInfo`, shaped exactly like what `ClaudeEngine` produces from `rate_limit_event` JSON, so the existing `detectRateLimit` / wait-retry-fallback machinery in `manager.ts` and `api.ts` works unchanged. (`TurnResolver` already captures the `StopFailure` payload - Task 4.3; this maps it; Task 5.3 wires it into `run()`.)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1807,7 +1807,7 @@ test("rateLimitFromStopFailure returns null for non-StopFailure / missing error 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npx tsx --test packages/jinn/src/engines/interactive-ratelimit.test.ts`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
 - [ ] **Step 3: Implement**
 
@@ -1820,7 +1820,7 @@ import type { HookPayload } from "../gateway/hook-registry.js";
  * Returns null unless the turn failed specifically with error === "rate_limit".
  * The shape matches what ClaudeEngine produces from `rate_limit_event` JSON, so
  * detectRateLimit() / the wait-retry machinery in manager.ts work unchanged.
- * (error_details may carry a reset time, but its format is unconfirmed — left
+ * (error_details may carry a reset time, but its format is unconfirmed - left
  * unparsed; manager.ts computes a default backoff when resetsAt is absent.)
  */
 export function rateLimitFromStopFailure(payload: HookPayload | undefined): EngineRateLimitInfo | null {
@@ -1871,9 +1871,9 @@ import { rateLimitFromStopFailure } from "./interactive-ratelimit.js";
   }
 ```
 
-- [ ] **Step 3: Typecheck.** `pnpm --filter @jinn/jimmy typecheck` — clean (the modules from 5.1/5.2 now resolve).
+- [ ] **Step 3: Typecheck.** `pnpm --filter @jinnjinn-cli typecheck` - clean (the modules from 5.1/5.2 now resolve).
 
-- [ ] **Step 4: Run the engine's unit test** to confirm no regression: `npx tsx --test packages/jinn/src/engines/claude-interactive.test.ts` — PASS.
+- [ ] **Step 4: Run the engine's unit test** to confirm no regression: `npx tsx --test packages/jinn/src/engines/claude-interactive.test.ts` - PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -1884,13 +1884,13 @@ git commit -m "feat(engine): wire cost + rate-limit reconstruction into run()"
 
 ---
 
-## Phase 6 — Wire up the daemon
+## Phase 6 - Wire up the daemon
 
-### Task 6.1: Boot wiring — engine selection, gateway.json, hook relay, trust
+### Task 6.1: Boot wiring - engine selection, gateway.json, hook relay, trust
 
 **Files:**
 - Modify: `packages/jinn/src/gateway/server.ts` (engine construction ~`:133`, `ApiContext` ~`:157`, cleanup ~`:738-760`)
-- Modify: `packages/jinn/src/gateway/api.ts` (`ApiContext` type — add `hookRegistry`, `hookSecret`)
+- Modify: `packages/jinn/src/gateway/api.ts` (`ApiContext` type - add `hookRegistry`, `hookSecret`)
 
 - [ ] **Step 1: Read `gateway/server.ts:120-200` and `:730-770`** to find where `ClaudeEngine` is constructed, where `ApiContext` is assembled, and the `cleanup()` shutdown closure.
 
@@ -1935,14 +1935,14 @@ if (claudeCfg.mode === "interactive") {
 
 - [ ] **Step 4: Put `hookRegistry` + `gatewayInfo.secret` on `ApiContext`** when it's assembled.
 
-- [ ] **Step 5: In `cleanup()`**, ensure `claudeEngine.killAll()` runs (it already does via the engines map — confirm the interactive engine is in that map) and delete `GATEWAY_INFO_FILE`.
+- [ ] **Step 5: In `cleanup()`**, ensure `claudeEngine.killAll()` runs (it already does via the engines map - confirm the interactive engine is in that map) and delete `GATEWAY_INFO_FILE`.
 
-- [ ] **Step 6: Typecheck + manual boot test.** `pnpm --filter @jinn/jimmy build && JINN_HOME=~/.jinn node packages/jinn/dist/bin/jinn.js start` with `engines.claude.mode: interactive` in config — confirm the log says "INTERACTIVE mode", `~/.jinn/gateway.json` exists with a `secret`, `~/.jinn/hook-relay.mjs` exists, and `~/.claude.json` has the JINN_HOME trust entry. Stop the gateway; confirm `gateway.json` is removed.
+- [ ] **Step 6: Typecheck + manual boot test.** `pnpm --filter @jinnjinn-cli build && JINN_HOME=~/.jinn node packages/jinn/dist/bin/jinn.js start` with `engines.claude.mode: interactive` in config - confirm the log says "INTERACTIVE mode", `~/.jinn/gateway.json` exists with a `secret`, `~/.jinn/hook-relay.mjs` exists, and `~/.claude.json` has the JINN_HOME trust entry. Stop the gateway; confirm `gateway.json` is removed.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-pnpm --filter @jinn/jimmy typecheck
+pnpm --filter @jinnjinn-cli typecheck
 git add packages/jinn/src/gateway/server.ts packages/jinn/src/gateway/api.ts
 git commit -m "feat(gateway): boot wiring for interactive engine (gateway.json, trust, relay)"
 ```
@@ -1950,7 +1950,7 @@ git commit -m "feat(gateway): boot wiring for interactive engine (gateway.json, 
 ### Task 6.2: Hook endpoint → resolver delivery (verify integration)
 
 **Files:**
-- Modify: `packages/jinn/src/gateway/api.ts` (the route block from Task 2.4 — confirm it reads `context.hookRegistry` / `context.hookSecret`)
+- Modify: `packages/jinn/src/gateway/api.ts` (the route block from Task 2.4 - confirm it reads `context.hookRegistry` / `context.hookSecret`)
 
 - [ ] **Step 1: Confirm the route block** added in Task 2.4 references the now-populated `context.hookRegistry` and `context.hookSecret`. Fix any reference.
 
@@ -1963,37 +1963,37 @@ git add packages/jinn/src/gateway/api.ts
 git commit -m "fix(gateway): wire hook endpoint to populated context"
 ```
 
-### Task 6.3: `releaseSession` wiring — delete / reset / engine-change / org-change
+### Task 6.3: `releaseSession` wiring - delete / reset / engine-change / org-change
 
 **Files:**
-- Modify: `packages/jinn/src/gateway/api.ts` (`:446`, `:464`, `:479`, `:609`, `:777` — the `isAlive`→`kill` call sites)
+- Modify: `packages/jinn/src/gateway/api.ts` (`:446`, `:464`, `:479`, `:609`, `:777` - the `isAlive`→`kill` call sites)
 - Modify: `packages/jinn/src/sessions/manager.ts` (`resetSession` ~`:835`; the `engineOverride` swap ~`:40-101`)
 - Modify: `packages/jinn/src/gateway/server.ts` (`onOrgChange` handler)
 
 - [ ] **Step 1: Read each of the five `api.ts` call sites** that do `if (isInterruptibleEngine(engine) && engine.isAlive(id)) engine.kill(id)`. For DELETE / reset / batch-delete, change them to **always** call `engine.kill(id)` (the interactive `kill()` is a no-op-safe `releaseSession` + resolver-settle; the headless `kill()` already no-ops when not alive). For interrupt-on-new-message (`:777`), gate on `isTurnRunning` if the engine exposes it (feature-detect: `"isTurnRunning" in engine`), else fall back to `isAlive`.
 
-- [ ] **Step 2: Fix `SessionManager.resetSession`** (`manager.ts:835`) — it currently calls `deleteSession` but never kills the engine process. Add: if the engine is interruptible, `engine.kill(session.id, "Interrupted: session reset")` before `deleteSession`.
+- [ ] **Step 2: Fix `SessionManager.resetSession`** (`manager.ts:835`) - it currently calls `deleteSession` but never kills the engine process. Add: if the engine is interruptible, `engine.kill(session.id, "Interrupted: session reset")` before `deleteSession`.
 
-- [ ] **Step 3: Engine-override swap** — in `manager.ts`'s `maybeRevertEngineOverride` and the rate-limit fallback that swaps `session.engine` to `codex`, call `claudeEngine.kill(session.id, "Interrupted: engine switched")` so the orphaned warm Claude PTY is released.
+- [ ] **Step 3: Engine-override swap** - in `manager.ts`'s `maybeRevertEngineOverride` and the rate-limit fallback that swaps `session.engine` to `codex`, call `claudeEngine.kill(session.id, "Interrupted: engine switched")` so the orphaned warm Claude PTY is released.
 
-- [ ] **Step 4: `onOrgChange`** in `server.ts` — after rescanning employees, for any session whose employee's persona/`cliFlags` changed, call `claudeEngine.kill(session.id, "Interrupted: employee config changed")`. (Simplest correct version: kill all warm PTYs on any org change — persona changes are rare. Document this choice in a comment.)
+- [ ] **Step 4: `onOrgChange`** in `server.ts` - after rescanning employees, for any session whose employee's persona/`cliFlags` changed, call `claudeEngine.kill(session.id, "Interrupted: employee config changed")`. (Simplest correct version: kill all warm PTYs on any org change - persona changes are rare. Document this choice in a comment.)
 
-- [ ] **Step 5: Typecheck + manual test.** Interactive gateway running; start a web session, then DELETE it via `curl -X DELETE localhost:7777/api/sessions/<id>` — confirm the `claude` PTY process is gone (`pgrep -f claude`).
+- [ ] **Step 5: Typecheck + manual test.** Interactive gateway running; start a web session, then DELETE it via `curl -X DELETE localhost:7777/api/sessions/<id>` - confirm the `claude` PTY process is gone (`pgrep -f claude`).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-pnpm --filter @jinn/jimmy typecheck
+pnpm --filter @jinnjinn-cli typecheck
 git add packages/jinn/src/gateway/api.ts packages/jinn/src/sessions/manager.ts packages/jinn/src/gateway/server.ts
 git commit -m "feat: route session teardown through releaseSession; fix resetSession engine kill"
 ```
 
-### Task 6.4: Settings-file lifecycle — stop cleaning it in `runSession` finally
+### Task 6.4: Settings-file lifecycle - stop cleaning it in `runSession` finally
 
 **Files:**
 - Modify: `packages/jinn/src/sessions/manager.ts:746` (the `cleanupMcpConfigFile` call in `finally`)
 
-- [ ] **Step 1: Read `manager.ts:736-748`** (the `finally` block). The `--settings` file must NOT be cleaned here (a warm PTY needs it across turns). Confirm only `cleanupMcpConfigFile` is called here, not any settings-file cleanup. The interactive engine's settings file is cleaned by `PtyLifecycleManager.onCleanup` (wired in Task 6.1) — no change needed here unless a settings cleanup was mistakenly added. Add a code comment noting the settings file is PTY-lifetime, not turn-lifetime.
+- [ ] **Step 1: Read `manager.ts:736-748`** (the `finally` block). The `--settings` file must NOT be cleaned here (a warm PTY needs it across turns). Confirm only `cleanupMcpConfigFile` is called here, not any settings-file cleanup. The interactive engine's settings file is cleaned by `PtyLifecycleManager.onCleanup` (wired in Task 6.1) - no change needed here unless a settings cleanup was mistakenly added. Add a code comment noting the settings file is PTY-lifetime, not turn-lifetime.
 
 - [ ] **Step 2: Commit** (if a comment/change was made)
 
@@ -2002,10 +2002,10 @@ git add packages/jinn/src/sessions/manager.ts
 git commit -m "docs(manager): note --settings file is PTY-lifetime not turn-lifetime"
 ```
 
-### Task 6.5: End-to-end integration test — interactive turn via connector path
+### Task 6.5: End-to-end integration test - interactive turn via connector path
 
 **Files:**
-- Test: manual / scripted smoke (no unit test — needs a real `claude`)
+- Test: manual / scripted smoke (no unit test - needs a real `claude`)
 
 - [ ] **Step 1:** Set `engines.claude.mode: interactive` in `~/.jinn/config.yaml`. Build + start the gateway.
 
@@ -2015,7 +2015,7 @@ git commit -m "docs(manager): note --settings file is PTY-lifetime not turn-life
 
 - [ ] **Step 4:** Send a second message to the same session; confirm it resumes (the assistant has prior context) and `engineSessionId` is unchanged.
 
-- [ ] **Step 5:** Check the Anthropic usage dashboard — confirm the turns counted against **interactive** limits, not the Agent SDK credit. **This is the load-bearing validation of the whole project.**
+- [ ] **Step 5:** Check the Anthropic usage dashboard - confirm the turns counted against **interactive** limits, not the Agent SDK credit. **This is the load-bearing validation of the whole project.**
 
 - [ ] **Step 6:** Record results in the spec's Open Questions section; mark the billing question RESOLVED. Commit the spec update.
 
@@ -2026,7 +2026,7 @@ git commit -m "spike: confirm end-to-end interactive turn bills against interact
 
 ---
 
-## Phase 7 — Web UI: Chat ↔ CLI toggle + xterm.js
+## Phase 7 - Web UI: Chat ↔ CLI toggle + xterm.js
 
 ### Task 7.1: Dedicated `/ws/pty/:sessionId` channel
 
@@ -2034,9 +2034,9 @@ git commit -m "spike: confirm end-to-end interactive turn bills against interact
 - Create: `packages/jinn/src/gateway/pty-ws.ts`
 - Modify: `packages/jinn/src/gateway/server.ts` (the `upgrade` handler ~`:631`)
 
-- [ ] **Step 1: Read `server.ts:540-640`** — the existing `WebSocketServer`, `wsClients` set, `emit()`, and the `upgrade` handler that accepts only `/ws`.
+- [ ] **Step 1: Read `server.ts:540-640`** - the existing `WebSocketServer`, `wsClients` set, `emit()`, and the `upgrade` handler that accepts only `/ws`.
 
-- [ ] **Step 2: Implement `pty-ws.ts`** — a per-session PTY WebSocket registry. It needs access to the `PtyLifecycleManager` (to get the warm PTY handle's underlying `node-pty` proc) and to the `InteractiveClaudeEngine` (to inject stdin). Expose:
+- [ ] **Step 2: Implement `pty-ws.ts`** - a per-session PTY WebSocket registry. It needs access to the `PtyLifecycleManager` (to get the warm PTY handle's underlying `node-pty` proc) and to the `InteractiveClaudeEngine` (to inject stdin). Expose:
 
 ```ts
 import type { WebSocketServer, WebSocket } from "ws";
@@ -2055,7 +2055,7 @@ export interface PtyWsDeps {
  *  replays the gateway-side scrollback buffer on connect. */
 export function attachPtyWebSocket(ws: WebSocket, sessionId: string, deps: PtyWsDeps): void {
   // 1. find the warm PTY proc via deps.lifecycle.getWarm(sessionId)
-  // 2. replay the serialize buffer (kept per session — see Step 3)
+  // 2. replay the serialize buffer (kept per session - see Step 3)
   // 3. proc.onData -> ws.send(binary)
   // 4. ws.on("message") -> parse JSON: stdin -> deps.injectPrompt; resize -> deps.resize
   // 5. ws.on("close") -> detach the onData listener (do NOT kill the PTY)
@@ -2064,21 +2064,21 @@ export function attachPtyWebSocket(ws: WebSocket, sessionId: string, deps: PtyWs
 
 Implement the body fully: maintain a per-session ring buffer of recent PTY output (cap ~256 KB) so a (re)connecting browser gets a populated terminal; subscribe to the `node-pty` proc's `onData`; forward upstream `stdin`/`resize` messages.
 
-- [ ] **Step 3: Add a scrollback buffer** to the `InteractiveClaudeEngine` spawn path — when a PTY is spawned, attach an `onData` listener that appends to a capped per-session buffer. Expose `getScrollback(sessionId): string` for `pty-ws.ts` to replay.
+- [ ] **Step 3: Add a scrollback buffer** to the `InteractiveClaudeEngine` spawn path - when a PTY is spawned, attach an `onData` listener that appends to a capped per-session buffer. Expose `getScrollback(sessionId): string` for `pty-ws.ts` to replay.
 
-- [ ] **Step 4: Wire the `upgrade` handler** in `server.ts` — match `/ws/pty/:sessionId`, call `attachPtyWebSocket`. Leave the existing `/ws` path untouched.
+- [ ] **Step 4: Wire the `upgrade` handler** in `server.ts` - match `/ws/pty/:sessionId`, call `attachPtyWebSocket`. Leave the existing `/ws` path untouched.
 
-- [ ] **Step 5: Typecheck + manual test.** Interactive gateway running; start a session; `websocat ws://localhost:7777/ws/pty/<id>` (or a tiny node ws client) — confirm PTY bytes stream in, and sending `{"type":"stdin","data":"Reply OK"}` injects a turn.
+- [ ] **Step 5: Typecheck + manual test.** Interactive gateway running; start a session; `websocat ws://localhost:7777/ws/pty/<id>` (or a tiny node ws client) - confirm PTY bytes stream in, and sending `{"type":"stdin","data":"Reply OK"}` injects a turn.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-pnpm --filter @jinn/jimmy typecheck
+pnpm --filter @jinnjinn-cli typecheck
 git add packages/jinn/src/gateway/pty-ws.ts packages/jinn/src/gateway/server.ts packages/jinn/src/engines/claude-interactive.ts
 git commit -m "feat(gateway): dedicated /ws/pty channel + per-session scrollback buffer"
 ```
 
-### Task 7.2: Web — `xterm.js` dependency + per-session view-mode persistence
+### Task 7.2: Web - `xterm.js` dependency + per-session view-mode persistence
 
 **Files:**
 - Modify: `packages/web/package.json`
@@ -2115,9 +2115,9 @@ test("writeViewMode round-trips per session", () => {
 - [ ] **Step 3: Run test to verify it fails**
 
 Run: `npx tsx --test packages/web/src/lib/view-mode.test.ts`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
-- [ ] **Step 4: Implement** (a thin localStorage wrapper, injectable store for testing — mirrors the `jinn-<key>-<sessionId>` pattern in `conversations.ts`):
+- [ ] **Step 4: Implement** (a thin localStorage wrapper, injectable store for testing - mirrors the `jinn-<key>-<sessionId>` pattern in `conversations.ts`):
 
 ```ts
 export type ViewMode = "chat" | "cli";
@@ -2142,7 +2142,7 @@ export function writeViewMode(sessionId: string, mode: ViewMode, store: KVStore 
 }
 ```
 
-(Note: `Map` and `Storage` both have `getItem`/`setItem`? `Map` does not — adjust: the helper should accept `Map` and use `.get`/`.set`. Make the store param `{ getItem, setItem }` and in tests pass an adapter, OR accept `Map` and branch. Simplest: accept `Map<string,string>` in tests and `localStorage` in prod, branch on `instanceof Map`.)
+(Note: `Map` and `Storage` both have `getItem`/`setItem`? `Map` does not - adjust: the helper should accept `Map` and use `.get`/`.set`. Make the store param `{ getItem, setItem }` and in tests pass an adapter, OR accept `Map` and branch. Simplest: accept `Map<string,string>` in tests and `localStorage` in prod, branch on `instanceof Map`.)
 
 - [ ] **Step 5: Run test to verify it passes**
 
@@ -2156,19 +2156,19 @@ git add packages/web/package.json packages/web/src/lib/view-mode.ts packages/web
 git commit -m "feat(web): xterm.js deps + per-session view-mode persistence helper"
 ```
 
-### Task 7.3: Web — `CliTerminal` component (xterm.js + overlay textarea)
+### Task 7.3: Web - `CliTerminal` component (xterm.js + overlay textarea)
 
 **Files:**
 - Create: `packages/web/src/components/cli-terminal.tsx`
 
 - [ ] **Step 1: Read `packages/web/src/lib/ws.ts` and `packages/web/src/hooks/use-gateway.ts`** to match the WebSocket URL/connection conventions.
 
-- [ ] **Step 2: Implement `CliTerminal`** — a React component that:
+- [ ] **Step 2: Implement `CliTerminal`** - a React component that:
   - Mounts an `xterm.js` `Terminal` with the `fit` addon into a container ref.
   - Opens `ws://<host>/ws/pty/<sessionId>`, writes incoming binary frames to the terminal.
   - On resize (fit addon), sends `{type:"resize",cols,rows}` upstream.
-  - Renders a native `<textarea>` absolutely positioned over the bottom ~6 rows of the terminal (CSS overlay) — the user types here; on submit, sends `{type:"stdin",data:<text>}` and clears the textarea.
-  - On unmount, closes the WS (does NOT kill the PTY — the lifecycle manager owns that).
+  - Renders a native `<textarea>` absolutely positioned over the bottom ~6 rows of the terminal (CSS overlay) - the user types here; on submit, sends `{type:"stdin",data:<text>}` and clears the textarea.
+  - On unmount, closes the WS (does NOT kill the PTY - the lifecycle manager owns that).
 
 ```tsx
 "use client";
@@ -2252,10 +2252,10 @@ function CliOverlayInput({ onSend }: { onSend: (t: string) => void }) {
 
 ```bash
 git add packages/web/src/components/cli-terminal.tsx
-git commit -m "feat(web): CliTerminal — xterm.js view with overlay input"
+git commit -m "feat(web): CliTerminal - xterm.js view with overlay input"
 ```
 
-### Task 7.4: Web — wire the toggle, replace `CliTranscript`, persist per-session
+### Task 7.4: Web - wire the toggle, replace `CliTranscript`, persist per-session
 
 **Files:**
 - Modify: `packages/web/src/app/chat/page.tsx` (`viewMode` state ~`:106`, the reset-on-switch logic ~`:206`,`:376`, `handleSelect`, `toolbarActions` ~`:441-466`)
@@ -2263,11 +2263,11 @@ git commit -m "feat(web): CliTerminal — xterm.js view with overlay input"
 
 - [ ] **Step 1: Read `chat/page.tsx` around the `viewMode` usages and `chat-pane.tsx:580-600`.**
 
-- [ ] **Step 2: Replace `useState` view mode with the persisted helper.** Initialize `viewMode` from `readViewMode(sessionId)`; on toggle, call `writeViewMode(sessionId, mode)`. **Remove the `setViewMode('chat')` reset-on-switch lines** (`page.tsx:206`, `:376`, the one in `handleSelect`) — instead, on session switch, re-read `readViewMode(newSessionId)`.
+- [ ] **Step 2: Replace `useState` view mode with the persisted helper.** Initialize `viewMode` from `readViewMode(sessionId)`; on toggle, call `writeViewMode(sessionId, mode)`. **Remove the `setViewMode('chat')` reset-on-switch lines** (`page.tsx:206`, `:376`, the one in `handleSelect`) - instead, on session switch, re-read `readViewMode(newSessionId)`.
 
 - [ ] **Step 3: In `chat-pane.tsx`**, change the `viewMode === 'cli'` branch from `<CliTranscript .../>` to `<CliTerminal sessionId={sessionId} wsBase={wsBase} />`. Keep `CliTranscript` importable as a fallback but no longer the default CLI view.
 
-- [ ] **Step 4: Manual test in the browser.** Build the web app, run the interactive gateway. Open a chat, toggle to CLI — confirm the live terminal streams and the overlay textarea sends turns. Switch to another chat and back — confirm the toggle state persisted per session.
+- [ ] **Step 4: Manual test in the browser.** Build the web app, run the interactive gateway. Open a chat, toggle to CLI - confirm the live terminal streams and the overlay textarea sends turns. Switch to another chat and back - confirm the toggle state persisted per session.
 
 - [ ] **Step 5: Commit**
 
@@ -2276,7 +2276,7 @@ git add packages/web/src/app/chat/page.tsx packages/web/src/components/chat-pane
 git commit -m "feat(web): persist Chat/CLI toggle per session; CLI mode = live xterm.js"
 ```
 
-### Task 7.5: Web — recently-viewed chat keep-alive cache
+### Task 7.5: Web - recently-viewed chat keep-alive cache
 
 **Files:**
 - Modify: `packages/web/src/hooks/use-chat-tabs.ts` (add `lastViewedAt` to `ChatTab`)
@@ -2288,7 +2288,7 @@ git commit -m "feat(web): persist Chat/CLI toggle per session; CLI mode = live x
 
 - [ ] **Step 3: Ensure backgrounded panes don't refetch.** Confirm backgrounded `ChatPane`s rely on the WS delta stream, not `useSession` React Query (which `use-query-invalidation.ts` invalidates on every `session:completed`). If a backgrounded pane subscribes to `useSession`, gate the query `enabled: isActive`.
 
-- [ ] **Step 4: Manual test.** Open 3 chats, switch between them rapidly — confirm switching is instant (no spinner, no re-fetch flash) and CLI terminals retain their scrollback. Confirm after ~5 min idle the warm PTY is released (check `pgrep -f claude`) — this validates the grace window against the lifecycle manager.
+- [ ] **Step 4: Manual test.** Open 3 chats, switch between them rapidly - confirm switching is instant (no spinner, no re-fetch flash) and CLI terminals retain their scrollback. Confirm after ~5 min idle the warm PTY is released (check `pgrep -f claude`) - this validates the grace window against the lifecycle manager.
 
 - [ ] **Step 5: Commit**
 
@@ -2297,12 +2297,12 @@ git add packages/web/src/hooks/use-chat-tabs.ts packages/web/src/app/chat/page.t
 git commit -m "feat(web): keep recently-viewed chats mounted for snappy switching"
 ```
 
-### Task 7.6: Web — KEEP ALIVE control
+### Task 7.6: Web - KEEP ALIVE control
 
 **Files:**
 - Modify: `packages/web/src/app/chat/page.tsx` (toolbar) + a new `PUT /api/sessions/:id` field
 - Modify: `packages/jinn/src/gateway/api.ts` (the `PUT/PATCH /api/sessions/:id` handler)
-- Modify: `packages/jinn/src/sessions/registry.ts` (`UpdateSessionFields` — add `keepAlive`; the `Session` type already needs a `keepAlive` column — add a migration)
+- Modify: `packages/jinn/src/sessions/registry.ts` (`UpdateSessionFields` - add `keepAlive`; the `Session` type already needs a `keepAlive` column - add a migration)
 
 - [ ] **Step 1: Add a `keep_alive` column** to the `sessions` table via a migration (follow `migrateSessionsSchema` in `registry.ts:159`). Add `keepAlive: boolean` to the `Session` type and `UpdateSessionFields`.
 
@@ -2315,23 +2315,23 @@ git commit -m "feat(web): keep recently-viewed chats mounted for snappy switchin
 - [ ] **Step 5: Typecheck + commit**
 
 ```bash
-pnpm --filter @jinn/jimmy typecheck
+pnpm --filter @jinnjinn-cli typecheck
 git add packages/jinn/src/sessions/registry.ts packages/jinn/src/gateway/api.ts packages/jinn/src/engines/claude-interactive.ts packages/web/src/app/chat/page.tsx
 git commit -m "feat: per-session KEEP ALIVE control (DB column + API + web toggle)"
 ```
 
 ---
 
-## Phase 8 — Fork
+## Phase 8 - Fork
 
 ### Task 8.1: Route `forkClaudeSession` through the interactive engine
 
 **Files:**
 - Modify: `packages/jinn/src/sessions/fork.ts`
 
-- [ ] **Step 1: Read `fork.ts`** in full — note the current `claude --resume <id> --fork-session --print -p …` invocation (`:27`).
+- [ ] **Step 1: Read `fork.ts`** in full - note the current `claude --resume <id> --fork-session --print -p …` invocation (`:27`).
 
-- [ ] **Step 2: Change the fork path.** Before forking: if the Claude engine is interactive, call `claudeEngine.kill(sourceSessionId, "Interrupted: forking")` to release any warm PTY holding the source session id (avoids a transcript-file-lock conflict). Then run the fork **without `-p`** in a PTY (so it bills as `cli`) — reuse `buildInteractiveArgs` with `cliFlags: ["--fork-session"]` and no `--mcp-config`/streaming. Capture the new session id from the resulting `SessionStart` hook or from `claude`'s output.
+- [ ] **Step 2: Change the fork path.** Before forking: if the Claude engine is interactive, call `claudeEngine.kill(sourceSessionId, "Interrupted: forking")` to release any warm PTY holding the source session id (avoids a transcript-file-lock conflict). Then run the fork **without `-p`** in a PTY (so it bills as `cli`) - reuse `buildInteractiveArgs` with `cliFlags: ["--fork-session"]` and no `--mcp-config`/streaming. Capture the new session id from the resulting `SessionStart` hook or from `claude`'s output.
 
 - [ ] **Step 3: If the engine is headless mode**, keep the existing `-p` fork path (it's correct for that mode).
 
@@ -2340,14 +2340,14 @@ git commit -m "feat: per-session KEEP ALIVE control (DB column + API + web toggl
 - [ ] **Step 5: Commit**
 
 ```bash
-pnpm --filter @jinn/jimmy typecheck
+pnpm --filter @jinnjinn-cli typecheck
 git add packages/jinn/src/sessions/fork.ts
 git commit -m "feat(fork): interactive-mode fork bills as cli and releases source PTY"
 ```
 
 ---
 
-## Phase 9 — Boot reconciliation & cleanup
+## Phase 9 - Boot reconciliation & cleanup
 
 ### Task 9.1: Orphan-PTY reaping on boot
 
@@ -2356,7 +2356,7 @@ git commit -m "feat(fork): interactive-mode fork bills as cli and releases sourc
 
 - [ ] **Step 1: On boot, before writing the fresh `gateway.json`**, read the *old* `gateway.json` if present. For each pid in `ptyPids` (and the old gateway `pid`), if the process is still alive and is a `claude`/relay process, `process.kill(pid, "SIGTERM")`. This reaps PTYs orphaned by a prior crash.
 
-- [ ] **Step 2: Periodically update `gateway.json`'s `ptyPids`** — when the `PtyLifecycleManager` adopts/releases a PTY, call `updateGatewayPtyPids(GATEWAY_INFO_FILE, lifecycle.livePids())`. Wire this via the `onCleanup` callback and an `onAdopt` callback (add one to `PtyLifecycleManager` opts).
+- [ ] **Step 2: Periodically update `gateway.json`'s `ptyPids`** - when the `PtyLifecycleManager` adopts/releases a PTY, call `updateGatewayPtyPids(GATEWAY_INFO_FILE, lifecycle.livePids())`. Wire this via the `onCleanup` callback and an `onAdopt` callback (add one to `PtyLifecycleManager` opts).
 
 - [ ] **Step 3: Manual test.** Start interactive gateway, start a KEEP ALIVE session (PTY warm). `kill -9` the gateway process (simulating a crash). Confirm the `claude` PTY is orphaned (`pgrep -f claude` shows it). Restart the gateway; confirm boot reaps the orphan.
 
@@ -2369,9 +2369,9 @@ git commit -m "feat(gateway): reap orphaned PTYs on boot via gateway.json pids"
 
 ### Task 9.2: Full suite + typecheck green
 
-- [ ] **Step 1: Run the full daemon test suite.** `pnpm --filter @jinn/jimmy test` — all green.
-- [ ] **Step 2: Typecheck both packages.** `pnpm typecheck` — clean.
-- [ ] **Step 3: Run the existing e2e if present.** `pnpm test:e2e` — no regressions.
+- [ ] **Step 1: Run the full daemon test suite.** `pnpm --filter @jinnjinn-cli test` - all green.
+- [ ] **Step 2: Typecheck both packages.** `pnpm typecheck` - clean.
+- [ ] **Step 3: Run the existing e2e if present.** `pnpm test:e2e` - no regressions.
 - [ ] **Step 4: Final commit** (if any fixes were needed)
 
 ```bash
@@ -2383,7 +2383,7 @@ git commit -m "test: green suite + typecheck for interactive TUI engine"
 
 ## Self-Review Notes
 
-- **Spec coverage:** every spec component maps to a task — engine (4.3), lifecycle manager (3.1/3.2), hook relay+endpoint (2.1–2.4), transcript tailer (4.1), cost (5.1), rate-limit (5.2), gateway WS (7.1), web Chat/CLI toggle (7.2–7.5), trust seeding (2.1/6.1), config (1.1), fork (8.1), `gateway.json` (1.4/6.1/9.1), KEEP ALIVE (7.6), boot reconciliation (9.1).
-- **[SPIKE-DEP] tasks** — 2.1, 4.2, 4.3, 5.1, 5.2 carry assumptions that Phase 0 must confirm; revisit them after the spike before implementing.
+- **Spec coverage:** every spec component maps to a task - engine (4.3), lifecycle manager (3.1/3.2), hook relay+endpoint (2.1–2.4), transcript tailer (4.1), cost (5.1), rate-limit (5.2), gateway WS (7.1), web Chat/CLI toggle (7.2–7.5), trust seeding (2.1/6.1), config (1.1), fork (8.1), `gateway.json` (1.4/6.1/9.1), KEEP ALIVE (7.6), boot reconciliation (9.1).
+- **[SPIKE-DEP] tasks** - 2.1, 4.2, 4.3, 5.1, 5.2 carry assumptions that Phase 0 must confirm; revisit them after the spike before implementing.
 - **Type consistency:** `PtyHandle`, `HookPayload`, `HookRegistry`, `TurnResolver`, `PtyLifecycleManager`, `ViewMode` are defined once and reused. `InterruptibleEngine` is satisfied by `InteractiveClaudeEngine` (adds `isTurnRunning`).
-- **Manual-test tasks** (4.3 engine spawn, 6.x, 7.x browser, 8.1, 9.1) are integration points that need a real `claude` and/or browser — they have explicit smoke steps rather than unit tests, which is correct for PTY/IO/UI boundaries.
+- **Manual-test tasks** (4.3 engine spawn, 6.x, 7.x browser, 8.1, 9.1) are integration points that need a real `claude` and/or browser - they have explicit smoke steps rather than unit tests, which is correct for PTY/IO/UI boundaries.

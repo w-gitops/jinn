@@ -2,59 +2,76 @@ import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
 import { ORG_DIR } from "../shared/paths.js";
-import type { Employee } from "../shared/types.js";
+import type { Employee, JinnConfig } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
+import { getModelRegistry, effortLevelsForModel } from "../shared/models.js";
+
+/**
+ * Recursively walk `dir`, invoking `visit` for every employee YAML file
+ * (.yaml/.yml, skipping department.yaml). Stops early and returns the first
+ * non-undefined value `visit` returns; visitors that never return a value
+ * walk the whole tree.
+ */
+function walkEmployeeYamls<T>(
+  dir: string,
+  visit: (fullPath: string) => T | undefined,
+): T | undefined {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const found = walkEmployeeYamls(fullPath, visit);
+      if (found !== undefined) return found;
+    } else if (
+      (entry.name.endsWith(".yaml") || entry.name.endsWith(".yml")) &&
+      entry.name !== "department.yaml"
+    ) {
+      const found = visit(fullPath);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+}
 
 export function scanOrg(): Map<string, Employee> {
   const registry = new Map<string, Employee>();
 
   if (!fs.existsSync(ORG_DIR)) return registry;
 
-  // Recursively find all .yaml files in org/
-  function scan(dir: string) {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        scan(fullPath);
-      } else if (
-        entry.name.endsWith(".yaml") &&
-        entry.name !== "department.yaml"
-      ) {
-        try {
-          const raw = fs.readFileSync(fullPath, "utf-8");
-          const data = yaml.load(raw) as any;
-          if (data && data.name && data.persona) {
-            const employee: Employee = {
-              name: data.name,
-              displayName: data.displayName || data.name,
-              department:
-                data.department || path.basename(path.dirname(fullPath)),
-              rank: data.rank || "employee",
-              engine: data.engine || "claude",
-              model: data.model || "sonnet",
-              persona: data.persona,
-              emoji: typeof data.emoji === "string" ? data.emoji : undefined,
-              cliFlags: Array.isArray(data.cliFlags) ? data.cliFlags : undefined,
-              effortLevel: typeof data.effortLevel === "string" ? data.effortLevel : undefined,
-              alwaysNotify: typeof data.alwaysNotify === "boolean" ? data.alwaysNotify : true,
-              reportsTo: data.reportsTo ?? undefined,
-              mcp: data.mcp ?? undefined,
-              provides: Array.isArray(data.provides)
-                ? data.provides.filter((s: unknown) => s && typeof s === "object" && typeof (s as any).name === "string" && typeof (s as any).description === "string")
-                  .map((s: any) => ({ name: s.name as string, description: s.description as string }))
-                : undefined,
-            };
-            registry.set(employee.name, employee);
-          }
-        } catch (err) {
-          logger.warn(`Failed to parse employee file ${fullPath}: ${err}`);
-        }
+  walkEmployeeYamls(ORG_DIR, (fullPath) => {
+    try {
+      const raw = fs.readFileSync(fullPath, "utf-8");
+      const data = yaml.load(raw) as any;
+      if (data && data.name && data.persona) {
+        const employee: Employee = {
+          name: data.name,
+          displayName: data.displayName || data.name,
+          department:
+            data.department || path.basename(path.dirname(fullPath)),
+          rank: data.rank || "employee",
+          engine: data.engine || "claude",
+          model: data.model || "sonnet",
+          persona: data.persona,
+          emoji: typeof data.emoji === "string" ? data.emoji : undefined,
+          cliFlags: Array.isArray(data.cliFlags) ? data.cliFlags : undefined,
+          effortLevel: typeof data.effortLevel === "string" ? data.effortLevel : undefined,
+          maxCostUsd: typeof data.maxCostUsd === "number" ? data.maxCostUsd : undefined,
+          alwaysNotify: typeof data.alwaysNotify === "boolean" ? data.alwaysNotify : true,
+          reportsTo: data.reportsTo ?? undefined,
+          mcp: data.mcp ?? undefined,
+          provides: Array.isArray(data.provides)
+            ? data.provides.filter((s: unknown) => s && typeof s === "object" && typeof (s as any).name === "string" && typeof (s as any).description === "string")
+              .map((s: any) => ({ name: s.name as string, description: s.description as string }))
+            : undefined,
+        };
+        registry.set(employee.name, employee);
       }
+    } catch (err) {
+      logger.warn(`Failed to parse employee file ${fullPath}: ${err}`);
     }
-  }
+    return undefined; // keep walking — scanOrg visits every file
+  });
 
-  scan(ORG_DIR);
   return registry;
 }
 
@@ -65,39 +82,210 @@ export function scanOrg(): Map<string, Employee> {
 function findEmployeeYamlPath(name: string): string | undefined {
   if (!fs.existsSync(ORG_DIR)) return undefined;
 
-  function search(dir: string): string | undefined {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        const found = search(fullPath);
-        if (found) return found;
-      } else if (
-        (entry.name.endsWith(".yaml") || entry.name.endsWith(".yml")) &&
-        entry.name !== "department.yaml"
-      ) {
-        try {
-          const raw = fs.readFileSync(fullPath, "utf-8");
-          const data = yaml.load(raw) as any;
-          if (data?.name === name) return fullPath;
-        } catch {
-          // skip unreadable files
-        }
-      }
+  return walkEmployeeYamls(ORG_DIR, (fullPath) => {
+    try {
+      const raw = fs.readFileSync(fullPath, "utf-8");
+      const data = yaml.load(raw) as any;
+      if (data?.name === name) return fullPath;
+    } catch {
+      // skip unreadable files
     }
     return undefined;
-  }
+  });
+}
 
-  return search(ORG_DIR);
+/** Fields of an employee YAML that may be mutated via the update API.
+ *  `name` is intentionally excluded — it is the immutable identity/lookup key. */
+export interface EmployeeUpdate {
+  displayName?: string;
+  department?: string;
+  rank?: Employee["rank"];
+  engine?: string;
+  model?: string;
+  effortLevel?: string;
+  persona?: string;
+  reportsTo?: string | string[];
+  cliFlags?: string[];
+  alwaysNotify?: boolean;
+}
+
+/** The set of YAML keys the update path is allowed to write. `name` is never here. */
+const WRITABLE_FIELDS = [
+  "displayName",
+  "department",
+  "rank",
+  "engine",
+  "model",
+  "effortLevel",
+  "persona",
+  "reportsTo",
+  "cliFlags",
+  "alwaysNotify",
+] as const;
+
+const VALID_RANKS: ReadonlyArray<Employee["rank"]> = [
+  "executive",
+  "manager",
+  "senior",
+  "employee",
+];
+
+export interface EmployeeUpdateResult {
+  ok: boolean;
+  updates?: EmployeeUpdate;
+  error?: string;
 }
 
 /**
- * Update an employee's YAML file. Only alwaysNotify can be changed.
- * Returns true on success, false if employee not found.
+ * Validate an employee update body against the model/engine registry and the
+ * Employee type's constraints. Pure — does no IO. Rejects:
+ *  - `name` (immutable) and any key not in WRITABLE_FIELDS
+ *  - empty/whitespace displayName or persona (an empty persona makes scanOrg drop
+ *    the employee — G3)
+ *  - an invalid rank enum
+ *  - an unknown engine, or a model/effortLevel invalid for the *resulting* engine
+ *  - wrong-typed cliFlags / alwaysNotify / reportsTo
+ *
+ * `current` supplies the existing engine/model so model+effort can be validated
+ * even when those fields aren't part of this update.
+ */
+export function validateEmployeeUpdate(
+  config: JinnConfig,
+  current: Employee,
+  body: Record<string, unknown>,
+): EmployeeUpdateResult {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, error: "update body must be a JSON object" };
+  }
+
+  if ("name" in body) {
+    return { ok: false, error: "field 'name' is immutable and cannot be changed" };
+  }
+
+  const unknownKeys = Object.keys(body).filter(
+    (k) => !(WRITABLE_FIELDS as readonly string[]).includes(k),
+  );
+  if (unknownKeys.length > 0) {
+    return { ok: false, error: `unknown field(s): ${unknownKeys.join(", ")}` };
+  }
+
+  const updates: EmployeeUpdate = {};
+
+  // --- non-empty string fields ---
+  for (const key of ["displayName", "department", "persona"] as const) {
+    if (body[key] !== undefined) {
+      const v = body[key];
+      if (typeof v !== "string" || !v.trim()) {
+        return { ok: false, error: `${key} must be a non-empty string` };
+      }
+      updates[key] = v;
+    }
+  }
+
+  // --- rank enum ---
+  if (body.rank !== undefined) {
+    if (typeof body.rank !== "string" || !VALID_RANKS.includes(body.rank as Employee["rank"])) {
+      return { ok: false, error: `invalid rank "${String(body.rank)}" (valid: ${VALID_RANKS.join(", ")})` };
+    }
+    updates.rank = body.rank as Employee["rank"];
+  }
+
+  // --- engine (must exist in the registry) ---
+  const registry = getModelRegistry(config);
+  if (body.engine !== undefined) {
+    if (typeof body.engine !== "string" || !body.engine.trim()) {
+      return { ok: false, error: "engine must be a non-empty string" };
+    }
+    const engineId = body.engine.trim();
+    if (!registry[engineId]) {
+      const known = Object.keys(registry).join(", ");
+      return { ok: false, error: `unknown engine "${engineId}" (known: ${known || "none"})` };
+    }
+    updates.engine = engineId;
+  }
+
+  const resultingEngine = updates.engine ?? current.engine;
+
+  // --- model (valid for the resulting engine) ---
+  if (body.model !== undefined) {
+    if (typeof body.model !== "string" || !body.model.trim()) {
+      return { ok: false, error: "model must be a non-empty string" };
+    }
+    const modelId = body.model.trim();
+    const entry = registry[resultingEngine];
+    if (entry && !entry.models.some((m) => m.id === modelId)) {
+      if (resultingEngine === "pi") {
+        // Pi models are discovered dynamically; tolerate an id the snapshot hasn't caught yet.
+        logger.warn(`pi model "${modelId}" not in discovered set yet — allowing`);
+      } else {
+        const known = entry.models.map((m) => m.id).join(", ");
+        return { ok: false, error: `unknown model "${modelId}" for engine "${resultingEngine}" (known: ${known || "none"})` };
+      }
+    }
+    updates.model = modelId;
+  }
+
+  // --- effortLevel (valid for the resulting engine+model) ---
+  if (body.effortLevel !== undefined) {
+    if (typeof body.effortLevel !== "string" || !body.effortLevel.trim()) {
+      return { ok: false, error: "effortLevel must be a non-empty string" };
+    }
+    const level = body.effortLevel.trim();
+    const effectiveModel = updates.model ?? current.model ?? undefined;
+    const valid = effortLevelsForModel(config, resultingEngine, effectiveModel);
+    if (valid.length === 0) {
+      return { ok: false, error: `engine "${resultingEngine}"${effectiveModel ? ` model "${effectiveModel}"` : ""} does not support effort levels` };
+    }
+    if (!valid.includes(level)) {
+      return { ok: false, error: `invalid effortLevel "${level}" (valid: ${valid.join(", ")})` };
+    }
+    updates.effortLevel = level;
+  }
+
+  // --- reportsTo (string | string[]) ---
+  if (body.reportsTo !== undefined) {
+    const v = body.reportsTo;
+    const isString = typeof v === "string" && v.trim().length > 0;
+    const isStringArray = Array.isArray(v) && v.every((x) => typeof x === "string" && x.trim().length > 0);
+    if (!isString && !isStringArray) {
+      return { ok: false, error: "reportsTo must be a non-empty string or array of strings" };
+    }
+    updates.reportsTo = v as string | string[];
+  }
+
+  // --- cliFlags (string[]) ---
+  if (body.cliFlags !== undefined) {
+    const v = body.cliFlags;
+    if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) {
+      return { ok: false, error: "cliFlags must be an array of strings" };
+    }
+    updates.cliFlags = v as string[];
+  }
+
+  // --- alwaysNotify (boolean) ---
+  if (body.alwaysNotify !== undefined) {
+    if (typeof body.alwaysNotify !== "boolean") {
+      return { ok: false, error: "alwaysNotify must be a boolean" };
+    }
+    updates.alwaysNotify = body.alwaysNotify;
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return { ok: false, error: "no recognized fields to update" };
+  }
+
+  return { ok: true, updates };
+}
+
+/**
+ * Update an employee's YAML file by read-merging the provided writable fields.
+ * Only keys in WRITABLE_FIELDS are written; `name` is never touched (immutable).
+ * Untouched YAML fields are preserved. Returns true on success, false if the
+ * employee's YAML can't be found/parsed. Validate with validateEmployeeUpdate first.
  */
 export function updateEmployeeYaml(
   name: string,
-  updates: { alwaysNotify?: boolean },
+  updates: EmployeeUpdate,
 ): boolean {
   const filePath = findEmployeeYamlPath(name);
   if (!filePath) return false;
@@ -107,9 +295,13 @@ export function updateEmployeeYaml(
     const data = yaml.load(raw) as Record<string, unknown>;
     if (!data || typeof data !== "object") return false;
 
-    if (typeof updates.alwaysNotify === "boolean") {
-      data.alwaysNotify = updates.alwaysNotify;
+    for (const key of WRITABLE_FIELDS) {
+      const value = (updates as Record<string, unknown>)[key];
+      if (value !== undefined) {
+        data[key] = value;
+      }
     }
+    // `name` is immutable — never write or rename it, even if present in `updates`.
 
     fs.writeFileSync(filePath, yaml.dump(data, { lineWidth: -1 }), "utf-8");
     return true;

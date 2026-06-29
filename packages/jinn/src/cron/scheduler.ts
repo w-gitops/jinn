@@ -50,7 +50,11 @@ function scheduleJobs(jobs: CronJob[]): void {
     const task = cron.schedule(
       job.schedule,
       () => {
-        runCronJob(job, currentSessionManager, currentConfig, currentConnectors);
+        runCronJob(job, currentSessionManager, currentConfig, currentConnectors).catch((err) => {
+          logger.error(
+            `Cron job "${job.name}" crashed: ${err instanceof Error ? err.message : err}`,
+          );
+        });
       },
       { timezone: job.timezone },
     );
