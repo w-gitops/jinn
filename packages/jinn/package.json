@@ -1,5 +1,6 @@
 {
-  "name": "jinn-cli",
+  "name": "@w-gitops/jinn-cli",
+  "private": true,
   "version": "0.23.3",
   "description": "Lightweight AI gateway daemon orchestrating Claude Code, Codex, Grok, and Antigravity CLI",
   "license": "MIT",
