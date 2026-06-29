@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import type { JinnConfig } from "../../shared/types.js";
-import { validateSessionPatch } from "../session-patch.js";
+import { validateNewSessionSelection, validateSessionPatch } from "../session-patch.js";
 import { invalidateModelRegistry } from "../../shared/models.js";
 
 function cfg(): JinnConfig {
@@ -11,6 +11,7 @@ function cfg(): JinnConfig {
       claude: { bin: "claude", model: "opus" },
       codex: { bin: "codex", model: "gpt-5.4" },
       antigravity: { model: "gemini-3-flash-preview" },
+      grok: { bin: "grok", model: "grok-build" },
     },
     models: {
       claude: {
@@ -22,12 +23,88 @@ function cfg(): JinnConfig {
       },
       codex: { default: "gpt-5.4", models: [{ id: "gpt-5.4", supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh"] }] },
       antigravity: { models: [{ id: "gemini-3-flash-preview", supportsEffort: false, effortLevels: [] }] },
+      grok: {
+        default: "grok-build",
+        effortMechanism: "grok-flag",
+        models: [
+          { id: "grok-build", label: "Grok Build", supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh", "max"] },
+          { id: "grok-composer-2.5-fast", label: "Grok Composer 2.5 Fast", supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh", "max"] },
+        ],
+      },
     },
     connectors: {},
   } as unknown as JinnConfig;
 }
 
 beforeEach(() => invalidateModelRegistry());
+
+describe("validateNewSessionSelection", () => {
+  it("accepts a valid engine/model/effort selection", () => {
+    const r = validateNewSessionSelection(cfg(), {
+      engine: "grok",
+      model: "grok-composer-2.5-fast",
+      effortLevel: "max",
+    });
+    expect(r).toEqual({
+      ok: true,
+      engine: "grok",
+      model: "grok-composer-2.5-fast",
+      effortLevel: "max",
+    });
+  });
+
+  it("uses employee engine/model/effort defaults when the request only names an employee", () => {
+    const r = validateNewSessionSelection(
+      cfg(),
+      {},
+      { engine: "claude", model: "claude-sonnet-4-6", effortLevel: "high" },
+    );
+    expect(r).toEqual({
+      ok: true,
+      engine: "claude",
+      model: "claude-sonnet-4-6",
+      effortLevel: "high",
+    });
+  });
+
+  it("lets explicit request values override employee defaults", () => {
+    const r = validateNewSessionSelection(
+      cfg(),
+      { model: "opus", effortLevel: "medium" },
+      { engine: "claude", model: "claude-sonnet-4-6", effortLevel: "high" },
+    );
+    expect(r).toEqual({
+      ok: true,
+      engine: "claude",
+      model: "opus",
+      effortLevel: "medium",
+    });
+  });
+
+  it("rejects an unknown engine before persisting a session", () => {
+    const r = validateNewSessionSelection(cfg(), { engine: "not-real", model: "opus" });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/unknown engine/i);
+  });
+
+  it("rejects an unknown model before persisting a session", () => {
+    const r = validateNewSessionSelection(cfg(), { engine: "grok", model: "grok-not-real" });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/unknown model/i);
+  });
+
+  it("rejects an effort level not valid for the selected model", () => {
+    const r = validateNewSessionSelection(cfg(), { engine: "claude", model: "opus", effortLevel: "xhigh" });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/invalid effortLevel/i);
+  });
+
+  it("rejects effort for an engine/model with no effort support", () => {
+    const r = validateNewSessionSelection(cfg(), { engine: "antigravity", model: "gemini-3-flash-preview", effortLevel: "high" });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/does not support effort/i);
+  });
+});
 
 describe("validateSessionPatch", () => {
   it("accepts a valid model switch for the engine", () => {
@@ -40,6 +117,12 @@ describe("validateSessionPatch", () => {
     const r = validateSessionPatch(cfg(), "codex", "gpt-5.4", { effortLevel: "xhigh" });
     expect(r.ok).toBe(true);
     expect(r.updates).toEqual({ effortLevel: "xhigh" });
+  });
+
+  it("accepts a valid Grok effort switch", () => {
+    const r = validateSessionPatch(cfg(), "grok", "grok-build", { effortLevel: "max" });
+    expect(r.ok).toBe(true);
+    expect(r.updates).toEqual({ effortLevel: "max" });
   });
 
   it("accepts model + effort together, validating effort against the NEW model", () => {
@@ -73,6 +156,36 @@ describe("validateSessionPatch", () => {
     const r = validateSessionPatch(c, "antigravity", "gemini-3-flash-preview", { model: "gemini-3-pro-preview" });
     expect(r.ok).toBe(true);
     expect(r.updates).toEqual({ model: "gemini-3-pro-preview" });
+  });
+
+  it("allows setting a Grok model before a Grok engine session exists", () => {
+    const r = validateSessionPatch(cfg(), "grok", "grok-build", { model: "grok-composer-2.5-fast" });
+    expect(r.ok).toBe(true);
+    expect(r.updates).toEqual({ model: "grok-composer-2.5-fast" });
+  });
+
+  it("rejects changing Grok models after a Grok engine session exists", () => {
+    const r = validateSessionPatch(
+      cfg(),
+      "grok",
+      "grok-build",
+      { model: "grok-composer-2.5-fast" },
+      { engineSessionId: "grok-session-1", defaultModel: "grok-build" },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/new session/i);
+  });
+
+  it("allows a no-op Grok model patch after a Grok engine session exists", () => {
+    const r = validateSessionPatch(
+      cfg(),
+      "grok",
+      null,
+      { model: "grok-build" },
+      { engineSessionId: "grok-session-1", defaultModel: "grok-build" },
+    );
+    expect(r.ok).toBe(true);
+    expect(r.updates).toEqual({ model: "grok-build" });
   });
 
   it("rejects empty/typeless input", () => {

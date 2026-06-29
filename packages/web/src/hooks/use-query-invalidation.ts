@@ -3,6 +3,8 @@ import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useGateway } from '@/hooks/use-gateway'
 import { queryKeys } from '@/lib/query-keys'
+import { patchSessionBackgroundActivity, removeFromSessionsCache } from '@/hooks/use-sessions'
+import type { BackgroundActivity } from '@/lib/api'
 
 /**
  * Subscribes to WebSocket events and invalidates React Query caches.
@@ -28,9 +30,28 @@ export function useQueryInvalidation() {
             qc.invalidateQueries({ queryKey: queryKeys.sessions.detail(p.sessionId as string) })
           }
           break
+        case 'session:deleted':
+          // Drop it from the merged list now; merge-on-refetch would otherwise
+          // keep it as a previously-loaded extra.
+          if (p?.sessionId) removeFromSessionsCache(qc, [p.sessionId as string])
+          pendingRef.current.add('sessions')
+          if (p?.sessionId) {
+            qc.invalidateQueries({ queryKey: queryKeys.sessions.detail(p.sessionId as string) })
+          }
+          break
+        case 'session:background':
+          // Surgical cache patch only — no invalidation/refetch storm. These
+          // fire on every background-activity change (including cleared=null).
+          if (p?.sessionId) {
+            patchSessionBackgroundActivity(
+              qc,
+              p.sessionId as string,
+              (p.backgroundActivity as BackgroundActivity | null) ?? null,
+            )
+          }
+          return
         case 'session:completed':
         case 'session:error':
-        case 'session:deleted':
           pendingRef.current.add('sessions')
           if (p?.sessionId) {
             qc.invalidateQueries({ queryKey: queryKeys.sessions.detail(p.sessionId as string) })
@@ -42,6 +63,20 @@ export function useQueryInvalidation() {
           break
         case 'skills:changed':
           pendingRef.current.add('skills')
+          break
+        case 'org:changed':
+          // A turn (e.g. the onboarding genie hatching an employee) rewrote org/.
+          // Refetch the org/employee list so the new employee shows in the sidebar
+          // live, without a manual page refresh.
+          pendingRef.current.add('org')
+          break
+        case 'config:reloaded':
+          pendingRef.current.add('config')
+          pendingRef.current.add('engines')
+          pendingRef.current.add('status')
+          break
+        case 'engines:updated':
+          pendingRef.current.add('engines')
           break
         default:
           return // No invalidation for unknown events
@@ -60,6 +95,18 @@ export function useQueryInvalidation() {
               break
             case 'skills':
               qc.invalidateQueries({ queryKey: queryKeys.skills.all })
+              break
+            case 'org':
+              qc.invalidateQueries({ queryKey: queryKeys.org.all })
+              break
+            case 'engines':
+              qc.invalidateQueries({ queryKey: queryKeys.engines.all })
+              break
+            case 'config':
+              qc.invalidateQueries({ queryKey: queryKeys.config })
+              break
+            case 'status':
+              qc.invalidateQueries({ queryKey: queryKeys.status })
               break
           }
         }

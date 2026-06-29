@@ -18,21 +18,30 @@ export function VoiceMessage({ src, duration, waveform, isUser }: VoiceMessagePr
     const audio = new Audio(src)
     audioRef.current = audio
 
-    audio.addEventListener('timeupdate', () => {
+    const onTimeUpdate = () => {
       if (audio.duration && isFinite(audio.duration)) {
         setProgress(audio.currentTime / audio.duration)
         setCurrentTime(audio.currentTime)
       }
-    })
-    audio.addEventListener('ended', () => {
+    }
+    const onEnded = () => {
       setPlaying(false)
       setProgress(0)
       setCurrentTime(0)
-    })
-    audio.addEventListener('pause', () => setPlaying(false))
-    audio.addEventListener('play', () => setPlaying(true))
+    }
+    const onPause = () => setPlaying(false)
+    const onPlay = () => setPlaying(true)
+
+    audio.addEventListener('timeupdate', onTimeUpdate)
+    audio.addEventListener('ended', onEnded)
+    audio.addEventListener('pause', onPause)
+    audio.addEventListener('play', onPlay)
 
     return () => {
+      audio.removeEventListener('timeupdate', onTimeUpdate)
+      audio.removeEventListener('ended', onEnded)
+      audio.removeEventListener('pause', onPause)
+      audio.removeEventListener('play', onPlay)
       audio.pause()
       audio.src = ''
     }
@@ -59,7 +68,8 @@ export function VoiceMessage({ src, duration, waveform, isUser }: VoiceMessagePr
       padding: 'var(--space-3) var(--space-4)',
       borderRadius: 'var(--radius-lg)',
       background: isUser ? 'var(--accent)' : 'var(--material-thin)',
-      border: isUser ? 'none' : '1px solid var(--separator)',
+      border: 'none',
+      boxShadow: isUser ? 'none' : 'var(--shadow-subtle)',
       maxWidth: 280,
       minWidth: 200,
     }}>
@@ -71,14 +81,14 @@ export function VoiceMessage({ src, duration, waveform, isUser }: VoiceMessagePr
           width: 28,
           height: 28,
           borderRadius: '50%',
-          background: isUser ? 'rgba(0,0,0,0.2)' : 'var(--fill-secondary)',
+          background: isUser ? 'color-mix(in srgb, var(--accent-contrast) 15%, transparent)' : 'var(--fill-secondary)',
           border: 'none',
           cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           flexShrink: 0,
-          color: isUser ? '#000' : 'var(--text-primary)',
+          color: isUser ? 'var(--accent-contrast)' : 'var(--text-primary)',
         }}
       >
         {playing ? (
@@ -112,7 +122,7 @@ export function VoiceMessage({ src, duration, waveform, isUser }: VoiceMessagePr
                 borderRadius: 1.5,
                 height: `${Math.max(4, amp * 24)}px`,
                 background: isUser
-                  ? (isPlayed ? 'rgba(0,0,0,0.7)' : 'rgba(0,0,0,0.25)')
+                  ? (isPlayed ? 'color-mix(in srgb, var(--accent-contrast) 70%, transparent)' : 'color-mix(in srgb, var(--accent-contrast) 25%, transparent)')
                   : (isPlayed ? 'var(--accent)' : 'var(--fill-primary)'),
                 transition: 'background 100ms ease',
                 flexShrink: 0,
@@ -125,7 +135,7 @@ export function VoiceMessage({ src, duration, waveform, isUser }: VoiceMessagePr
       {/* Duration label */}
       <span style={{
         fontSize: 'var(--text-caption2)',
-        color: isUser ? 'rgba(0,0,0,0.6)' : 'var(--text-tertiary)',
+        color: isUser ? 'color-mix(in srgb, var(--accent-contrast) 60%, transparent)' : 'var(--text-tertiary)',
         fontVariantNumeric: 'tabular-nums',
         flexShrink: 0,
         minWidth: 28,

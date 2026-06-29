@@ -41,13 +41,18 @@ When the user says "deploy" or asks about deployment status.
 
 ## Pre-packaged Skills
 
-{{portalName}} ships with several default skills:
+{{portalName}} ships with these default skills (in `~/.jinn/skills/`):
 
-- **self**: Instructions for {{portalName}} to understand and modify its own configuration
-- **slack**: Slack-specific behavior and formatting guidelines
-- **cron**: How to create and manage scheduled jobs
-- **org**: Working with the organization structure and employee personas
-- **skills**: Meta-skill for creating and managing other skills
+- **onboarding**: First-run setup — gets a new install configured and oriented
+- **status**: Report current session, org, and system status
+- **new**: Start a fresh chat session
+- **sync**: Catch up on an employee's recent conversation before responding
+- **management**: Hire, fire, restructure, and manage the org and its hierarchy
+- **cron-manager**: Create, edit, and manage scheduled jobs
+- **skill-creator**: Author new skills (scaffold a SKILL.md and supporting files)
+- **find-and-install**: Discover and install community skills via `skills find`
+- **migrate**: Apply version migrations to the workspace
+- **self-heal**: Diagnose and fix configuration and runtime problems
 
 ## Key Points
 

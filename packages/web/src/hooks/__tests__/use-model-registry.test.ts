@@ -19,8 +19,8 @@ const REG: EnginesResponse = {
       ],
     },
     codex: {
-      name: 'codex', available: true, defaultModel: 'gpt-5.4', effortMechanism: 'codex-config',
-      models: [{ id: 'gpt-5.4', label: 'GPT-5.4', supportsEffort: true, effortLevels: ['low', 'medium', 'high', 'xhigh'] }],
+      name: 'codex', available: true, defaultModel: 'gpt-5.5', effortMechanism: 'codex-config',
+      models: [{ id: 'gpt-5.5', label: 'GPT-5.5', supportsEffort: true, effortLevels: ['low', 'medium', 'high', 'xhigh'] }],
     },
     antigravity: {
       name: 'antigravity', available: true, defaultModel: 'gemini-3-flash-preview', effortMechanism: 'none',
@@ -50,7 +50,7 @@ describe('findModel', () => {
 
 describe('effortLevelsFor', () => {
   it('returns the model effort levels', () => {
-    expect(effortLevelsFor(REG, 'codex', 'gpt-5.4')).toContain('xhigh')
+    expect(effortLevelsFor(REG, 'codex', 'gpt-5.5')).toContain('xhigh')
   })
   it('returns [] for an effort-less model (antigravity)', () => {
     expect(effortLevelsFor(REG, 'antigravity', 'gemini-3-flash-preview')).toEqual([])

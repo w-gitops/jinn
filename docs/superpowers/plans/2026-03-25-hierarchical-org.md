@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add infinite-depth hierarchical reporting to the org system — data model, resolver, API, context builder, and dashboard.
+**Goal:** Add infinite-depth hierarchical reporting to the org system - data model, resolver, API, context builder, and dashboard.
 
 **Architecture:** A pure-function resolver (`org-hierarchy.ts`) builds a tree from the flat employee registry. The `reportsTo` YAML field drives explicit reporting; smart defaults infer hierarchy from rank/department. API enriches `GET /api/org` with inline employee objects + hierarchy data, eliminating the N+1 pattern. Dashboard renders the tree in both map and sidebar views.
 
@@ -41,7 +41,7 @@ export interface OrgNode {
   directReports: string[];
   /** Depth in tree (root = 0, root's reports = 1, etc.) */
   depth: number;
-  /** Path from root to this node (excluding virtual root), e.g. ["pravko-lead", "pravko-writer"] */
+  /** Path from root to this node (excluding virtual root), e.g. ["content-lead", "content-writer"] */
   chain: string[];
 }
 
@@ -56,7 +56,7 @@ export interface OrgWarning {
 
 /** The fully resolved org hierarchy. */
 export interface OrgHierarchy {
-  /** Root node name — executive employee name, or null if no executive YAML exists */
+  /** Root node name - executive employee name, or null if no executive YAML exists */
   root: string | null;
   /** All nodes keyed by employee name */
   nodes: Record<string, OrgNode>;
@@ -96,7 +96,7 @@ reportsTo: data.reportsTo ?? undefined,
 
 - [ ] **Step 2: Also parse `mcp` field if not already parsed**
 
-Check if `mcp` is parsed — it's in the Employee interface but may be missing from `scanOrg()`. If missing, add it too. If already there, skip.
+Check if `mcp` is parsed - it's in the Employee interface but may be missing from `scanOrg()`. If missing, add it too. If already there, skip.
 
 - [ ] **Step 3: Run typecheck**
 
@@ -410,8 +410,8 @@ describe("resolveOrgHierarchy", () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/Projects/jinn && pnpm --filter jimmy test -- --run src/gateway/__tests__/org-hierarchy.test.ts`
-Expected: FAIL — module `../org-hierarchy.js` does not exist
+Run: `cd ~/Projects/jinn && pnpm --filter jinn-cli test -- --run src/gateway/__tests__/org-hierarchy.test.ts`
+Expected: FAIL - module `../org-hierarchy.js` does not exist
 
 - [ ] **Step 3: Commit failing tests**
 
@@ -464,7 +464,7 @@ export function getAllParents(
 
 /**
  * Resolve a flat employee registry into a hierarchical org tree.
- * Pure function — no side effects, no I/O.
+ * Pure function - no side effects, no I/O.
  */
 export function resolveOrgHierarchy(
   registry: Map<string, Employee>,
@@ -498,7 +498,7 @@ export function resolveOrgHierarchy(
     const primary = getPrimaryParent(emp.reportsTo);
 
     if (primary === undefined) {
-      // No explicit reportsTo — will be resolved in Step 3
+      // No explicit reportsTo - will be resolved in Step 3
       continue;
     }
 
@@ -565,7 +565,7 @@ export function resolveOrgHierarchy(
 
     while (current !== null) {
       if (visited.has(current)) {
-        // Cycle detected — break the cycle by detaching this node
+        // Cycle detected - break the cycle by detaching this node
         warnings.push({
           employee: name,
           type: "cycle",
@@ -686,7 +686,7 @@ export function resolveOrgHierarchy(
 
 - [ ] **Step 2: Run tests to verify they pass**
 
-Run: `cd ~/Projects/jinn && pnpm --filter jimmy test -- --run src/gateway/__tests__/org-hierarchy.test.ts`
+Run: `cd ~/Projects/jinn && pnpm --filter jinn-cli test -- --run src/gateway/__tests__/org-hierarchy.test.ts`
 Expected: ALL PASS
 
 - [ ] **Step 3: Run full typecheck**
@@ -816,7 +816,7 @@ git commit -m "feat(api): add hierarchy fields to GET /api/org/employees/:name"
 
 ---
 
-### Task 7: Update context builder — `buildOrgContext` with hierarchy
+### Task 7: Update context builder - `buildOrgContext` with hierarchy
 
 **Files:**
 - Modify: `packages/jinn/src/sessions/context.ts:44-57` (buildContext signature + org section)
@@ -868,7 +868,7 @@ function buildOrgContext(hierarchy?: import("../shared/types.js").OrgHierarchy):
         }
         const emp = node.employee;
         const indent = "  ".repeat(node.depth);
-        let entry = `${indent}- **${emp.displayName}** (${name}) — ${emp.department}, ${emp.rank}`;
+        let entry = `${indent}- **${emp.displayName}** (${name}) - ${emp.department}, ${emp.rank}`;
         if (emp.persona) {
           const firstLine = emp.persona.trim().split("\n")[0].trim().slice(0, 120);
           entry += `\n${indent}  _${firstLine}_`;
@@ -911,7 +911,7 @@ function buildOrgContext(hierarchy?: import("../shared/types.js").OrgHierarchy):
       const deptMatch = content.match(/department:\s*(.+)/);
       const rankMatch = content.match(/rank:\s*(.+)/);
       const personaMatch = content.match(/persona:\s*[|>]?\s*\n?\s*(.+)/);
-      let entry = `- **${displayMatch?.[1] || name}** (${name}) — ${deptMatch?.[1] || "unassigned"}, ${rankMatch?.[1] || "employee"}`;
+      let entry = `- **${displayMatch?.[1] || name}** (${name}) - ${deptMatch?.[1] || "unassigned"}, ${rankMatch?.[1] || "employee"}`;
       if (personaMatch?.[1]) {
         entry += `\n  _${personaMatch[1].trim().slice(0, 120)}_`;
       }
@@ -1029,11 +1029,11 @@ try {
   const { resolveOrgHierarchy } = await import("../gateway/org-hierarchy.js");
   hierarchy = resolveOrgHierarchy(scanOrg());
 } catch {
-  // Non-critical — context builder falls back to filesystem scan
+  // Non-critical - context builder falls back to filesystem scan
 }
 ```
 
-Wait — `manager.ts` already has the `employee` resolved from `scanOrg()` in the message handler, but it imports scanOrg separately. Check the manager's flow more carefully. The manager has `this.registry` cached? Let me re-check.
+Wait - `manager.ts` already has the `employee` resolved from `scanOrg()` in the message handler, but it imports scanOrg separately. Check the manager's flow more carefully. The manager has `this.registry` cached? Let me re-check.
 
 Actually, looking at the code flow: the manager imports buildContext from context.ts. The registry is re-scanned each time through context.ts's `buildOrgContext()`. For the manager, we just need to pass `hierarchy` through.
 
@@ -1155,7 +1155,7 @@ export interface OrgData {
 - [ ] **Step 2: Run typecheck**
 
 Run: `cd ~/Projects/jinn && pnpm typecheck`
-Expected: There will be type errors in consumers that still treat `employees` as `string[]` — these will be fixed in subsequent tasks.
+Expected: There will be type errors in consumers that still treat `employees` as `string[]` - these will be fixed in subsequent tasks.
 
 - [ ] **Step 3: Commit**
 
@@ -1250,7 +1250,7 @@ api.getOrg().then((data: OrgData) => {
 })
 ```
 
-Check the exact usage of `employees` in this file to match the expected shape. It may use the same `Promise.all(data.employees.map(...))` pattern — just use `data.employees` directly.
+Check the exact usage of `employees` in this file to match the expected shape. It may use the same `Promise.all(data.employees.map(...))` pattern - just use `data.employees` directly.
 
 - [ ] **Step 2: Commit**
 
@@ -1870,7 +1870,7 @@ Expected: ALL PASS (including org-hierarchy tests from Phase 1)
 
 - [ ] **Step 4: Commit build verification**
 
-No commit needed — build verification is a check, not a code change.
+No commit needed - build verification is a check, not a code change.
 
 ---
 
@@ -1886,7 +1886,7 @@ No commit needed — build verification is a check, not a code change.
 After the "Required fields" list (around line 49), add:
 
 ```markdown
-- `reportsTo` — (optional) who this employee reports to (employee name). If not specified by the user:
+- `reportsTo` - (optional) who this employee reports to (employee name). If not specified by the user:
   1. Find the highest-ranked employee in the target department (manager > senior > employee)
   2. If a manager exists → set `reportsTo: <manager-name>`
   3. If only seniors exist → set `reportsTo: <first-senior-alphabetically>`
@@ -1899,7 +1899,7 @@ After the "Required fields" list (around line 49), add:
 Add a new subsection under Operations:
 
 ```markdown
-### Firing — Cascade Reassignment
+### Firing - Cascade Reassignment
 
 When firing an employee who has direct reports:
 
@@ -1912,7 +1912,7 @@ When firing an employee who has direct reports:
 - [ ] **Step 3: Add promotion reassignment section**
 
 ```markdown
-### Promoting — Report Reassignment
+### Promoting - Report Reassignment
 
 When promoting an employee to manager:
 
@@ -1924,7 +1924,7 @@ When promoting an employee to manager:
 - [ ] **Step 4: Add restructuring section**
 
 ```markdown
-### Restructuring — Department Moves
+### Restructuring - Department Moves
 
 When moving an employee to a different department:
 
@@ -1967,13 +1967,13 @@ git commit -m "docs: add migration guide for hierarchical org system"
 
 - [ ] **Step 1: Add reportsTo to employees with clear reporting lines**
 
-For each department with a manager, add `reportsTo: <manager-name>` to the non-manager employees. This is optional — the smart defaults will infer the same relationships — but explicit is better.
+For each department with a manager, add `reportsTo: <manager-name>` to the non-manager employees. This is optional - the smart defaults will infer the same relationships - but explicit is better.
 
 Example departments to update:
-- pravko: pravko-lead is manager → all others get `reportsTo: pravko-lead`
-- homy: homy-lead is manager → all others get `reportsTo: homy-lead`
-- sqlnoir: sqlnoir-lead is manager → sqlnoir-writer gets `reportsTo: sqlnoir-lead`
-- spycam: spycam-lead is manager → spycam-writer gets `reportsTo: spycam-lead`
+- content: content-lead is manager → all others get `reportsTo: content-lead`
+- ops: ops-lead is manager → all others get `reportsTo: ops-lead`
+- datalab: datalab-lead is manager → datalab-writer gets `reportsTo: datalab-lead`
+- cameraapp: cameraapp-lead is manager → cameraapp-writer gets `reportsTo: cameraapp-lead`
 
 Do NOT add reportsTo to:
 - Department leads/managers (they report to root via smart defaults)
@@ -2012,5 +2012,5 @@ Expected: Shows root, employee count matches org, no critical warnings
 
 - [ ] **Step 4: Test employee detail endpoint**
 
-Run: `curl -s http://0.0.0.0:7777/api/org/employees/pravko-lead | jq '{name, parentName, directReports, depth, chain}'`
-Expected: Shows hierarchy data for pravko-lead
+Run: `curl -s http://0.0.0.0:7777/api/org/employees/content-lead | jq '{name, parentName, directReports, depth, chain}'`
+Expected: Shows hierarchy data for content-lead

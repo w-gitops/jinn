@@ -112,3 +112,57 @@ describe("getSessionGroupCounts", () => {
     expect(counts[reg.CRON_GROUP]).toBe(20);
   });
 });
+
+// A session whose `employee` equals the portal slug (case-insensitively) is a
+// direct/COO session, not a pseudo-employee. It must fold into __direct__ so it
+// never spawns a phantom group that renders with the portal's own title.
+// Kept LAST so its inserts don't perturb the counts asserted above.
+describe("portal-slug sessions fold into the direct group", () => {
+  beforeAll(() => {
+    const db = reg.initDb();
+    let t = 0;
+    const ts = () => `2026-02-01T00:00:${String(t++).padStart(2, "0")}.000Z`;
+    // 2 lowercase + 1 mixed-case portal-slug rows = 3 phantom-prone sessions.
+    insert(db, "jimbo-0", { employee: "jimbo", lastActivity: ts() });
+    insert(db, "jimbo-1", { employee: "jimbo", lastActivity: ts() });
+    insert(db, "jimbo-2", { employee: "Jimbo", lastActivity: ts() });
+  });
+
+  it("getSessionGroupCounts folds portal-slug rows into __direct__ (no phantom group)", () => {
+    const counts = reg.getSessionGroupCounts("jimbo");
+    expect(counts["jimbo"]).toBeUndefined(); // no phantom employee bucket
+    expect(counts["Jimbo"]).toBeUndefined();
+    expect(counts[reg.DIRECT_GROUP]).toBe(9); // 6 true-direct + 3 portal-slug
+    expect(counts["alice"]).toBe(12); // real employees untouched
+  });
+
+  it("without a portal slug, the phantom bucket still exists (proves the guard fixes it)", () => {
+    const counts = reg.getSessionGroupCounts();
+    expect(counts["jimbo"]).toBe(2); // 'jimbo' (exact) groups separately
+    expect(counts[reg.DIRECT_GROUP]).toBe(6); // unchanged
+  });
+
+  it("listSessionsForGroup(__direct__) includes portal-slug rows when slug is passed", () => {
+    const direct = reg.listSessionsForGroup(reg.DIRECT_GROUP, 100, 0, "jimbo");
+    const ids = direct.map((r) => r.id);
+    expect(ids).toContain("jimbo-0");
+    expect(ids).toContain("jimbo-2"); // mixed-case too
+    expect(direct.length).toBe(9);
+    expect(direct.every((r) => r.source !== "cron")).toBe(true);
+  });
+
+  it("requesting the portal slug as an employee group yields nothing (folded to direct)", () => {
+    expect(reg.listSessionsForGroup("jimbo", 100, 0, "jimbo")).toEqual([]);
+  });
+
+  it("listRecentPerGroup folds portal-slug rows into direct, not a phantom group", () => {
+    const rows = reg.listRecentPerGroup(50, "jimbo");
+    // No row should be bucketed under its own 'jimbo' partition: all the
+    // portal-slug ids appear, but they belong to the direct group.
+    const ids = rows.map((r) => r.id);
+    expect(ids).toContain("jimbo-0");
+    expect(ids).toContain("jimbo-2");
+    // real employees still capped/grouped normally
+    expect(rows.filter((r) => r.employee === "alice").length).toBe(12);
+  });
+});

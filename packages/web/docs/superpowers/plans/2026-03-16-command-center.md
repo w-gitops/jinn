@@ -18,11 +18,11 @@ These corrections apply across the plan. The implementer MUST follow these over 
 
 ### Gateway API patterns (affects all Chunk 2 route handlers)
 
-1. **`readJsonBody` pattern**: Use `const _parsed = await readJsonBody(req, res); if (!_parsed.ok) return; const body = _parsed.body as any;` — NOT destructuring `{ ok, body }`.
-2. **`getSession` import**: Use the standalone `getSession(id)` imported from `../sessions/registry.js` — NOT `context.sessionManager.getSession()`.
-3. **Session mutation**: Use `updateSession(id, updates)` from `../sessions/registry.js` — NOT direct property assignment on the session object.
-4. **`serializeSession` signature**: Second argument is the full `ApiContext` (context) — NOT just `sessionManager`.
-5. **YAML parsing**: Use `import yaml from 'js-yaml'` (already imported in the file) with `yaml.load(content)` — NOT `require('yaml')` with `yaml.parse()`.
+1. **`readJsonBody` pattern**: Use `const _parsed = await readJsonBody(req, res); if (!_parsed.ok) return; const body = _parsed.body as any;` - NOT destructuring `{ ok, body }`.
+2. **`getSession` import**: Use the standalone `getSession(id)` imported from `../sessions/registry.js` - NOT `context.sessionManager.getSession()`.
+3. **Session mutation**: Use `updateSession(id, updates)` from `../sessions/registry.js` - NOT direct property assignment on the session object.
+4. **`serializeSession` signature**: Second argument is the full `ApiContext` (context) - NOT just `sessionManager`.
+5. **YAML parsing**: Use `import yaml from 'js-yaml'` (already imported in the file) with `yaml.load(content)` - NOT `require('yaml')` with `yaml.parse()`.
 6. **Data dir path**: Extract `const dataDir = context.getConfig().dataDir || path.join(os.homedir(), '.jinn')` once at the top of the handler, not repeated in every route.
 
 ### Web API client (affects Chunk 3)
@@ -57,9 +57,9 @@ These corrections apply across the plan. The implementer MUST follow these over 
 | File | Action | Responsibility |
 |------|--------|---------------|
 | `shared/types.ts` | Modify | Add `Project`, `Task`, `ProjectWithStats` interfaces; extend `Session` with `projects`, `attentionRequired`, `priority` fields; extend `CronJob` with `attentionRequired`, `defaultPriority` |
-| `gateway/projects.ts` | Create | Project CRUD: `loadProjects()`, `saveProjects()`, `getProjectStats()` — JSON file I/O for `~/.jinn/projects.json` |
-| `gateway/tasks.ts` | Create | Task CRUD: `loadTasks()`, `saveTasks()` — JSON file I/O for `~/.jinn/tasks.json` |
-| `gateway/project-tagger.ts` | Create | `autoTagSession()` — one-shot auto-tagging logic (5-step waterfall) |
+| `gateway/projects.ts` | Create | Project CRUD: `loadProjects()`, `saveProjects()`, `getProjectStats()` - JSON file I/O for `~/.jinn/projects.json` |
+| `gateway/tasks.ts` | Create | Task CRUD: `loadTasks()`, `saveTasks()` - JSON file I/O for `~/.jinn/tasks.json` |
+| `gateway/project-tagger.ts` | Create | `autoTagSession()` - one-shot auto-tagging logic (5-step waterfall) |
 | `gateway/api.ts` | Modify | Add routes: PATCH sessions, CRUD projects, CRUD tasks |
 | `cron/runner.ts` | Modify | Propagate `attentionRequired` + `defaultPriority` from job to spawned session |
 | `gateway/projects.test.ts` | Create | Tests for project CRUD + stats aggregation |
@@ -75,21 +75,21 @@ These corrections apply across the plan. The implementer MUST follow these over 
 | `lib/command-center/hooks.ts` | Create | `useProjects()`, `useTasks()`, `useDecayFilter()`, `useCommandCenter()` hooks |
 | `lib/command-center/utils.ts` | Create | Decay filter logic, priority sorting, attention counting |
 | `lib/nav.ts` | Modify | Add Command Center nav item, remove Kanban |
-| `app/command/page.tsx` | Create | Command Center page — tab layout, filter bar, attention badge |
-| `components/command-center/graph-view.tsx` | Create | React Flow graph — project nodes, edges, animations, minimap |
-| `components/command-center/project-node.tsx` | Create | Custom React Flow node — project card with status indicators |
-| `components/command-center/dashboard-view.tsx` | Create | CSS Grid card layout — project cards sorted by attention/activity |
-| `components/command-center/project-card.tsx` | Create | Dashboard card — icon, name, stats, task summary, recent activity |
-| `components/command-center/timeline-view.tsx` | Create | Swimlane view — horizontal lanes per project, session bars, task overlays |
-| `components/command-center/slide-over.tsx` | Create | Right panel — project detail with mini-Kanban + session list |
+| `app/command/page.tsx` | Create | Command Center page - tab layout, filter bar, attention badge |
+| `components/command-center/graph-view.tsx` | Create | React Flow graph - project nodes, edges, animations, minimap |
+| `components/command-center/project-node.tsx` | Create | Custom React Flow node - project card with status indicators |
+| `components/command-center/dashboard-view.tsx` | Create | CSS Grid card layout - project cards sorted by attention/activity |
+| `components/command-center/project-card.tsx` | Create | Dashboard card - icon, name, stats, task summary, recent activity |
+| `components/command-center/timeline-view.tsx` | Create | Swimlane view - horizontal lanes per project, session bars, task overlays |
+| `components/command-center/slide-over.tsx` | Create | Right panel - project detail with mini-Kanban + session list |
 | `components/command-center/mini-kanban.tsx` | Create | 4-column task board (todo/in-progress/done/blocked) with drag |
-| `components/command-center/decay-filter.tsx` | Create | Filter popover — presets + granular controls |
+| `components/command-center/decay-filter.tsx` | Create | Filter popover - presets + granular controls |
 | `components/command-center/attention-badge.tsx` | Create | Red pill badge with attention count |
 | `app/kanban/page.tsx` | Modify | Add redirect to /command |
 
 ---
 
-## Chunk 1: Gateway — Types & Project/Task Storage
+## Chunk 1: Gateway - Types & Project/Task Storage
 
 ### Task 1.1: Extend shared types
 
@@ -203,32 +203,32 @@ test('loadProjects returns empty array when file does not exist', () => {
 test('saveProjects writes and loadProjects reads back', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jinn-test-'))
   const filePath = path.join(tmpDir, 'projects.json')
-  const projects = [{ id: 'pravko', name: 'Pravko', color: '#3b82f6', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' }]
+  const projects = [{ id: 'project-a', name: 'Project A', color: '#3b82f6', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' }]
   saveProjects(projects, filePath)
   const loaded = loadProjects(filePath)
   assert.equal(loaded.length, 1)
-  assert.equal(loaded[0].id, 'pravko')
+  assert.equal(loaded[0].id, 'project-a')
   fs.rmSync(tmpDir, { recursive: true })
 })
 
 test('createProject generates id from name and sets timestamps', () => {
-  const project = createProject({ name: 'Tax Tool', color: '#ef4444' })
-  assert.equal(project.id, 'tax-tool')
-  assert.equal(project.name, 'Tax Tool')
+  const project = createProject({ name: 'Demo Project', color: '#ef4444' })
+  assert.equal(project.id, 'demo-project')
+  assert.equal(project.name, 'Demo Project')
   assert.equal(project.color, '#ef4444')
   assert.ok(project.createdAt)
   assert.ok(project.updatedAt)
 })
 
 test('createProject with custom id preserves it', () => {
-  const project = createProject({ name: 'Tax Tool', color: '#ef4444', id: 'custom-id' })
+  const project = createProject({ name: 'Demo Project', color: '#ef4444', id: 'custom-id' })
   assert.equal(project.id, 'custom-id')
 })
 
 test('updateProject merges fields and updates timestamp', () => {
-  const original = createProject({ name: 'Pravko', color: '#3b82f6' })
-  const updated = updateProject(original, { name: 'Pravko Chat', archived: true })
-  assert.equal(updated.name, 'Pravko Chat')
+  const original = createProject({ name: 'Project A', color: '#3b82f6' })
+  const updated = updateProject(original, { name: 'Project A Pro', archived: true })
+  assert.equal(updated.name, 'Project A Pro')
   assert.equal(updated.color, '#3b82f6')
   assert.equal(updated.archived, true)
   assert.notEqual(updated.updatedAt, original.updatedAt)
@@ -342,9 +342,9 @@ test('loadTasks returns empty array when file does not exist', () => {
 })
 
 test('createTask sets defaults and generates uuid', () => {
-  const task = createTask({ projectId: 'pravko', title: 'Localize to German' })
+  const task = createTask({ projectId: 'project-a', title: 'Localize to German' })
   assert.ok(task.id)
-  assert.equal(task.projectId, 'pravko')
+  assert.equal(task.projectId, 'project-a')
   assert.equal(task.title, 'Localize to German')
   assert.equal(task.status, 'todo')
   assert.equal(task.priority, null)
@@ -468,48 +468,48 @@ import { autoTagSession } from './project-tagger.js'
 
 // Minimal mock types matching the function signature
 const projects = [
-  { id: 'pravko', name: 'Pravko', color: '#000', createdAt: '', updatedAt: '' },
-  { id: 'homy', name: 'Homy', color: '#000', createdAt: '', updatedAt: '' },
+  { id: 'project-a', name: 'Project A', color: '#000', createdAt: '', updatedAt: '' },
+  { id: 'acme', name: 'Acme', color: '#000', createdAt: '', updatedAt: '' },
   { id: 'general', name: 'General', color: '#888', createdAt: '', updatedAt: '' },
 ]
 
 const orgDepts = {
-  'pravko-lead': 'pravko',
-  'pravko-writer': 'pravko',
-  'homy-lead': 'homy',
-  'jimmy-dev': 'platform',
+  'a-lead': 'project-a',
+  'content-lead': 'project-a',
+  'acme-lead': 'acme',
+  'lead-developer': 'platform',
 }
 
 test('manual tags take precedence (step 1)', () => {
-  const session = { projects: ['custom-tag'], employee: 'pravko-lead', title: 'Homy blog', parentSessionId: null }
+  const session = { projects: ['custom-tag'], employee: 'a-lead', title: 'Acme blog', parentSessionId: null }
   const result = autoTagSession(session as any, projects, orgDepts, {})
   assert.deepEqual(result, ['custom-tag'])
 })
 
 test('employee department mapping (step 2)', () => {
-  const session = { projects: [], employee: 'pravko-lead', title: null, parentSessionId: null }
+  const session = { projects: [], employee: 'a-lead', title: null, parentSessionId: null }
   const result = autoTagSession(session as any, projects, orgDepts, {})
-  assert.deepEqual(result, ['pravko'])
+  assert.deepEqual(result, ['project-a'])
 })
 
 test('parent session inheritance (step 3)', () => {
   const session = { projects: [], employee: null, title: null, parentSessionId: 'parent-1' }
-  const sessionProjects = { 'parent-1': ['homy'] }
+  const sessionProjects = { 'parent-1': ['acme'] }
   const result = autoTagSession(session as any, projects, orgDepts, sessionProjects)
-  assert.deepEqual(result, ['homy'])
+  assert.deepEqual(result, ['acme'])
 })
 
 test('child session inheritance when no other match (step 4)', () => {
   const session = { id: 'coo-session', projects: [], employee: null, title: null, parentSessionId: null, childSessionIds: ['child-1', 'child-2'] }
-  const sessionProjects = { 'child-1': ['pravko'], 'child-2': ['pravko', 'homy'] }
+  const sessionProjects = { 'child-1': ['project-a'], 'child-2': ['project-a', 'acme'] }
   const result = autoTagSession(session as any, projects, orgDepts, sessionProjects)
-  assert.deepEqual(result, ['pravko', 'homy'])
+  assert.deepEqual(result, ['project-a', 'acme'])
 })
 
 test('keyword inference from title (step 5)', () => {
-  const session = { projects: [], employee: null, title: 'Fix Pravko blog SEO', parentSessionId: null }
+  const session = { projects: [], employee: null, title: 'Fix Project A blog SEO', parentSessionId: null }
   const result = autoTagSession(session as any, projects, orgDepts, {})
-  assert.deepEqual(result, ['pravko'])
+  assert.deepEqual(result, ['project-a'])
 })
 
 test('falls back to general (step 6)', () => {
@@ -519,9 +519,9 @@ test('falls back to general (step 6)', () => {
 })
 
 test('does not duplicate tags', () => {
-  const session = { projects: [], employee: 'pravko-lead', title: 'Pravko blog', parentSessionId: null }
+  const session = { projects: [], employee: 'a-lead', title: 'Project A blog', parentSessionId: null }
   const result = autoTagSession(session as any, projects, orgDepts, {})
-  assert.deepEqual(result, ['pravko'])
+  assert.deepEqual(result, ['project-a'])
 })
 ```
 
@@ -626,7 +626,7 @@ git commit -m "feat(gateway): add auto-tagger module with 5-step waterfall and t
 
 ---
 
-## Chunk 2: Gateway — API Routes
+## Chunk 2: Gateway - API Routes
 
 ### Task 2.1: Add `patch` helper and project stats computation
 
@@ -638,7 +638,7 @@ git commit -m "feat(gateway): add auto-tagger module with 5-step waterfall and t
 In `api.ts`, find the session routes section. Add after the existing DELETE route:
 
 ```typescript
-// PATCH /api/sessions/:id — update priority/attention/projects
+// PATCH /api/sessions/:id - update priority/attention/projects
 const patchSession = matchRoute('/api/sessions/:id', pathname)
 if (patchSession && req.method === 'PATCH') {
   const { ok, body } = await readJsonBody(req, res)
@@ -889,7 +889,7 @@ git commit -m "feat(gateway): integrate auto-tagger into session creation and cr
 
 ---
 
-## Chunk 3: Web UI — Data Layer & Navigation
+## Chunk 3: Web UI - Data Layer & Navigation
 
 ### Task 3.1: Extend web API client
 
@@ -1259,7 +1259,7 @@ git commit -m "feat(web): redirect /kanban to /command (Command Center replaces 
 
 ---
 
-## Chunk 4: Web UI — Command Center Page Shell & Dashboard View
+## Chunk 4: Web UI - Command Center Page Shell & Dashboard View
 
 ### Task 4.1: Command Center page with tab layout
 
@@ -1507,7 +1507,7 @@ export default function CommandCenterPage() {
 - [ ] **Step 4: Verify page loads**
 
 Run: `cd ~/Projects/jinn && npm run dev --workspace=packages/web`
-Navigate to `/command` — should see the page shell with tab buttons and filter.
+Navigate to `/command` - should see the page shell with tab buttons and filter.
 
 - [ ] **Step 5: Commit**
 
@@ -1672,7 +1672,7 @@ git commit -m "feat(web): add Dashboard view with project cards, status indicato
 
 ---
 
-## Chunk 5: Web UI — Graph View (React Flow)
+## Chunk 5: Web UI - Graph View (React Flow)
 
 ### Task 5.1: Install React Flow
 
@@ -1929,7 +1929,7 @@ import { GraphView } from '@/components/command-center/graph-view'
 )}
 ```
 
-Note: `sessions` is passed as empty for now — it will be populated when we integrate sessions into the Command Center data flow. The sessions prop is needed for edge computation.
+Note: `sessions` is passed as empty for now - it will be populated when we integrate sessions into the Command Center data flow. The sessions prop is needed for edge computation.
 
 - [ ] **Step 3: Add CSS animations**
 
@@ -1955,7 +1955,7 @@ git commit -m "feat(web): add Graph view with React Flow, project nodes, edges, 
 
 ---
 
-## Chunk 6: Web UI — Slide-Over Panel & Mini-Kanban
+## Chunk 6: Web UI - Slide-Over Panel & Mini-Kanban
 
 ### Task 6.1: Slide-over panel
 
@@ -2374,7 +2374,7 @@ Also pass `sessions` to `GraphView`.
 
 Create a test project via API:
 ```bash
-curl -X POST http://0.0.0.0:7777/api/projects -H 'Content-Type: application/json' -d '{"name":"Pravko","color":"#3b82f6","icon":"⚖️"}'
+curl -X POST http://0.0.0.0:7777/api/projects -H 'Content-Type: application/json' -d '{"name":"Project A","color":"#3b82f6","icon":"⚖️"}'
 ```
 
 Navigate to `/command`. Verify:
@@ -2393,7 +2393,7 @@ git commit -m "feat(web): wire slide-over panel into Command Center with session
 
 ---
 
-## Chunk 7: Web UI — Timeline View
+## Chunk 7: Web UI - Timeline View
 
 ### Task 7.1: Timeline view component
 

@@ -2,11 +2,7 @@ import { lazy, Suspense, useEffect, useState, useRef, useCallback } from "react"
 import { api } from "@/lib/api";
 import type { Employee, OrgData, OrgHierarchy } from "@/lib/api";
 import { EmployeeDetail } from "@/components/org/employee-detail";
-import { GridView } from "@/components/org/grid-view";
-import { FeedView } from "@/components/org/feed-view";
-import { OrgTree } from "@/components/org/org-tree";
 import { PageLayout } from "@/components/page-layout";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useSettings } from "@/routes/settings-provider";
 import { useBreadcrumbs } from "@/context/breadcrumb-context";
 
@@ -27,7 +23,6 @@ export default function OrgPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Employee | null>(null);
-  const [view, setView] = useState<string>("map");
   const closeRef = useRef<HTMLButtonElement>(null);
   const { settings } = useSettings();
 
@@ -79,6 +74,16 @@ export default function OrgPage() {
     setSelected(emp);
   }, []);
 
+  // After an inline edit: reload the org (so the map re-parents / re-layouts on
+  // a reportsTo change) and refresh the open panel with the saved employee.
+  const handleEmployeeUpdated = useCallback(
+    (emp: Employee) => {
+      loadData();
+      setSelected(emp);
+    },
+    [loadData],
+  );
+
   if (error) {
     return (
       <PageLayout>
@@ -100,91 +105,22 @@ export default function OrgPage() {
   return (
     <PageLayout>
       <div className="flex h-full relative bg-[var(--bg)]">
-        {/* Main content area */}
+        {/* Map (the only view) */}
         <div className="flex-1 h-full relative">
-          <Tabs
-            value={view}
-            onValueChange={setView}
-            className="h-full flex flex-col"
-          >
-            {/* Tab bar at top */}
-            <div className="absolute top-[var(--space-4)] left-[var(--space-4)] z-10">
-              <TabsList>
-                <TabsTrigger value="map">Map</TabsTrigger>
-                <TabsTrigger value="grid">Grid</TabsTrigger>
-                <TabsTrigger value="list">List</TabsTrigger>
-                <TabsTrigger value="tree">Tree</TabsTrigger>
-              </TabsList>
+          {loading ? (
+            <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-[length:var(--text-caption1)]">
+              Loading...
             </div>
-
-            <TabsContent value="map" className="flex-1">
-              {loading ? (
-                <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-[length:var(--text-caption1)]">
-                  Loading...
-                </div>
-              ) : (
-                <Suspense fallback={OrgMapFallback}>
-                  <OrgMap
-                    employees={employees}
-                    hierarchy={hierarchy}
-                    selectedName={selected?.name ?? null}
-                    onNodeClick={handleSelectEmployee}
-                  />
-                </Suspense>
-              )}
-            </TabsContent>
-
-            <TabsContent value="grid" className="flex-1 overflow-hidden">
-              {loading ? (
-                <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-[length:var(--text-caption1)]">
-                  Loading...
-                </div>
-              ) : (
-                <GridView
-                  employees={employees}
-                  selectedName={selected?.name ?? null}
-                  onSelect={handleSelectEmployee}
-                />
-              )}
-            </TabsContent>
-
-            <TabsContent value="list" className="flex-1 overflow-hidden">
-              {loading ? (
-                <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-[length:var(--text-caption1)]">
-                  Loading...
-                </div>
-              ) : (
-                <FeedView
-                  employees={employees}
-                  selectedName={selected?.name ?? null}
-                  onSelect={handleSelectEmployee}
-                />
-              )}
-            </TabsContent>
-
-            <TabsContent value="tree" className="flex-1 overflow-auto p-[var(--space-4)]">
-              {loading ? (
-                <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-[length:var(--text-caption1)]">
-                  Loading...
-                </div>
-              ) : (
-                <OrgTree
-                  data={{
-                    departments: [],
-                    employees,
-                    hierarchy: hierarchy ?? { root: null, sorted: [], warnings: [] },
-                  }}
-                  selectedEmployee={selected?.name ?? null}
-                  selectedDepartment={null}
-                  onSelectEmployee={(name) => {
-                    const emp = employees.find((e) => e.name === name);
-                    if (emp) handleSelectEmployee(emp);
-                  }}
-                  onSelectDepartment={() => {}}
-                />
-              )}
-            </TabsContent>
-          </Tabs>
+          ) : (
+            <Suspense fallback={OrgMapFallback}>
+              <OrgMap
+                employees={employees}
+                hierarchy={hierarchy}
+                selectedName={selected?.name ?? null}
+                onNodeClick={handleSelectEmployee}
+              />
+            </Suspense>
+          )}
         </div>
 
         {/* Mobile backdrop */}
@@ -197,8 +133,8 @@ export default function OrgPage() {
 
         {/* Detail panel */}
         {selected && (
-          <div className="absolute top-0 right-0 bottom-0 z-30">
-            <div className="w-[380px] max-w-[100vw] h-full overflow-y-auto bg-[var(--bg)] flex flex-col shadow-[var(--shadow-overlay)]">
+          <div className="absolute top-0 right-0 bottom-0 left-0 sm:left-auto z-30">
+            <div className="w-full sm:w-[420px] lg:w-[468px] xl:w-[520px] max-w-[100vw] h-full overflow-y-auto bg-[var(--bg)] flex flex-col shadow-[var(--shadow-overlay)]">
               {/* Close button */}
               <div className="sticky top-0 z-10 flex items-center justify-end px-[var(--space-4)] py-[var(--space-3)] bg-[var(--bg)]">
                 <button
@@ -216,6 +152,7 @@ export default function OrgPage() {
                 <EmployeeDetail
                   name={selected.name}
                   prefetched={selected.rank === "executive" ? selected : undefined}
+                  onUpdated={handleEmployeeUpdated}
                 />
               </div>
             </div>

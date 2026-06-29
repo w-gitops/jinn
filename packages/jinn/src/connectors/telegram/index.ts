@@ -14,13 +14,13 @@ import type {
   TelegramConnectorConfig,
 } from "../../shared/types.js";
 import { deriveSessionKey, buildReplyContext, isOldTelegramMessage } from "./threads.js";
-import { formatResponse } from "./format.js";
+import { formatResponse, stripTelegramMarkdown } from "./format.js";
 import { logger } from "../../shared/logger.js";
 import { TMP_DIR } from "../../shared/paths.js";
 import {
   transcribe as sttTranscribe,
   resolveLanguages,
-  isSttAvailable,
+  getModelPath,
 } from "../../stt/stt.js";
 
 export class TelegramConnector implements Connector {
@@ -193,15 +193,13 @@ export class TelegramConnector implements Connector {
         (telegramMsg as any).video_note;
 
       if (voiceLike) {
-        let unavailable: string | null = null;
-        if (!isSttAvailable(this.sttConfig)) {
-          unavailable = this.sttConfig?.enabled
-            ? (this.sttConfig?.backend === "http"
-                ? "STT HTTP backend is not reachable"
-                : `STT model '${this.sttConfig?.model ?? "small"}' is not downloaded`)
-            : "voice transcription is not enabled on this gateway";
-        }
         const model = this.sttConfig?.model || "small";
+        let unavailable: string | null = null;
+        if (!this.sttConfig?.enabled) {
+          unavailable = "voice transcription is not enabled on this gateway";
+        } else if (!getModelPath(model)) {
+          unavailable = `STT model '${model}' is not downloaded`;
+        }
 
         if (unavailable) {
           logger.warn(`[telegram] Dropping voice message: ${unavailable}`);
@@ -249,7 +247,7 @@ export class TelegramConnector implements Connector {
               voiceLike.file_id,
               tmpDir,
             );
-            return await sttTranscribe(localPath, model, language, this.sttConfig);
+            return await sttTranscribe(localPath, model, language);
           } finally {
             try {
               fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -364,10 +362,11 @@ export class TelegramConnector implements Connector {
       });
       return String(result.message_id);
     } catch (err) {
-      // On parse error, retry without Markdown formatting
+      // On parse error, retry without Markdown formatting. Strip the markers we
+      // added during conversion so users don't see literal asterisks/underscores.
       logger.warn(`[telegram] Send failed with Markdown, retrying as plain text: ${err}`);
       try {
-        const result = await this.bot.sendMessage(chatId, text, opts);
+        const result = await this.bot.sendMessage(chatId, stripTelegramMarkdown(text), opts);
         return String(result.message_id);
       } catch (retryErr) {
         logger.error(`[telegram] Send failed: ${retryErr}`);
@@ -440,7 +439,10 @@ export class TelegramConnector implements Connector {
   async editMessage(target: Target, text: string): Promise<void> {
     if (!target.messageTs) return;
     if (!text || !text.trim()) return;
-    await this.bot.editMessageText(text, {
+    // Apply the same markdown conversion as sends; edits are single-message,
+    // so keep only the first chunk (truncated to the platform limit).
+    const [converted] = formatResponse(text);
+    await this.bot.editMessageText(converted, {
       chat_id: target.channel,
       message_id: Number(target.messageTs),
       parse_mode: "Markdown",

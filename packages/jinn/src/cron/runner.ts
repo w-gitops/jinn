@@ -22,17 +22,19 @@ export async function runCronJob(
     );
   }
 
-  let employee;
-  if (job.employee) {
-    const orgRegistry = scanOrg();
-    employee = findEmployee(job.employee, orgRegistry);
-  }
-
   const connector = new CronConnector(connectors, delivery);
   const startedAt = new Date().toISOString();
   const sessionKey = `cron:${job.id}:${Date.now()}`;
 
   try {
+    // Org scanning lives inside the try: org/ hot-reloads, and a malformed YAML
+    // mid-edit must surface as a logged job failure, not an unhandled rejection.
+    let employee;
+    if (job.employee) {
+      const orgRegistry = scanOrg();
+      employee = findEmployee(job.employee, orgRegistry);
+    }
+
     const routeResult = await sessionManager.route(
       {
         connector: connector.name,

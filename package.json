@@ -2,6 +2,9 @@
   "name": "jinn",
   "private": true,
   "packageManager": "pnpm@10.6.4",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
     "postinstall": "chmod +x node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true",
     "build": "turbo build && rm -rf packages/jinn/dist/web && cp -r packages/web/out packages/jinn/dist/web",
@@ -9,6 +12,7 @@
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "test": "turbo run test",
+    "coverage": "turbo run coverage",
     "test:e2e": "playwright test",
     "clean": "rm -rf .turbo node_modules/.cache && turbo clean",
     "jinn": "node packages/jinn/dist/bin/jinn.js",

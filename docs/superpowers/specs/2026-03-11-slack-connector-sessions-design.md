@@ -1,12 +1,12 @@
-# Slack Connector — Session Continuity, Channel Names & Reaction Sessions
+# Slack Connector - Session Continuity, Channel Names & Reaction Sessions
 
 ## Summary
 
 Three changes to the Slack connector:
 
-1. **Per-message session keys** — each root message in a channel gets its own session, and thread replies continue that session
-2. **Channel name resolution** — resolve Slack channel IDs to human-readable names so the agent knows where it was invoked
-3. **Reaction-triggered sessions** — reacting to a bot message creates a new session with that message as context
+1. **Per-message session keys** - each root message in a channel gets its own session, and thread replies continue that session
+2. **Channel name resolution** - resolve Slack channel IDs to human-readable names so the agent knows where it was invoked
+3. **Reaction-triggered sessions** - reacting to a bot message creates a new session with that message as context
 
 ## Change 1: Per-message session keys
 
@@ -21,17 +21,17 @@ Always include the message timestamp in the session key for non-DM messages:
 ```
 DM           → slack:dm:{userId}              (unchanged)
 Channel root → slack:{channelId}:{ts}          (was: slack:{channelId})
-Thread reply → slack:{channelId}:{thread_ts}   (unchanged — now matches root)
+Thread reply → slack:{channelId}:{thread_ts}   (unchanged - now matches root)
 ```
 
-This makes `shareSessionInChannel` obsolete — remove it.
+This makes `shareSessionInChannel` obsolete - remove it.
 
 ### Files changed
 
 - `packages/jinn/src/connectors/slack/threads.ts`
   - `deriveSessionKey()`: For non-DM, non-thread messages, return `slack:${channel}:${ts}` instead of `slack:${channel}`
   - Remove `SlackThreadOptions` interface and `shareSessionInChannel` logic
-  - `buildReplyContext()`: For channel root messages (not DMs), set `thread: ts` so the bot's reply starts a thread under the root message. Currently `thread` is only set for thread replies — change to always set it for channel messages so the first response threads correctly. DMs must NOT set `thread` (DMs don't support threading the same way).
+  - `buildReplyContext()`: For channel root messages (not DMs), set `thread: ts` so the bot's reply starts a thread under the root message. Currently `thread` is only set for thread replies - change to always set it for channel messages so the first response threads correctly. DMs must NOT set `thread` (DMs don't support threading the same way).
 
 - `packages/jinn/src/connectors/slack/index.ts`
   - Remove `shareSessionInChannel` property and constructor logic
@@ -49,13 +49,13 @@ This makes `shareSessionInChannel` obsolete — remove it.
 2. Bot replies in a thread under that message
 3. User replies in thread → thread_ts = `1710234567.001200` → key = `slack:C456:1710234567.001200` → same session
 4. User posts a different root message in #general → new ts → new session
-5. DMs unchanged — still one session per user
+5. DMs unchanged - still one session per user
 
 ## Change 2: Channel name resolution
 
 ### Problem
 
-The agent sees `Channel: C0ABC123XYZ` in its context — a raw Slack ID with no human meaning.
+The agent sees `Channel: C0ABC123XYZ` in its context - a raw Slack ID with no human meaning.
 
 ### Solution
 
@@ -105,10 +105,10 @@ Listen for `reaction_added` events. When a user reacts to a bot message, create 
   - Add `this.app.event('reaction_added', ...)` handler in `start()`
   - Filter: only process reactions from allowed users, skip bot self-reactions (use `auth.test` at startup to get bot user ID, compare against `event.user`)
   - Fetch the reacted-to message text: use `conversations.history` with `latest: item.ts`, `oldest: item.ts`, `inclusive: true`, `limit: 1` for root messages; use `conversations.replies` with `ts: thread_ts` for threaded messages
-  - Route through `this.handler(msg)` — same callback as regular messages
+  - Route through `this.handler(msg)` - same callback as regular messages
   - Resolve channel name
   - Build `IncomingMessage` with prompt: `[Reaction :emoji: on message in #channel]\n\nOriginal message:\n"...message text..."\n\nThe user reacted with :emoji: to this message. Interpret and act on the reaction.`
-  - Session key: `slack:reaction:{channelId}:{messageTs}` — unique per reacted message, multiple reactions on same message reuse session
+  - Session key: `slack:reaction:{channelId}:{messageTs}` - unique per reacted message, multiple reactions on same message reuse session
   - Reply context: thread under the reacted-to message
 
 ### Reaction semantics
@@ -118,11 +118,11 @@ The agent receives the emoji name and the message text. It interprets the reacti
 - A question mark might mean "explain this"
 - A red flag might mean "something's wrong here"
 
-The agent decides based on context — no hardcoded emoji-to-action mapping.
+The agent decides based on context - no hardcoded emoji-to-action mapping.
 
 ### Session key format
 
-`slack:reaction:{channelId}:{messageTs}` — each reacted message gets its own session. If someone reacts multiple times to the same message, subsequent reactions go to the same session as follow-up messages.
+`slack:reaction:{channelId}:{messageTs}` - each reacted message gets its own session. If someone reacts multiple times to the same message, subsequent reactions go to the same session as follow-up messages.
 
 ## What's NOT changing
 
@@ -145,4 +145,4 @@ These must be configured in the Slack App dashboard. The bot likely already has 
 
 ## Migration
 
-Existing sessions with old-format keys (`slack:{channelId}`) will not match new-format keys (`slack:{channelId}:{ts}`). This is acceptable — old channel-shared sessions were already broken. Users get fresh sessions with the new behavior.
+Existing sessions with old-format keys (`slack:{channelId}`) will not match new-format keys (`slack:{channelId}:{ts}`). This is acceptable - old channel-shared sessions were already broken. Users get fresh sessions with the new behavior.

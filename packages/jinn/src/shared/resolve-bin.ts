@@ -49,6 +49,19 @@ export function commonBinDirs(): string[] {
  *   4. First match in {@link commonBinDirs}.
  *   5. Fallback: the bare `name`, letting `spawn`/`pty.spawn` try its own PATH.
  */
+/** First executable match for `name` on PATH then {@link commonBinDirs}, or null. */
+function findOnPath(name: string): string | null {
+  const pathDirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  const seen = new Set<string>();
+  for (const dir of [...pathDirs, ...commonBinDirs()]) {
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+    const candidate = path.join(dir, name);
+    if (isExecutableFile(candidate)) return candidate;
+  }
+  return null;
+}
+
 export function resolveBin(name: string, override?: string): string {
   if (override && override.trim()) {
     const o = override.trim();
@@ -58,14 +71,24 @@ export function resolveBin(name: string, override?: string): string {
     name = o; // bare-name override → resolve that name instead
   }
 
-  const pathDirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
-  const seen = new Set<string>();
-  for (const dir of [...pathDirs, ...commonBinDirs()]) {
-    if (seen.has(dir)) continue;
-    seen.add(dir);
-    const candidate = path.join(dir, name);
-    if (isExecutableFile(candidate)) return candidate;
-  }
+  return findOnPath(name) ?? name; // fallback: bare name, let spawn try its own PATH
+}
 
-  return name; // let the OS try to resolve it on spawn
+/**
+ * Whether an engine binary is actually installed (resolvable to an executable).
+ *
+ * Unlike {@link resolveBin} — which returns the bare name as a fallback so a
+ * spawn surfaces a clear error — this returns a boolean, so the registry can gate
+ * an engine's visibility on real presence. An explicit-path override must point
+ * at an existing executable to count as installed.
+ */
+export function isInstalled(name: string, override?: string): boolean {
+  if (override && override.trim()) {
+    const o = override.trim();
+    if (o.includes("/") || o.includes(path.sep)) {
+      return isExecutableFile(o);
+    }
+    name = o;
+  }
+  return findOnPath(name) !== null;
 }

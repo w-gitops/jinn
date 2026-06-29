@@ -8,28 +8,34 @@ import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee, Engine } from "../shared/types.js";
 import { loadConfig, normalizeClaudeEngineConfig } from "../shared/config.js";
-import { invalidateModelRegistry } from "../shared/models.js";
+import { invalidateModelRegistry, refreshGrokModels, refreshPiModels, refreshHermesModels } from "../shared/models.js";
 import { configureLogger, logger } from "../shared/logger.js";
-import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession, getSession } from "../sessions/registry.js";
+import { initDb, recoverStaleSessions, recoverStaleQueueItems, clearAllPartialMessages, getInterruptedSessions, listSessions, updateSession, getSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
 import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
 import { PtyLifecycleManager } from "../engines/pty-lifecycle.js";
 import { CodexEngine } from "../engines/codex.js";
+import { CodexInteractiveEngine } from "../engines/codex-interactive.js";
 import { AntigravityEngine } from "../engines/antigravity.js";
+import { PiEngine } from "../engines/pi.js";
+import { GrokEngine } from "../engines/grok.js";
+import { GrokInteractiveEngine } from "../engines/grok-interactive.js";
+import { HermesAcpEngine } from "../engines/hermes-acp.js";
+import { HermesInteractiveEngine } from "../engines/hermes-interactive.js";
 import type { PtyViewEngine } from "../engines/pty-view-engine.js";
 import { HookRegistry } from "./hook-registry.js";
-import { writeGatewayInfo, readGatewayInfo, updateGatewayPtyPids } from "./gateway-info.js";
+import { writeGatewayInfo, readGatewayInfo, updateGatewayPtyPids, staleGatewayPids } from "./gateway-info.js";
+import { authenticateGatewayRequest, authRequiredForRequest, ensureGatewayAuthToken, shouldRequireGatewayAuth, validateGatewayExposure } from "./auth.js";
 import { seedTrust, cleanupSessionSettings } from "../shared/claude-settings.js";
-import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, COMMAND_TIER1_SCRIPT, POLICY_PATH, JINN_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
-import { CommandGate, initCommandGate } from "./command-gate.js";
-import { makeClaudeClassifier } from "./command-classifier.js";
+import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, JINN_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
 import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
+import { startStatusReconciler } from "./status-reconciler.js";
+import { syncExternalTurn } from "./external-turns.js";
 import { pickEncoding, isCompressibleExt, compressStream } from "./compress.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
+import { startWsHeartbeat, trackHeartbeat } from "./ws-heartbeat.js";
 import { ensureFilesDir, cleanupOldUploads } from "./files.js";
-import { initStt, checkHttpSttHealth } from "../stt/stt.js";
-import { TtsManager } from "../tts/tts.js";
-import { attachTtsWebSocket } from "../tts/tts-ws.js";
+import { initStt } from "../stt/stt.js";
 import { startWatchers, stopWatchers, syncSkillSymlinks } from "./watcher.js";
 import { SlackConnector } from "../connectors/slack/index.js";
 import { DiscordConnector, type DiscordConnectorConfig } from "../connectors/discord/index.js";
@@ -44,6 +50,54 @@ import { scanOrg } from "./org.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Extract the lowercased hostname from a Host header (or any host[:port]
+// string), tolerating IPv6 brackets and missing ports. Returns null if unparseable.
+function hostnameOf(hostHeader: string | undefined): string | null {
+  if (!hostHeader) return null;
+  try {
+    return new URL(`http://${hostHeader}`).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+export function isAllowedCorsOrigin(origin: string | undefined, requestHost?: string): boolean {
+  if (!origin) return true;
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  const host = parsed.hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost") || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1" || host === "[::1]") {
+    return true;
+  }
+  // Same-origin requests: when the dashboard is served by this same gateway over
+  // Tailscale/LAN, the browser's Origin host matches the request's Host header.
+  // (Browsers attach Origin on same-origin POST/PUT/etc., so without this remote
+  // message sends 403 even though the page itself loaded fine.) Reflecting only an
+  // exact host match keeps arbitrary cross sites (evil.example) rejected.
+  const reqHostname = hostnameOf(requestHost);
+  if (reqHostname && reqHostname === host) return true;
+  return false;
+}
+
+function setCorsHeaders(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+  const rawOrigin = req.headers.origin;
+  const origin = Array.isArray(rawOrigin) ? rawOrigin[0] : rawOrigin;
+  const allowed = isAllowedCorsOrigin(origin, req.headers.host);
+  if (allowed && origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  }
+  return allowed;
+}
+
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
   ".js": "application/javascript",
@@ -56,7 +110,7 @@ const MIME_TYPES: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
-function serveStatic(
+export function serveStatic(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   webDir: string,
@@ -86,6 +140,15 @@ function serveStatic(
     : "no-cache";
 
   if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) {
+    if (urlPath.startsWith("/assets/")) {
+      res.writeHead(404, {
+        "Content-Type": "text/plain",
+        "Cache-Control": "no-store",
+      });
+      res.end("Not found");
+      return true;
+    }
+
     // SPA fallback to index.html for client-side routing
     const indexPath = path.join(webDir, "index.html");
     if (fs.existsSync(indexPath)) {
@@ -155,10 +218,20 @@ export async function startGateway(
   if (recoveredQueue > 0) {
     logger.info(`Recovered ${recoveredQueue} in-flight queue item(s) from previous run — reset to pending`);
   }
+  // Drop any mid-turn streaming blocks stranded by a restart — their turn's final
+  // message was never written, so the partials have nothing to consolidate into.
+  const sweptPartials = clearAllPartialMessages();
+  if (sweptPartials > 0) {
+    logger.info(`Swept ${sweptPartials} stranded mid-turn partial message(s) from previous run`);
+  }
 
   // Resolve gateway port/host early so boot artifacts (gateway.json) can record it.
   const port = config.gateway.port || 7777;
   const host = config.gateway.host || "127.0.0.1";
+  const exposure = validateGatewayExposure(config);
+  if (!exposure.ok) throw new Error(exposure.error);
+  const gatewayAuthToken = ensureGatewayAuthToken(JINN_HOME);
+  if (shouldRequireGatewayAuth(config)) logger.info("Gateway auth enabled for privileged API and WebSocket routes");
 
   // Normalize claude engine config (idempotent — loadConfig already normalized it)
   const claudeCfg = normalizeClaudeEngineConfig(config.engines.claude);
@@ -166,13 +239,7 @@ export async function startGateway(
   // Reap any orphaned PTYs from a prior crashed run before writing the fresh gateway.json.
   const oldInfo = readGatewayInfo(GATEWAY_INFO_FILE);
   if (oldInfo) {
-    const pidsToReap = [
-      ...(oldInfo.ptyPids ?? []),
-      // Also try to reap the prior gateway process itself (in case it is still lingering).
-      oldInfo.pid,
-    ];
-    for (const pid of pidsToReap) {
-      if (pid === process.pid) continue; // paranoia: never signal ourselves
+    for (const pid of staleGatewayPids(oldInfo)) {
       try {
         process.kill(pid, "SIGTERM");
         logger.info(`Reaping stale pid ${pid} from prior gateway`);
@@ -187,7 +254,7 @@ export async function startGateway(
   }
 
   // Write gateway connection info (port + hook secret + pid) for hook-relay discovery.
-  const gatewayInfo = writeGatewayInfo(GATEWAY_INFO_FILE, { port, pid: process.pid });
+  const gatewayInfo = writeGatewayInfo(GATEWAY_INFO_FILE, { port, host, pid: process.pid, token: gatewayAuthToken });
 
   // Hook registry — shared by the interactive engine and the internal hook route.
   const hookRegistry = new HookRegistry();
@@ -195,69 +262,22 @@ export async function startGateway(
   // Claude engine — InteractiveClaudeEngine (PTY): runs all work turns
   // (chat, employees, cron, child sessions) AND backs the live xterm CLI view.
 
-  // Copy hook-relay asset + shared Tier-1 matcher next to JINN_HOME so PTY/headless
-  // Claude can find them. The matcher must sit beside the relay so the relay can
-  // import ./command-tier1.mjs for its local Tier-1 floor.
-  const assetCandidateDirs = [
-    path.join(__dirname, "..", "..", "..", "assets"),
-    path.join(__dirname, "..", "..", "assets"),
-    path.join(__dirname, "..", "assets"),
-  ];
-  const assetDir = assetCandidateDirs.find((d) => fs.existsSync(path.join(d, "hook-relay.mjs")));
-  const copyAsset = (name: string, dest: string, label: string) => {
-    try {
-      if (assetDir) {
-        fs.copyFileSync(path.join(assetDir, name), dest);
-        // Gate self-protection (honest, single-uid): keep these 0600 so a casual
-        // mistake can't clobber them. Not a defense against a hostile same-uid agent (v2).
-        fs.chmodSync(dest, 0o600);
-      } else {
-        logger.warn(`${label} asset not found in any candidate location; command gate may not work`);
-      }
-    } catch (err) {
-      logger.warn(`Failed to copy ${label}: ${err instanceof Error ? err.message : err}`);
-    }
-  };
-  copyAsset("hook-relay.mjs", HOOK_RELAY_SCRIPT, "hook-relay.mjs");
-  copyAsset("command-tier1.mjs", COMMAND_TIER1_SCRIPT, "command-tier1.mjs");
-
-  // Deploy the command-safety policy into JINN_HOME (canonical source is the repo
-  // policy/command-safety.json). The gate + relay read it from JINN_HOME; the
-  // watcher hot-reloads on change.
-  const policyCandidates = [
-    path.join(__dirname, "..", "..", "..", "..", "policy", "command-safety.json"),
-    path.join(__dirname, "..", "..", "..", "policy", "command-safety.json"),
-    path.join(__dirname, "..", "..", "policy", "command-safety.json"),
+  // Copy hook-relay asset next to JINN_HOME so PTY-spawned Claude can find it.
+  const relayCandidates = [
+    path.join(__dirname, "..", "..", "..", "assets", "hook-relay.mjs"),
+    path.join(__dirname, "..", "..", "assets", "hook-relay.mjs"),
+    path.join(__dirname, "..", "assets", "hook-relay.mjs"),
   ];
   try {
-    const policySrc = policyCandidates.find((p) => fs.existsSync(p));
-    fs.mkdirSync(path.dirname(POLICY_PATH), { recursive: true });
-    // Don't overwrite a policy already deployed to JINN_HOME (operators may hot-edit it);
-    // only seed it from the repo when missing.
-    if (policySrc && !fs.existsSync(POLICY_PATH)) {
-      fs.copyFileSync(policySrc, POLICY_PATH);
-      fs.chmodSync(POLICY_PATH, 0o600);
-      logger.info(`command-gate: seeded policy to ${POLICY_PATH} from ${policySrc}`);
-    } else if (!policySrc && !fs.existsSync(POLICY_PATH)) {
-      logger.warn(`command-gate: no policy found in repo candidates and none at ${POLICY_PATH}; gate will deny non-readonly (fail-closed)`);
+    const relaySrc = relayCandidates.find((p) => fs.existsSync(p));
+    if (relaySrc) {
+      fs.copyFileSync(relaySrc, HOOK_RELAY_SCRIPT);
+    } else {
+      logger.warn(`hook-relay.mjs asset not found in any candidate location; interactive Claude hooks may not work`);
     }
   } catch (err) {
-    logger.warn(`Failed to deploy command-safety policy: ${err instanceof Error ? err.message : err}`);
+    logger.warn(`Failed to copy hook-relay.mjs: ${err instanceof Error ? err.message : err}`);
   }
-
-  // Instantiate the command gate (Tier-1/2/3 + token store) and register it as a
-  // module singleton so engines + the hook endpoint can reach it.
-  const commandGate = new CommandGate(
-    POLICY_PATH,
-    makeClaudeClassifier(claudeCfg.bin),
-    (sessionId, command, detail) => {
-      // Out-of-scope deny → escalate to Jinn. Logged loudly here; the deny itself
-      // is returned to the relay. (Dashboard event wiring is intentionally omitted
-      // to avoid a boot-order dependency on the later-defined `emit`.)
-      logger.warn(`command-gate: OUT-OF-SCOPE deny (notify Jinn) for session ${sessionId}: ${detail} :: ${command.slice(0, 200)}`);
-    },
-  );
-  initCommandGate(commandGate);
 
   // Seed trust for the Jinn project dir so interactive Claude doesn't prompt.
   try {
@@ -266,13 +286,22 @@ export async function startGateway(
     logger.warn(`Failed to seed Claude trust: ${err instanceof Error ? err.message : err}`);
   }
 
-  // Orphan-PTY tracking spans both interactive engines (Claude + Antigravity).
+  // Orphan-PTY tracking spans all interactive engines.
   // Declared as a hoisted function so the lifecycle callbacks below can reference
   // the not-yet-constructed managers (only invoked later, on adopt/cleanup).
+  let codexLifecycle: PtyLifecycleManager | undefined;
   let antigravityLifecycle: PtyLifecycleManager | undefined;
+  let grokLifecycle: PtyLifecycleManager | undefined;
+  let hermesLifecycle: PtyLifecycleManager | undefined;
   function refreshPtyPids(): void {
     try {
-      const pids = [...claudeLifecycle.livePids(), ...(antigravityLifecycle ? antigravityLifecycle.livePids() : [])];
+      const pids = [
+        ...claudeLifecycle.livePids(),
+        ...(codexLifecycle ? codexLifecycle.livePids() : []),
+        ...(antigravityLifecycle ? antigravityLifecycle.livePids() : []),
+        ...(grokLifecycle ? grokLifecycle.livePids() : []),
+        ...(hermesLifecycle ? hermesLifecycle.livePids() : []),
+      ];
       updateGatewayPtyPids(GATEWAY_INFO_FILE, pids);
     } catch { /* best effort */ }
   }
@@ -288,6 +317,15 @@ export async function startGateway(
   });
   const interactiveClaudeEngine = new InteractiveClaudeEngine(claudeLifecycle, hookRegistry);
 
+  // Codex has two modes: headless `codex exec --json` for chat/default work
+  // turns, and real `codex` TUI PTYs for the dashboard CLI view.
+  codexLifecycle = new PtyLifecycleManager({
+    maxLivePtys: claudeCfg.maxLivePtys!,
+    onAdopt: () => refreshPtyPids(),
+    onCleanup: () => refreshPtyPids(),
+  });
+  const codexInteractiveEngine = new CodexInteractiveEngine(codexLifecycle);
+
   // Antigravity (`agy`) — PTY-interactive engine. One instance both runs turns
   // and backs the xterm view (agy has no headless mode), so it needs its own
   // PTY lifecycle manager.
@@ -297,9 +335,24 @@ export async function startGateway(
     onCleanup: () => refreshPtyPids(),
   });
   const antigravityEngine = new AntigravityEngine(antigravityLifecycle);
-  logger.info("Engines initialized: claude (interactive PTY), codex, antigravity (interactive PTY)");
+  grokLifecycle = new PtyLifecycleManager({
+    maxLivePtys: claudeCfg.maxLivePtys!,
+    onAdopt: () => refreshPtyPids(),
+    onCleanup: () => refreshPtyPids(),
+  });
+  const grokInteractiveEngine = new GrokInteractiveEngine(grokLifecycle);
+  hermesLifecycle = new PtyLifecycleManager({
+    maxLivePtys: claudeCfg.maxLivePtys!,
+    onAdopt: () => refreshPtyPids(),
+    onCleanup: () => refreshPtyPids(),
+  });
+  const hermesInteractiveEngine = new HermesInteractiveEngine(hermesLifecycle);
+  const piEngine = new PiEngine();
+  logger.info("Engines initialized: claude (interactive PTY), codex (headless + interactive PTY), antigravity (interactive PTY), grok (headless + interactive PTY), hermes (headless + interactive PTY), pi");
 
   const codexEngine = new CodexEngine();
+  const grokEngine = new GrokEngine();
+  const hermesEngine = new HermesAcpEngine();
   const engines = new Map<string, Engine>();
   // Claude WORK TURNS (chat, employees, cron, child sessions) run on the
   // interactive PTY engine → cc_entrypoint=cli, covered by the Max subscription
@@ -308,12 +361,18 @@ export async function startGateway(
   logger.info("Claude work turns: INTERACTIVE PTY (cc_entrypoint=cli, Max-subsidized)");
   engines.set("codex", codexEngine);
   engines.set("antigravity", antigravityEngine);
+  engines.set("grok", grokEngine);
+  engines.set("hermes", hermesEngine);
+  engines.set("pi", piEngine);
 
   // PTY-capable engines, keyed by engine name — the /ws/pty handler routes by
   // session.engine so the xterm view attaches to the right engine.
-  const ptyViewEngines: Record<string, PtyViewEngine> = {
+  const ptyViewEngines: Record<string, Engine & PtyViewEngine> = {
     claude: interactiveClaudeEngine,
+    codex: codexInteractiveEngine,
     antigravity: antigravityEngine,
+    grok: grokInteractiveEngine,
+    hermes: hermesInteractiveEngine,
   };
 
   // Derive connector names from config
@@ -344,169 +403,110 @@ export async function startGateway(
   /** IDs of connectors created from config.connectors.instances[] (vs legacy top-level connectors) */
   const instanceConnectorIds = new Set<string>();
 
-  if (config.connectors?.slack?.appToken && config.connectors?.slack?.botToken) {
+  /**
+   * Shared boilerplate for legacy top-level connectors: create, wire onMessage
+   * routing, register, and fire-and-forget start. Per-connector config guards
+   * and construction stay explicit at the call sites.
+   */
+  const initConnector = (opts: {
+    id: string;
+    label: string;
+    create: () => Connector;
+    /** Read at message time so it tracks the captured config like before. */
+    employee: () => string | undefined;
+    startMsg?: string;
+  }): void => {
     try {
-      const slack = new SlackConnector({
-        appToken: config.connectors.slack.appToken,
-        botToken: config.connectors.slack.botToken,
-        allowFrom: config.connectors.slack.allowFrom,
-        ignoreOldMessagesOnBoot: config.connectors.slack.ignoreOldMessagesOnBoot,
-      });
-      slack.onMessage((msg) => {
+      const connector = opts.create();
+      connector.onMessage((msg) => {
         const routeOpts: RouteOptions = {};
-        if (config.connectors.slack?.employee) {
-          const emp = employeeRegistry.get(config.connectors.slack.employee);
+        const employeeName = opts.employee();
+        if (employeeName) {
+          const emp = employeeRegistry.get(employeeName);
           if (emp) routeOpts.employee = emp;
         }
-        sessionManager.route(msg, slack, routeOpts).catch((err) => {
-          logger.error(`Slack route error: ${err instanceof Error ? err.message : err}`);
+        sessionManager.route(msg, connector, routeOpts).catch((err) => {
+          logger.error(`${opts.label} route error: ${err instanceof Error ? err.message : err}`);
         });
       });
       // Push to registry before starting so shutdown can clean up even if start is in-flight.
-      connectors.push(slack);
-      connectorMap.set("slack", slack);
+      connectors.push(connector);
+      connectorMap.set(opts.id, connector);
       // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
-      slack.start().catch((err) => {
-        logger.error(`Failed to start Slack connector: ${err instanceof Error ? err.message : err}`);
+      connector.start().catch((err) => {
+        logger.error(`Failed to start ${opts.label} connector: ${err instanceof Error ? err.message : err}`);
       });
+      if (opts.startMsg) logger.info(opts.startMsg);
     } catch (err) {
-      logger.error(`Failed to initialize Slack connector: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Failed to initialize ${opts.label} connector: ${err instanceof Error ? err.message : err}`);
     }
+  };
+
+  if (config.connectors?.slack?.appToken && config.connectors?.slack?.botToken) {
+    const slackConfig = config.connectors.slack;
+    initConnector({
+      id: "slack",
+      label: "Slack",
+      create: () =>
+        new SlackConnector({
+          appToken: slackConfig.appToken,
+          botToken: slackConfig.botToken,
+          allowFrom: slackConfig.allowFrom,
+          ignoreOldMessagesOnBoot: slackConfig.ignoreOldMessagesOnBoot,
+        }),
+      employee: () => config.connectors.slack?.employee,
+    });
   }
 
   if (config.connectors?.discord?.proxyVia) {
     // Remote mode: proxy all Discord operations through the primary instance
-    try {
-      const discord = new RemoteDiscordConnector({
-        proxyVia: config.connectors.discord.proxyVia,
-        channelId: config.connectors.discord.channelId,
-      });
-      discord.onMessage((msg) => {
-        const routeOpts: RouteOptions = {};
-        if (config.connectors.discord?.employee) {
-          const emp = employeeRegistry.get(config.connectors.discord.employee);
-          if (emp) routeOpts.employee = emp;
-        }
-        sessionManager.route(msg, discord, routeOpts).catch((err) => {
-          logger.error(`Discord route error: ${err instanceof Error ? err.message : err}`);
-        });
-      });
-      // Push to registry before starting so shutdown can clean up even if start is in-flight.
-      connectors.push(discord);
-      connectorMap.set("discord", discord);
-      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
-      discord.start().catch((err) => {
-        logger.error(`Failed to start remote Discord connector: ${err instanceof Error ? err.message : err}`);
-      });
-      logger.info("Discord remote connector starting");
-    } catch (err) {
-      logger.error(`Failed to initialize remote Discord connector: ${err instanceof Error ? err.message : err}`);
-    }
+    const discordConfig = config.connectors.discord;
+    initConnector({
+      id: "discord",
+      label: "remote Discord",
+      create: () =>
+        new RemoteDiscordConnector({
+          proxyVia: discordConfig.proxyVia!,
+          channelId: discordConfig.channelId,
+        }),
+      employee: () => config.connectors.discord?.employee,
+      startMsg: "Discord remote connector starting",
+    });
   } else if (config.connectors?.discord?.botToken) {
     // Primary mode: direct Discord bot connection
-    try {
-      const discord = new DiscordConnector(config.connectors.discord as DiscordConnectorConfig);
-      discord.onMessage((msg) => {
-        const routeOpts: RouteOptions = {};
-        if (config.connectors.discord?.employee) {
-          const emp = employeeRegistry.get(config.connectors.discord.employee);
-          if (emp) routeOpts.employee = emp;
-        }
-        sessionManager.route(msg, discord, routeOpts).catch((err) => {
-          logger.error(`Discord route error: ${err instanceof Error ? err.message : err}`);
-        });
-      });
-      // Push to registry before starting so shutdown can clean up even if start is in-flight.
-      connectors.push(discord);
-      connectorMap.set("discord", discord);
-      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
-      discord.start().catch((err) => {
-        logger.error(`Failed to start Discord connector: ${err instanceof Error ? err.message : err}`);
-      });
-      logger.info("Discord connector starting");
-    } catch (err) {
-      logger.error(`Failed to initialize Discord connector: ${err instanceof Error ? err.message : err}`);
-    }
-  } else if (config.connectors?.discord?.proxyVia) {
-    try {
-      const discord = new RemoteDiscordConnector({ proxyVia: config.connectors.discord.proxyVia });
-      discord.onMessage((msg) => {
-        const routeOpts: RouteOptions = {};
-        if (config.connectors.discord?.employee) {
-          const emp = employeeRegistry.get(config.connectors.discord.employee);
-          if (emp) routeOpts.employee = emp;
-        }
-        sessionManager.route(msg, discord, routeOpts).catch((err) => {
-          logger.error(`Discord (remote) route error: ${err instanceof Error ? err.message : err}`);
-        });
-      });
-      // Push to registry before starting so shutdown can clean up even if start is in-flight.
-      connectors.push(discord);
-      connectorMap.set("discord", discord);
-      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
-      discord.start().catch((err) => {
-        logger.error(`Failed to start remote Discord connector: ${err instanceof Error ? err.message : err}`);
-      });
-      logger.info(`Discord connector starting in remote mode (via ${config.connectors.discord.proxyVia})`);
-    } catch (err) {
-      logger.error(`Failed to initialize remote Discord connector: ${err instanceof Error ? err.message : err}`);
-    }
+    initConnector({
+      id: "discord",
+      label: "Discord",
+      create: () => new DiscordConnector(config.connectors.discord as DiscordConnectorConfig),
+      employee: () => config.connectors.discord?.employee,
+      startMsg: "Discord connector starting",
+    });
   }
 
   if (config.connectors?.telegram?.botToken) {
-    try {
-      const telegram = new TelegramConnector({
-        botToken: config.connectors.telegram.botToken,
-        allowFrom: config.connectors.telegram.allowFrom,
-        ignoreOldMessagesOnBoot: config.connectors.telegram.ignoreOldMessagesOnBoot,
-        stt: config.stt,
-      });
-      telegram.onMessage((msg) => {
-        const routeOpts: RouteOptions = {};
-        if (config.connectors.telegram?.employee) {
-          const emp = employeeRegistry.get(config.connectors.telegram.employee);
-          if (emp) routeOpts.employee = emp;
-        }
-        sessionManager.route(msg, telegram, routeOpts).catch((err) => {
-          logger.error(`Telegram route error: ${err instanceof Error ? err.message : err}`);
-        });
-      });
-      // Push to registry before starting so shutdown can clean up even if start is in-flight.
-      connectors.push(telegram);
-      connectorMap.set("telegram", telegram);
-      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
-      telegram.start().catch((err) => {
-        logger.error(`Failed to start Telegram connector: ${err instanceof Error ? err.message : err}`);
-      });
-    } catch (err) {
-      logger.error(`Failed to initialize Telegram connector: ${err instanceof Error ? err.message : err}`);
-    }
+    const telegramConfig = config.connectors.telegram;
+    initConnector({
+      id: "telegram",
+      label: "Telegram",
+      create: () =>
+        new TelegramConnector({
+          botToken: telegramConfig.botToken,
+          allowFrom: telegramConfig.allowFrom,
+          ignoreOldMessagesOnBoot: telegramConfig.ignoreOldMessagesOnBoot,
+          stt: config.stt,
+        }),
+      employee: () => config.connectors.telegram?.employee,
+    });
   }
 
   if (config.connectors?.whatsapp) {
-    try {
-      const whatsapp = new WhatsAppConnector(config.connectors.whatsapp ?? {});
-      whatsapp.onMessage((msg) => {
-        const routeOpts: RouteOptions = {};
-        if (config.connectors.whatsapp?.employee) {
-          const emp = employeeRegistry.get(config.connectors.whatsapp.employee);
-          if (emp) routeOpts.employee = emp;
-        }
-        sessionManager.route(msg, whatsapp, routeOpts).catch((err) => {
-          logger.error(`WhatsApp route error: ${err instanceof Error ? err.message : err}`);
-        });
-      });
-      // Push to registry before starting so shutdown can clean up even if start is in-flight.
-      connectors.push(whatsapp);
-      connectorMap.set("whatsapp", whatsapp);
-      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
-      whatsapp.start().catch((err) => {
-        logger.error(`Failed to start WhatsApp connector: ${err instanceof Error ? err.message : err}`);
-      });
-      logger.info("WhatsApp connector starting (scan QR code if first run)");
-    } catch (err) {
-      logger.error(`Failed to initialize WhatsApp connector: ${err instanceof Error ? err.message : err}`);
-    }
+    initConnector({
+      id: "whatsapp",
+      label: "WhatsApp",
+      create: () => new WhatsAppConnector(config.connectors.whatsapp ?? {}),
+      employee: () => config.connectors.whatsapp?.employee,
+      startMsg: "WhatsApp connector starting (scan QR code if first run)",
+    });
   }
 
   // Process named connector instances (allows multiple connectors of the same type)
@@ -746,10 +746,6 @@ export async function startGateway(
 
   const startTime = Date.now();
 
-  // TTS manager — synthesizes audio only for sessions with an open /ws/tts WS client.
-  // Must be created before emit() so the closure can reference it.
-  const ttsManager = new TtsManager(config);
-
   // Broadcast function (defined early so apiContext can reference it)
   const wsClients = new Set<import("ws").WebSocket>();
   const emit = (event: string, payload: unknown): void => {
@@ -764,9 +760,66 @@ export async function startGateway(
         }
       }
     }
-    // Feed session events into the TTS pipeline (auto-synthesis for opted-in sessions).
-    ttsManager.handleGatewayEvent(event, payload);
   };
+
+  // Discover dynamic engine models in the background. Fire-and-forget: the
+  // registry serves known/synthesized fallbacks until the snapshots land, then
+  // the web UI invalidates its model registry cache via engines:updated.
+  const refreshDynamicModels = (cfg: JinnConfig): void => {
+    void Promise.all([refreshPiModels(cfg), refreshGrokModels(cfg), refreshHermesModels(cfg)])
+      .finally(() => emit("engines:updated", {}));
+  };
+  refreshDynamicModels(currentConfig);
+
+  // Synchronously re-scan org/ into the in-memory registry and drop warm PTYs so the
+  // next turn respawns with a fresh system prompt. Shared by the API employee-update
+  // handler (immediate refresh, no watcher lag) and the chokidar onOrgChange watcher.
+  const reloadOrg = () => {
+    employeeRegistry = scanOrg();
+    logger.info(`Org directory changed, reloaded ${employeeRegistry.size} employee(s)`);
+    // Org/persona changed — recycle only IDLE warm PTYs so the next turn respawns
+    // with the fresh system prompt. Must NOT killAll(): a turn in flight may itself
+    // have written the org file that triggered this reload (e.g. the onboarding
+    // genie hatching an employee, or a COO turn editing a persona). Interrupting
+    // that turn's PTY would settle it as "Interrupted", drop the web response, and
+    // hang the session. Active turns finish on their current persona; the new
+    // persona takes effect on the session's NEXT turn via cold respawn.
+    interactiveClaudeEngine.killIdle();
+    codexInteractiveEngine.killIdle();
+    antigravityEngine.killIdle();
+    grokInteractiveEngine.killIdle();
+    hermesInteractiveEngine.killIdle();
+    emit("org:changed", {});
+  };
+
+  // Post-settle background activity (in-memory only): the interactive engine
+  // reports when the CLI still has upstream API requests in flight (background
+  // subagents/tasks) AFTER the Stop hook settled the turn — so the UI can show
+  // "still working" instead of lying "idle". Mirrored into serializeSession via
+  // apiContext.backgroundActivity and pushed live as `session:background`.
+  const backgroundActivity = new Map<string, { activeStreams: number; lastActivityAt: number }>();
+  interactiveClaudeEngine.onBackgroundActivity((sessionId, info) => {
+    if (info) backgroundActivity.set(sessionId, info);
+    else backgroundActivity.delete(sessionId);
+    emit("session:background", {
+      sessionId,
+      backgroundActivity: info
+        ? { activeStreams: info.activeStreams, lastActivityAt: new Date(info.lastActivityAt).toISOString() }
+        : null,
+    });
+  });
+
+  // Unsolicited-Stop consumer: a Stop hook nobody claims within the registry's
+  // grace delay means a PTY-native turn (typed straight into the CLI/xterm
+  // view — no run() in flight) or a Stop past the late-recovery window. Persist
+  // that turn into the messages DB from the transcript tail so chat mode sees it.
+  hookRegistry.setUnclaimedHookHandler((jinnSessionId, payload) => {
+    try {
+      syncExternalTurn(jinnSessionId, emit, payload);
+    } catch (err) {
+      logger.warn(`Unclaimed-Stop sync failed for session ${jinnSessionId}: ${err instanceof Error ? err.message : err}`);
+    }
+  });
 
   // API context
   const apiContext: ApiContext = {
@@ -779,30 +832,69 @@ export async function startGateway(
     reloadConnectorInstances,
     hookRegistry,
     hookSecret: gatewayInfo.secret,
-    commandGate,
     interactiveClaudeEngine,
+    ptyViewEngines,
+    reloadOrg,
+    backgroundActivity,
+    gatewayAuthToken,
   };
+
+  // Re-read config.yaml into memory. Used by both the file-watcher (debounced)
+  // and by API handlers that write config.yaml and need getConfig() to reflect
+  // the change immediately (e.g. onboarding / PUT /api/config).
+  const reloadConfig = (): void => {
+    try {
+      currentConfig = loadConfig();
+      apiContext.config = currentConfig;
+      sessionManager.setConfig(currentConfig);
+      invalidateModelRegistry(); // rebuild the model/capability registry from the new config
+      refreshDynamicModels(currentConfig); // re-discover dynamic models (engine bins/auth may have changed)
+      logger.info("Config reloaded successfully");
+      emit("config:reloaded", {});
+    } catch (err) {
+      logger.error(`Failed to reload config: ${err instanceof Error ? err.message : err}`);
+    }
+  };
+  apiContext.reloadConfig = reloadConfig;
 
   // Replay any pending web queue items (e.g. gateway restart mid-run)
   resumePendingWebQueueItems(apiContext);
+
+  // Unstick sessions whose completion event was lost (status:"running" with no
+  // live turn). 15s sweep; logs one line per fix.
+  const stopStatusReconciler = startStatusReconciler({ engines, emit });
 
   // Resolve web UI directory — bundled into dist/web/ by postbuild script
   // At runtime __dirname is dist/src/gateway/, so ../../web resolves to dist/web/
   const webDir = path.resolve(__dirname, "..", "..", "web");
 
   // Create HTTP server
+  const authRequiredNow = (): boolean => shouldRequireGatewayAuth(currentConfig);
+
   const server = http.createServer((req, res) => {
     const url = req.url || "/";
+    const corsAllowed = setCorsHeaders(req, res);
 
-    // CORS headers for development
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    if (url.startsWith("/api/") && !corsAllowed) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Origin not allowed" }));
+      return;
+    }
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
       res.end();
       return;
+    }
+
+    const pathname = url.split("?")[0];
+    if (authRequiredNow() && authRequiredForRequest(req.method, pathname)) {
+      const auth = authenticateGatewayRequest(req, gatewayAuthToken, JINN_HOME);
+      if (!auth.ok) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: auth.reason || "Unauthorized" }));
+        return;
+      }
     }
 
     // API routes
@@ -829,12 +921,32 @@ export async function startGateway(
   // separate from the global broadcast `wss` so its connections aren't added to
   // the broadcast client set.
   const ptyWss = new WebSocketServer({ noServer: true });
-  // Dedicated WS server for per-session TTS audio (/ws/tts/:sessionId).
-  const ttsWss = new WebSocketServer({ noServer: true });
+
+  // Protocol-level ping/pong sweep across both WS servers. Terminates half-open
+  // (dead but readyState===OPEN) sockets; terminating a PTY socket fires its
+  // close handler -> onDisconnect -> viewerCount decrement, fixing the leak.
+  const stopWsHeartbeat = startWsHeartbeat([wss, ptyWss], {
+    onSweep: (r) => { if (r.terminated > 0) logger.info(`WS heartbeat reaped ${r.terminated} dead socket(s)`); },
+  });
 
   wss.on("connection", (ws) => {
     wsClients.add(ws);
+    trackHeartbeat(ws);
     logger.info(`WebSocket client connected (${wsClients.size} total)`);
+
+    // App-level ping echo: the browser client cannot observe protocol-level
+    // pongs from JS, so it sends an app `ping` and watches for this `pong` to
+    // confirm server liveness during idle.
+    ws.on("message", (raw) => {
+      try {
+        const m = JSON.parse(raw.toString());
+        if (m?.event === "ping" && ws.readyState === 1) {
+          ws.send(JSON.stringify({ event: "pong", payload: {} }));
+        }
+      } catch {
+        // ignore non-JSON / unknown frames
+      }
+    });
 
     ws.on("close", () => {
       wsClients.delete(ws);
@@ -849,6 +961,15 @@ export async function startGateway(
 
   server.on("upgrade", (req, socket, head) => {
     const reqUrl = req.url || "";
+    const pathname = reqUrl.split("?")[0];
+    if (authRequiredNow() && authRequiredForRequest("GET", pathname)) {
+      const auth = authenticateGatewayRequest(req, gatewayAuthToken, JINN_HOME);
+      if (!auth.ok) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+    }
     if (reqUrl === "/ws") {
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit("connection", ws, req);
@@ -858,7 +979,13 @@ export async function startGateway(
     // Dedicated per-session PTY channel for the live xterm CLI view.
     const ptyMatch = reqUrl.split("?")[0].match(/^\/ws\/pty\/([^/]+)$/);
     if (ptyMatch) {
-      const sessionId = decodeURIComponent(ptyMatch[1]);
+      let sessionId: string;
+      try {
+        sessionId = decodeURIComponent(ptyMatch[1]);
+      } catch {
+        socket.destroy();
+        return;
+      }
       const ptySession = getSession(sessionId);
       // Route to the session's OWN engine. Do NOT fall back to claude: codex has no
       // PTY view, and attaching the claude TUI to a codex session showed the wrong
@@ -867,17 +994,13 @@ export async function startGateway(
       const ptyEngine = ptySession ? ptyViewEngines[ptySession.engine] : undefined;
       if (!ptyEngine) { socket.destroy(); return; }
       ptyWss.handleUpgrade(req, socket, head, (ws) => {
-        attachPtyWebSocket(ws, sessionId, ptyEngine);
-      });
-      return;
-    }
-    // Per-session TTS audio channel — binary MP3 frames server→client.
-    const ttsMatch = reqUrl.split("?")[0].match(/^\/ws\/tts\/([^/]+)$/);
-    if (ttsMatch) {
-      if (!config.tts?.enabled) { socket.destroy(); return; }
-      const ttsSessionId = decodeURIComponent(ttsMatch[1]);
-      ttsWss.handleUpgrade(req, socket, head, (ws) => {
-        attachTtsWebSocket(ws, ttsSessionId, ttsManager);
+        trackHeartbeat(ws);
+        try {
+          attachPtyWebSocket(ws, sessionId, ptyEngine);
+        } catch (err) {
+          logger.warn(`PTY websocket attach failed for ${sessionId}: ${err instanceof Error ? err.message : err}`);
+          ws.close();
+        }
       });
       return;
     }
@@ -888,79 +1011,63 @@ export async function startGateway(
   // Sync skill symlinks to .claude/skills/ and .agents/skills/
   syncSkillSymlinks();
 
-  // Initialize STT model directory
+  // Initialize STT model symlinks
   try {
     initStt();
   } catch (err) {
     logger.warn(`STT init skipped: ${err instanceof Error ? err.message : err}`);
   }
 
-  // Probe HTTP STT server health at startup (non-blocking).
-  if (config.stt?.backend === "http" && config.stt.url) {
-    void checkHttpSttHealth(config.stt.url);
-  }
-
   // Start file watchers
   startWatchers({
-    onConfigReload: () => {
-      try {
-        currentConfig = loadConfig();
-        apiContext.config = currentConfig;
-        invalidateModelRegistry(); // rebuild the model/capability registry from the new config
-        ttsManager.updateConfig(currentConfig);
-        if (currentConfig.stt?.backend === "http" && currentConfig.stt.url) {
-          void checkHttpSttHealth(currentConfig.stt.url);
-        }
-        logger.info("Config reloaded successfully");
-        emit("config:reloaded", {});
-      } catch (err) {
-        logger.error(
-          `Failed to reload config: ${err instanceof Error ? err.message : err}`,
-        );
-      }
-    },
+    onConfigReload: reloadConfig,
     onCronReload: () => {
       const updatedJobs = loadJobs();
       reloadScheduler(updatedJobs);
       logger.info(`Cron jobs reloaded (${updatedJobs.length} job(s))`);
       emit("cron:reloaded", {});
     },
-    onOrgChange: () => {
-      employeeRegistry = scanOrg();
-      logger.info(`Org directory changed, reloaded ${employeeRegistry.size} employee(s)`);
-      // Org/persona changed — drop warm PTYs so the next turn respawns with fresh system prompt.
-      interactiveClaudeEngine.killAll();
-      antigravityEngine.killAll();
-      emit("org:changed", {});
-    },
+    onOrgChange: reloadOrg,
     onSkillsChange: () => {
       logger.info("Skills changed, notifying clients");
       emit("skills:changed", {});
     },
-    onPolicyReload: () => {
-      commandGate.reload();
-      logger.info("command-safety policy reloaded");
-      emit("policy:reloaded", {});
-    },
   });
 
-  // Start listening (port/host resolved earlier at boot)
+  // Start listening (port/host resolved earlier at boot). During `jinn restart`
+  // the replacement daemon can race the old process' graceful shutdown; retry
+  // EADDRINUSE briefly instead of exiting and leaving the gateway stopped.
   await new Promise<void>((resolve, reject) => {
-    server.on("error", (err: NodeJS.ErrnoException) => {
-      if (err.code === "EADDRINUSE") {
-        const msg = `Port ${port} is already in use.`;
-        logger.error(msg);
-        console.error(`\nError: ${msg}`);
-        console.error(`\nTry: jinn start -p ${port + 1}`);
-        console.error(`Or update the port in config.yaml\n`);
-        process.exit(1);
-      }
-      reject(err);
-    });
-    server.listen(port, host, () => {
-      logger.info(`${gatewayName} gateway listening on http://${host}:${port} (boot ${bootId})`);
-      resolve();
-    });
+    const startedAt = Date.now();
+    const retryForMs = 15_000;
+    const retryDelayMs = 250;
+    const listen = () => {
+      const onError = (err: NodeJS.ErrnoException) => {
+        server.off("listening", onListening);
+        if (err.code === "EADDRINUSE" && Date.now() - startedAt < retryForMs) {
+          setTimeout(listen, retryDelayMs).unref?.();
+          return;
+        }
+        if (err.code === "EADDRINUSE") {
+          const msg = `Port ${port} is already in use.`;
+          logger.error(msg);
+          console.error(`\nError: ${msg}`);
+          console.error(`\nTry: jinn start -p ${port + 1}`);
+          console.error(`Or update the port in config.yaml\n`);
+          process.exit(1);
+        }
+        reject(err);
+      };
+      const onListening = () => {
+        server.off("error", onError);
+        logger.info(`${gatewayName} gateway listening on http://${host}:${port} (boot ${bootId})`);
+        resolve();
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(port, host);
+    };
+    listen();
   });
 
   // Notify connected WebSocket clients about interrupted sessions available for resume
@@ -999,6 +1106,10 @@ export async function startGateway(
   return async () => {
     logger.info("Gateway cleanup starting...");
 
+    // Stop the status reconciler sweep before we start marking sessions
+    // interrupted below — a mid-shutdown sweep must not race the teardown.
+    stopStatusReconciler();
+
     // Stop caffeinate
     if (caffeinate && caffeinate.exitCode === null) {
       caffeinate.kill();
@@ -1020,7 +1131,13 @@ export async function startGateway(
     // Terminate live engine subprocesses after marking sessions.
     interactiveClaudeEngine.killAll();
     codexEngine.killAll();
+    codexInteractiveEngine.killAll();
     antigravityEngine.killAll();
+    grokEngine.killAll();
+    grokInteractiveEngine.killAll();
+    hermesEngine.killAll();
+    hermesInteractiveEngine.killAll();
+    piEngine.killAll();
 
     // Dispose the PTY lifecycle manager.
     try {
@@ -1060,19 +1177,27 @@ export async function startGateway(
     // Stop watchers
     await stopWatchers();
 
-    // Close WebSocket connections
+    // Stop the WS heartbeat sweep before tearing down the WS servers.
+    stopWsHeartbeat();
+
+    // Close WebSocket connections. Use terminate() during shutdown so lingering
+    // PTY/SSE clients cannot hold server.close() open until the force-exit timer.
     for (const client of wsClients) {
-      client.close(1001, "Server shutting down");
+      client.terminate();
     }
     wsClients.clear();
+    for (const client of ptyWss.clients) {
+      client.terminate();
+    }
 
     // Close WebSocket servers
     await new Promise<void>((resolve) => wss.close(() => resolve()));
     await new Promise<void>((resolve) => ptyWss.close(() => resolve()));
-    await new Promise<void>((resolve) => ttsWss.close(() => resolve()));
 
     // Close HTTP server
     await new Promise<void>((resolve, reject) => {
+      server.closeAllConnections?.();
+      server.closeIdleConnections?.();
       server.close((err) => (err ? reject(err) : resolve()));
     });
 

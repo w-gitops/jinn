@@ -68,7 +68,8 @@ export function FileAttachment({ name, size, mimeType, url, isUser }: FileAttach
       padding: 'var(--space-3) var(--space-4)',
       borderRadius: 'var(--radius-lg)',
       background: isUser ? 'var(--accent)' : 'var(--material-thin)',
-      border: isUser ? 'none' : '1px solid var(--separator)',
+      border: 'none',
+      boxShadow: isUser ? 'none' : 'var(--shadow-subtle)',
       maxWidth: 280,
       minWidth: 180,
     }}>
@@ -77,12 +78,12 @@ export function FileAttachment({ name, size, mimeType, url, isUser }: FileAttach
         width: 36,
         height: 36,
         borderRadius: 'var(--radius-sm)',
-        background: isUser ? 'rgba(0,0,0,0.15)' : 'var(--fill-tertiary)',
+        background: isUser ? 'color-mix(in srgb, var(--accent-contrast) 15%, transparent)' : 'var(--fill-tertiary)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         flexShrink: 0,
-        color: isUser ? '#000' : 'var(--text-secondary)',
+        color: isUser ? 'var(--accent-contrast)' : 'var(--text-secondary)',
       }}>
         {fileIcon(mimeType, name)}
       </div>
@@ -92,7 +93,7 @@ export function FileAttachment({ name, size, mimeType, url, isUser }: FileAttach
         <div style={{
           fontSize: 'var(--text-footnote)',
           fontWeight: 'var(--weight-medium)',
-          color: isUser ? '#000' : 'var(--text-primary)',
+          color: isUser ? 'var(--accent-contrast)' : 'var(--text-primary)',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
@@ -102,7 +103,7 @@ export function FileAttachment({ name, size, mimeType, url, isUser }: FileAttach
         {size != null && (
           <div style={{
             fontSize: 'var(--text-caption2)',
-            color: isUser ? 'rgba(0,0,0,0.5)' : 'var(--text-tertiary)',
+            color: isUser ? 'color-mix(in srgb, var(--accent-contrast) 60%, transparent)' : 'var(--text-tertiary)',
             marginTop: 1,
           }}>
             {formatFileSize(size)}
@@ -119,12 +120,12 @@ export function FileAttachment({ name, size, mimeType, url, isUser }: FileAttach
           width: 28,
           height: 28,
           borderRadius: '50%',
-          background: isUser ? 'rgba(0,0,0,0.15)' : 'var(--fill-secondary)',
+          background: isUser ? 'color-mix(in srgb, var(--accent-contrast) 15%, transparent)' : 'var(--fill-secondary)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           flexShrink: 0,
-          color: isUser ? '#000' : 'var(--text-secondary)',
+          color: isUser ? 'var(--accent-contrast)' : 'var(--text-secondary)',
           textDecoration: 'none',
         }}
       >

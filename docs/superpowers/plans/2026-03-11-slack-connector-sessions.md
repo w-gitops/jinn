@@ -119,9 +119,9 @@ test("isOldSlackMessage compares against boot time", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests — verify new tests fail**
+- [ ] **Step 2: Run tests - verify new tests fail**
 
-Run: `cd /Users/jimmyenglish/Projects/jinn && npx tsx --test packages/jinn/src/connectors/slack/threads.test.ts`
+Run: `cd <repo> && npx tsx --test packages/jinn/src/connectors/slack/threads.test.ts`
 Expected: Several test failures (root key format, buildReplyContext for roots)
 
 - [ ] **Step 3: Update `deriveSessionKey` and `buildReplyContext`**
@@ -143,12 +143,12 @@ export function deriveSessionKey(event: SlackMessageEventLike): string {
     return `slack:dm:${event.user || "unknown"}`;
   }
 
-  // Thread reply — use thread_ts (which is the root message's ts)
+  // Thread reply - use thread_ts (which is the root message's ts)
   if (event.thread_ts && event.thread_ts !== event.ts) {
     return `slack:${event.channel}:${event.thread_ts}`;
   }
 
-  // Root channel message — use ts so thread replies will match
+  // Root channel message - use ts so thread replies will match
   return `slack:${event.channel}:${event.ts}`;
 }
 
@@ -186,9 +186,9 @@ export function isOldSlackMessage(ts: string | undefined, bootTimeMs: number): b
 
 Note: Removed `SlackThreadOptions` interface and `shareSessionInChannel` parameter entirely.
 
-- [ ] **Step 4: Run tests — verify all pass**
+- [ ] **Step 4: Run tests - verify all pass**
 
-Run: `cd /Users/jimmyenglish/Projects/jinn && npx tsx --test packages/jinn/src/connectors/slack/threads.test.ts`
+Run: `cd <repo> && npx tsx --test packages/jinn/src/connectors/slack/threads.test.ts`
 Expected: All 8 tests pass
 
 - [ ] **Step 5: Update SlackConnector to remove `shareSessionInChannel`**
@@ -205,19 +205,19 @@ In `packages/jinn/src/shared/types.ts`, remove `shareSessionInChannel?: boolean;
 
 - [ ] **Step 7: Run full build and tests**
 
-Run: `cd /Users/jimmyenglish/Projects/jinn && pnpm typecheck && pnpm test`
+Run: `cd <repo> && pnpm typecheck && pnpm test`
 Expected: No type errors, all tests pass
 
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /Users/jimmyenglish/Projects/jinn
+cd <repo>
 git add packages/jinn/src/connectors/slack/threads.ts packages/jinn/src/connectors/slack/threads.test.ts packages/jinn/src/connectors/slack/index.ts packages/jinn/src/shared/types.ts
 git commit -m "fix: per-message session keys for Slack thread continuity
 
 Each root channel message now gets its own session key (slack:{channel}:{ts})
 instead of sharing one per channel. Thread replies match via thread_ts.
-Removes shareSessionInChannel option — no longer needed.
+Removes shareSessionInChannel option - no longer needed.
 Root messages now set thread in replyContext so bot replies create threads."
 ```
 
@@ -344,13 +344,13 @@ const systemPrompt = buildContext({
 
 - [ ] **Step 5: Run full build and tests**
 
-Run: `cd /Users/jimmyenglish/Projects/jinn && pnpm typecheck && pnpm test`
+Run: `cd <repo> && pnpm typecheck && pnpm test`
 Expected: No type errors, all tests pass
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/jimmyenglish/Projects/jinn
+cd <repo>
 git add packages/jinn/src/connectors/slack/index.ts packages/jinn/src/sessions/context.ts packages/jinn/src/sessions/manager.ts
 git commit -m "feat: resolve Slack channel names for agent context
 
@@ -488,13 +488,13 @@ this.app.event("reaction_added", async ({ event }) => {
 
 - [ ] **Step 3: Run full build and tests**
 
-Run: `cd /Users/jimmyenglish/Projects/jinn && pnpm typecheck && pnpm test`
+Run: `cd <repo> && pnpm typecheck && pnpm test`
 Expected: No type errors, all tests pass
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/jimmyenglish/Projects/jinn
+cd <repo>
 git add packages/jinn/src/connectors/slack/index.ts
 git commit -m "feat: reaction-triggered sessions in Slack connector
 
@@ -512,12 +512,12 @@ Requires reactions:read scope and reaction_added event subscription."
 
 - [ ] **Step 1: Run full build**
 
-Run: `cd /Users/jimmyenglish/Projects/jinn && pnpm build`
+Run: `cd <repo> && pnpm build`
 Expected: Clean build, no errors
 
 - [ ] **Step 2: Run all tests**
 
-Run: `cd /Users/jimmyenglish/Projects/jinn && pnpm test`
+Run: `cd <repo> && pnpm test`
 Expected: All tests pass
 
 - [ ] **Step 3: Document Slack app requirements**

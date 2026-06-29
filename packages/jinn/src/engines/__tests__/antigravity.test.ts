@@ -17,7 +17,7 @@ describe("AntigravityEngine (shape)", () => {
     for (const m of [
       "run", "kill", "isAlive", "killAll",
       "hasWarmPty", "ensureIdleSpawn", "subscribeOutput", "getScrollback",
-      "setViewing", "writeStdin", "resizePty",
+      "setViewing", "writeStdin", "resizePty", "isTurnRunning",
     ]) {
       expect(typeof (e as any)[m]).toBe("function");
     }
@@ -30,6 +30,10 @@ describe("AntigravityEngine (shape)", () => {
 
   it("isAlive is false for an unknown session", () => {
     expect(makeEngine().isAlive("nope")).toBe(false);
+  });
+
+  it("isTurnRunning is false for an unknown session", () => {
+    expect(makeEngine().isTurnRunning("nope")).toBe(false);
   });
 });
 

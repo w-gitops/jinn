@@ -14,6 +14,10 @@ const DIM = "\x1b[2m";
 const RED = "\x1b[31m";
 const RESET = "\x1b[0m";
 
+export function instanceHomeIsPopulated(home: string): boolean {
+  return fs.existsSync(path.join(home, "config.yaml"));
+}
+
 export async function runCreate(name: string, port?: number): Promise<void> {
   // Validate name
   if (!/^[a-z][a-z0-9-]*$/.test(name)) {
@@ -52,6 +56,11 @@ export async function runCreate(name: string, port?: number): Promise<void> {
     });
   } catch {
     console.error(`${RED}Error:${RESET} Failed to run setup for instance "${name}".`);
+    process.exit(1);
+  }
+
+  if (!instanceHomeIsPopulated(home)) {
+    console.error(`${RED}Error:${RESET} Setup did not complete for "${name}" (no config.yaml in ${home}). Not registering.`);
     process.exit(1);
   }
 

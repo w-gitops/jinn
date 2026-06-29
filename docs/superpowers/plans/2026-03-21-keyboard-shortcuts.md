@@ -27,7 +27,7 @@
 
 ---
 
-### Task 1: useKeyboardShortcuts Hook — Types & Key Matching
+### Task 1: useKeyboardShortcuts Hook - Types & Key Matching
 
 **Files:**
 - Create: `packages/web/src/hooks/use-keyboard-shortcuts.ts`
@@ -130,10 +130,10 @@ describe('useKeyboardShortcuts', () => {
 })
 ```
 
-- [ ] **Step 2: Run tests — verify they fail**
+- [ ] **Step 2: Run tests - verify they fail**
 
 Run: `cd ~/Projects/jinn-wt-ici-424/packages/web && pnpm test -- --reporter=verbose 2>&1 | tail -30`
-Expected: FAIL — module `../use-keyboard-shortcuts` not found
+Expected: FAIL - module `../use-keyboard-shortcuts` not found
 
 - [ ] **Step 3: Implement hook with types and key matching**
 
@@ -163,7 +163,7 @@ function matchesShortcut(e: KeyboardEvent, s: ShortcutDef): boolean {
   // Special case: '?' is produced by Shift+/, match on e.key directly
   if (s.key === '?') {
     if (e.key !== '?') return false
-    // Don't require shift as a modifier — it's implicit in the key
+    // Don't require shift as a modifier - it's implicit in the key
     if (e.metaKey || e.altKey || e.ctrlKey) return false
     return true
   }
@@ -199,7 +199,7 @@ export function useKeyboardShortcuts(shortcuts: ShortcutDef[]) {
 }
 ```
 
-- [ ] **Step 4: Run tests — verify they pass**
+- [ ] **Step 4: Run tests - verify they pass**
 
 Run: `cd ~/Projects/jinn-wt-ici-424/packages/web && pnpm test -- --reporter=verbose 2>&1 | tail -30`
 Expected: All 8 tests PASS
@@ -321,7 +321,7 @@ Add to the test file after the `key matching` describe block:
   })
 ```
 
-- [ ] **Step 2: Run tests — verify new tests fail**
+- [ ] **Step 2: Run tests - verify new tests fail**
 
 Run: `cd ~/Projects/jinn-wt-ici-424/packages/web && pnpm test -- --reporter=verbose 2>&1 | tail -40`
 Expected: New tests FAIL (input guard, modal guard logic not yet implemented)
@@ -331,7 +331,7 @@ Expected: New tests FAIL (input guard, modal guard logic not yet implemented)
 Update the hook signature and `handleKeyDown`:
 
 ```typescript
-// In use-keyboard-shortcuts.ts — update the function signature:
+// In use-keyboard-shortcuts.ts - update the function signature:
 export interface ShortcutOptions {
   isModalOpen?: boolean
 }
@@ -368,7 +368,7 @@ export function useKeyboardShortcuts(shortcuts: ShortcutDef[], options: Shortcut
 }
 ```
 
-- [ ] **Step 4: Run tests — verify all pass**
+- [ ] **Step 4: Run tests - verify all pass**
 
 Run: `cd ~/Projects/jinn-wt-ici-424/packages/web && pnpm test -- --reporter=verbose 2>&1 | tail -40`
 Expected: All tests PASS (key matching + safety guards + cleanup)
@@ -452,10 +452,10 @@ describe('ShortcutOverlay', () => {
 })
 ```
 
-- [ ] **Step 2: Run tests — verify they fail**
+- [ ] **Step 2: Run tests - verify they fail**
 
 Run: `cd ~/Projects/jinn-wt-ici-424/packages/web && pnpm test -- --reporter=verbose 2>&1 | tail -20`
-Expected: FAIL — module not found
+Expected: FAIL - module not found
 
 - [ ] **Step 3: Implement ShortcutOverlay component**
 
@@ -555,7 +555,7 @@ export function ShortcutOverlay({ shortcuts, onClose }: ShortcutOverlayProps) {
 }
 ```
 
-- [ ] **Step 4: Run tests — verify they pass**
+- [ ] **Step 4: Run tests - verify they pass**
 
 Run: `cd ~/Projects/jinn-wt-ici-424/packages/web && pnpm test -- --reporter=verbose 2>&1 | tail -30`
 Expected: All overlay tests PASS
@@ -568,14 +568,14 @@ cd ~/Projects/jinn-wt-ici-424 && git add packages/web/src/components/chat/shortc
 
 ---
 
-### Task 4: Sidebar — Expose Session Order & Search ID
+### Task 4: Sidebar - Expose Session Order & Search ID
 
 **Files:**
 - Modify: `packages/web/src/components/chat/chat-sidebar.tsx`
 
 This task adds:
 1. `id="chat-search"` on the search input
-2. `onOrderComputed` callback — emits a combined object with flat session IDs, employee names, and employee→sessionIds map
+2. `onOrderComputed` callback - emits a combined object with flat session IDs, employee names, and employee→sessionIds map
 
 - [ ] **Step 1: Add `id="chat-search"` to the search input**
 
@@ -610,7 +610,7 @@ The effect should depend on the displayed sessions list. Use `JSON.stringify` of
 - [ ] **Step 4: Verify existing tests still pass**
 
 Run: `cd ~/Projects/jinn-wt-ici-424/packages/web && pnpm test -- --reporter=verbose 2>&1 | tail -20`
-Expected: All existing tests PASS (sidebar changes are additive — new optional props)
+Expected: All existing tests PASS (sidebar changes are additive - new optional props)
 
 - [ ] **Step 5: Commit**
 
@@ -696,7 +696,7 @@ const copyChat = useCallback(async () => {
       .map((m) => `[${m.role}]: ${m.content}`)
       .join('\n\n')
     await navigator.clipboard.writeText(text)
-    // Show toast — use a simple approach since notification system is event-based
+    // Show toast - use a simple approach since notification system is event-based
     setCopiedField('chat')
     setTimeout(() => setCopiedField(null), 1500)
   } catch {
@@ -775,7 +775,7 @@ cd ~/Projects/jinn-wt-ici-424 && git add packages/web/src/app/chat/page.tsx pack
 
 ### Task 6: Build & Visual Verification
 
-**Files:** None new — verify existing changes work together.
+**Files:** None new - verify existing changes work together.
 
 - [ ] **Step 1: Run full test suite**
 

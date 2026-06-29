@@ -18,6 +18,20 @@ function ask(question: string): Promise<string> {
   });
 }
 
+/** Poll until the process is gone (signal 0 throws ESRCH). Returns false on timeout. */
+async function waitForPidExit(pid: number, timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true; // process is gone
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return false;
+}
+
 export async function runNuke(name?: string): Promise<void> {
   const instances = loadInstances().filter((i) => i.name !== "jinn");
 
@@ -66,16 +80,26 @@ export async function runNuke(name?: string): Promise<void> {
   // Check if running and stop it
   const pidFile = `${instance.home}/gateway.pid`;
   if (fs.existsSync(pidFile)) {
+    const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+    let alive = false;
     try {
-      const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
       process.kill(pid, 0);
-      console.log(`\n${YELLOW}Instance "${name}" is running. Stopping it first...${RESET}`);
-      process.kill(pid, "SIGTERM");
-      // Wait briefly for graceful shutdown
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      console.log(`  Stopped.`);
+      alive = true;
     } catch {
       // Process not alive, continue
+    }
+    if (alive) {
+      console.log(`\n${YELLOW}Instance "${name}" is running. Stopping it first...${RESET}`);
+      process.kill(pid, "SIGTERM");
+      // Wait until the process is actually dead — deleting the home directory
+      // while the gateway is still shutting down would rip files out from
+      // under it mid-write.
+      const stopped = await waitForPidExit(pid);
+      if (!stopped) {
+        console.error(`${RED}Error:${RESET} Gateway process ${pid} is still running after 10s. Aborting — nothing was deleted. Stop it manually, then retry.`);
+        process.exit(1);
+      }
+      console.log(`  Stopped.`);
     }
   }
 

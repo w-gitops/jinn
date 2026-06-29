@@ -2,6 +2,8 @@ node_modules/
 dist/
 .next/
 .turbo/
+coverage/
+test-results/
 *.tsbuildinfo
 .env
 .env.local
@@ -9,3 +11,6 @@ dist/
 packages/jinn/.npmrc
 .worktrees/
 .DS_Store
+
+# Superpowers SDD scratch (briefs, reports, ledger, diffs)
+.superpowers/

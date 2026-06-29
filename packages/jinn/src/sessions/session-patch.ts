@@ -1,5 +1,6 @@
 import type { JinnConfig } from "../shared/types.js";
 import { getModelRegistry, effortLevelsForModel } from "../shared/models.js";
+import { logger } from "../shared/logger.js";
 
 /**
  * Validate a mid-chat model/effort change for an existing session.
@@ -9,8 +10,8 @@ import { getModelRegistry, effortLevelsForModel } from "../shared/models.js";
  * (fixed) engine. The change applies from the NEXT turn — the SessionManager
  * reads session.model / session.effortLevel fresh on every turn and passes them
  * (with resumeSessionId) to the engine, which our spike confirmed honors a
- * changed --model in place (no fork needed). Antigravity ignores model/effort
- * flags today, so the values are persisted but are a runtime no-op there.
+ * changed --model in place (no fork needed). Antigravity supports --model; if
+ * its CLI is already warm, the new model applies on the next cold spawn/resume.
  */
 
 export interface SessionPatchResult {
@@ -19,11 +20,82 @@ export interface SessionPatchResult {
   error?: string;
 }
 
+export interface NewSessionSelectionResult {
+  ok: boolean;
+  engine?: string;
+  model?: string;
+  effortLevel?: string;
+  error?: string;
+}
+
+export interface SessionPatchContext {
+  engineSessionId?: string | null;
+  defaultModel?: string | null;
+}
+
+export function validateNewSessionSelection(
+  config: JinnConfig,
+  body: { engine?: unknown; model?: unknown; effortLevel?: unknown },
+  defaults: { engine?: string; model?: string; effortLevel?: string } = {},
+): NewSessionSelectionResult {
+  const registry = getModelRegistry(config);
+  let engine: string = defaults.engine?.trim() || config.engines.default;
+
+  if (body.engine !== undefined) {
+    if (typeof body.engine !== "string" || !body.engine.trim()) {
+      return { ok: false, error: "engine must be a non-empty string" };
+    }
+    engine = body.engine.trim();
+  }
+
+  const entry = registry[engine];
+  if (!entry) return { ok: false, error: `unknown engine "${engine}"` };
+
+  let model: string | undefined;
+  const requestedModel = body.model !== undefined ? body.model : defaults.model;
+  if (requestedModel !== undefined) {
+    if (typeof requestedModel !== "string" || !requestedModel.trim()) {
+      return { ok: false, error: "model must be a non-empty string" };
+    }
+    model = requestedModel.trim();
+    if (!entry.models.some((m) => m.id === model)) {
+      if (engine === "pi") {
+        // Pi models are discovered dynamically; tolerate an id the snapshot hasn't
+        // caught yet (e.g. just after a restart, before discovery completes).
+        logger.warn(`pi model "${model}" not in discovered set yet — allowing`);
+      } else {
+        const known = entry.models.map((m) => m.id).join(", ");
+        return { ok: false, error: `unknown model "${model}" for engine "${engine}" (known: ${known || "none"})` };
+      }
+    }
+  }
+
+  let effortLevel: string | undefined;
+  const requestedEffortLevel = body.effortLevel !== undefined ? body.effortLevel : defaults.effortLevel;
+  if (requestedEffortLevel !== undefined) {
+    if (typeof requestedEffortLevel !== "string" || !requestedEffortLevel.trim()) {
+      return { ok: false, error: "effortLevel must be a non-empty string" };
+    }
+    effortLevel = requestedEffortLevel.trim();
+    const effectiveModel = model ?? undefined;
+    const valid = effortLevelsForModel(config, engine, effectiveModel);
+    if (valid.length === 0) {
+      return { ok: false, error: `engine "${engine}"${effectiveModel ? ` model "${effectiveModel}"` : ""} does not support effort levels` };
+    }
+    if (!valid.includes(effortLevel)) {
+      return { ok: false, error: `invalid effortLevel "${effortLevel}" (valid: ${valid.join(", ")})` };
+    }
+  }
+
+  return { ok: true, engine, model, effortLevel };
+}
+
 export function validateSessionPatch(
   config: JinnConfig,
   engine: string,
   currentModel: string | null | undefined,
   body: { model?: unknown; effortLevel?: unknown },
+  context: SessionPatchContext = {},
 ): SessionPatchResult {
   const updates: { model?: string; effortLevel?: string } = {};
 
@@ -36,8 +108,21 @@ export function validateSessionPatch(
     }
     const modelId = body.model.trim();
     if (entry && !entry.models.some((m) => m.id === modelId)) {
-      const known = entry.models.map((m) => m.id).join(", ");
-      return { ok: false, error: `unknown model "${modelId}" for engine "${engine}" (known: ${known || "none"})` };
+      if (engine === "pi") {
+        // Pi models are discovered dynamically; tolerate an id the snapshot hasn't
+        // caught yet (e.g. just after a restart, before discovery completes).
+        logger.warn(`pi model "${modelId}" not in discovered set yet — allowing`);
+      } else {
+        const known = entry.models.map((m) => m.id).join(", ");
+        return { ok: false, error: `unknown model "${modelId}" for engine "${engine}" (known: ${known || "none"})` };
+      }
+    }
+    const effectiveCurrentModel = currentModel ?? context.defaultModel ?? undefined;
+    if (engine === "grok" && context.engineSessionId && effectiveCurrentModel && modelId !== effectiveCurrentModel) {
+      return {
+        ok: false,
+        error: "Grok model changes require a new session because Grok binds existing transcripts to a model-specific agent.",
+      };
     }
     updates.model = modelId;
   }

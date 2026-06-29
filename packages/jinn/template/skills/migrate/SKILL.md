@@ -13,10 +13,10 @@ This skill activates when the user runs `/migrate`, when launched by `jinn migra
 
 When a new version of Jinn is released, it may include updated skills, new documentation, improved prompts, or config schema changes. These updates are shipped as **migration folders** in `~/.jinn/migrations/<version>/`. Each folder contains:
 
-- `MIGRATION.md` — AI-readable instructions describing exactly what changed
-- `files/` — New or updated files in their correct relative directory structure
+- `MIGRATION.md` - AI-readable instructions describing exactly what changed
+- `files/` - New or updated files in their correct relative directory structure
 
-Your job is to apply these migrations **intelligently** — preserving user customizations while incorporating improvements.
+Your job is to apply these migrations **intelligently** - preserving user customizations while incorporating improvements.
 
 ## Steps
 
@@ -49,9 +49,9 @@ Read `~/.jinn/migrations/<version>/MIGRATION.md`. This file describes:
 
 The MIGRATION.md will categorize changes:
 
-**New files** (safe — just copy):
+**New files** (safe - just copy):
 - Copy from `~/.jinn/migrations/<version>/files/<path>` to `~/.jinn/<path>`
-- These are files that didn't exist before — no conflict possible
+- These are files that didn't exist before - no conflict possible
 
 **Updated files** (needs merge):
 - The migration provides the **new template version** of the file
@@ -60,7 +60,7 @@ The MIGRATION.md will categorize changes:
   - For **CLAUDE.md / AGENTS.md**: Look for new sections in the template that don't exist in the user's file. Append them. Never remove user customizations.
   - For **config.yaml**: Add new keys with their default values. Never overwrite existing user values.
   - For **skills**: If the user hasn't modified the skill (compare with previous template version if available), replace it. If modified, merge new instructions while preserving customizations.
-  - For **docs**: Replace entirely — these are reference docs, not user-customized.
+  - For **docs**: Replace entirely - these are reference docs, not user-customized.
 
 **Removed files** (careful):
 - Only remove files explicitly listed in MIGRATION.md
@@ -92,7 +92,7 @@ After adding any new skills, ensure their symlinks exist:
 ### 6. Clean Up
 
 Remove the applied migration directories from `~/.jinn/migrations/`.
-Keep the backup files — the user can delete them manually later.
+Keep the backup files - the user can delete them manually later.
 
 ### 7. Report
 
@@ -118,7 +118,7 @@ Backups created:
 
 ### CLAUDE.md / AGENTS.md Merging
 
-These are the most sensitive files — users heavily customize them. Follow this strategy:
+These are the most sensitive files - users heavily customize them. Follow this strategy:
 
 1. **Identify sections** by markdown headings (`# Heading`, `## Heading`)
 2. **New sections**: If the template has a section heading that doesn't exist in the user's file, append the entire section
@@ -130,7 +130,7 @@ These are the most sensitive files — users heavily customize them. Follow this
 
 1. **New top-level keys**: Add with their default values
 2. **New nested keys**: Add under the existing parent with defaults
-3. **Existing keys**: Never overwrite — the user's values take priority
+3. **Existing keys**: Never overwrite - the user's values take priority
 4. **Removed keys**: Only remove if MIGRATION.md explicitly says to (rare)
 
 ### Skills Merging
@@ -151,4 +151,4 @@ These are the most sensitive files — users heavily customize them. Follow this
 
 ## Dry Run
 
-If the user asks for a dry run or preview, read all pending MIGRATION.md files and summarize what would change — without modifying any files.
+If the user asks for a dry run or preview, read all pending MIGRATION.md files and summarize what would change - without modifying any files.

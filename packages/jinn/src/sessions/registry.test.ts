@@ -1,5 +1,4 @@
-import test from "node:test";
-import assert from "node:assert/strict";
+import { expect, test } from "vitest";
 import Database from "better-sqlite3";
 import { migrateSessionsSchema } from "./registry.js";
 
@@ -32,16 +31,16 @@ test("migrateSessionsSchema upgrades an old sessions table before session_key us
 
   const cols = db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
   const names = new Set(cols.map((col) => col.name));
-  assert.equal(names.has("session_key"), true);
-  assert.equal(names.has("connector"), true);
-  assert.equal(names.has("reply_context"), true);
-  assert.equal(names.has("message_id"), true);
-  assert.equal(names.has("transport_meta"), true);
+  expect(names.has("session_key")).toBe(true);
+  expect(names.has("connector")).toBe(true);
+  expect(names.has("reply_context")).toBe(true);
+  expect(names.has("message_id")).toBe(true);
+  expect(names.has("transport_meta")).toBe(true);
 
   const row = db.prepare("SELECT session_key, connector FROM sessions WHERE id = 's1'").get() as {
     session_key: string | null;
     connector: string | null;
   };
-  assert.equal(row.session_key, "slack:C123");
-  assert.equal(row.connector, "slack");
+  expect(row.session_key).toBe("slack:C123");
+  expect(row.connector).toBe("slack");
 });

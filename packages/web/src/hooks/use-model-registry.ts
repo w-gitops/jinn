@@ -13,10 +13,10 @@ export function useModelRegistry() {
   })
 }
 
-/** Engine entries as an array (registry is keyed by engine name). */
+/** Installed engine entries as an array (uninstalled engines are hidden from the UI). */
 export function engineList(reg: EnginesResponse | undefined): EngineRegistryEntry[] {
   if (!reg?.engines) return []
-  return Object.values(reg.engines)
+  return Object.values(reg.engines).filter((e) => e.available)
 }
 
 /** The model entry for a given engine+modelId (falls back to the engine's default). */

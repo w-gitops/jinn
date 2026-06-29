@@ -1,13 +1,13 @@
-# ICI-419: Gemini CLI Engine — Design Spec
+# ICI-419: Gemini CLI Engine - Design Spec
 
 **Date**: 2026-03-21
-**Author**: jimmy-dev
+**Author**: platform-dev
 **Ticket**: ICI-419
 **Status**: Approved
 
 ## Summary
 
-Add `GeminiEngine` to the Jinn gateway — a third engine alongside Claude and Codex
+Add `GeminiEngine` to the Jinn gateway - a third engine alongside Claude and Codex
 that spawns Google's Gemini CLI (`@google/gemini-cli`) as a child process.
 
 ## Design Decisions
@@ -22,7 +22,7 @@ Rationale: simplest, no filesystem side effects, consistent with Codex pattern.
 - LiveProcess tracking with kill/isAlive/killAll (identical pattern)
 - System prompt prepended to user prompt (like Codex)
 - Stream-JSON parsing with adaptive event handling (like Claude's streaming mode)
-- No retry logic initially (like Codex — add later if needed)
+- No retry logic initially (like Codex - add later if needed)
 - No rate limit tracking initially (Gemini uses different quota system)
 - Clean environment (filter GEMINI_* env vars to prevent child conflicts)
 
@@ -57,7 +57,7 @@ Gemini CLI `stream-json` emits newline-delimited JSON. The parser will:
 5. Extract final result text from completion events
 
 Since Gemini CLI's exact stream format may differ from Claude's, the parser
-handles events defensively — logging unknown types at debug level rather than
+handles events defensively - logging unknown types at debug level rather than
 failing.
 
 ### Config Integration
@@ -71,10 +71,10 @@ engines: {
 ```
 
 ### File Changes
-1. `src/engines/gemini.ts` — GeminiEngine class (new file)
-2. `src/engines/__tests__/gemini.test.ts` — unit tests (new file)
-3. `src/shared/types.ts` — add `gemini` to engine config type
-4. `src/gateway/server.ts` — instantiate and register GeminiEngine
+1. `src/engines/gemini.ts` - GeminiEngine class (new file)
+2. `src/engines/__tests__/gemini.test.ts` - unit tests (new file)
+3. `src/shared/types.ts` - add `gemini` to engine config type
+4. `src/gateway/server.ts` - instantiate and register GeminiEngine
 
 ### What's NOT in scope
 - MCP support for Gemini (uses its own settings.json, not --mcp-config)

@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-17
 **Status**: Draft
-**Scope**: Full web dashboard modernization — UI framework, chat UX, navigation, goals, costs, testing
+**Scope**: Full web dashboard modernization - UI framework, chat UX, navigation, goals, costs, testing
 
 ## Background
 
@@ -12,11 +12,11 @@ This spec defines a 5-phase overhaul that modernizes the dashboard while fixing 
 
 ## Phasing Strategy
 
-Each phase produces a working, shippable state. Phases 2 and 3 both depend on Phase 1 but are independent of each other — they can be parallelized.
+Each phase produces a working, shippable state. Phases 2 and 3 both depend on Phase 1 but are independent of each other - they can be parallelized.
 
 | Phase | Name | Depends On | Scope |
 |-------|------|------------|-------|
-| 1 | Foundation | — | shadcn/ui completion + TanStack Query + theme reconciliation |
+| 1 | Foundation | - | shadcn/ui completion + TanStack Query + theme reconciliation |
 | 2 | Chat Overhaul | Phase 1 | Tabs + split view + sidebar + toolbar |
 | 3 | Command Palette + Navigation | Phase 1 | cmdk upgrade + breadcrumbs |
 | 4 | New Capabilities | Phases 1-2 | Goal hierarchy + cost budgets |
@@ -36,27 +36,27 @@ Each phase produces a working, shippable state. Phases 2 and 3 both depend on Ph
 
 **Target state**: All UI primitives come from shadcn/ui. Styling is Tailwind-first with CSS variables for theming. No more inline styles except for truly dynamic values.
 
-**Components already installed** (do NOT overwrite — these have custom styling):
+**Components already installed** (do NOT overwrite - these have custom styling):
 - Badge, Button, Card, Dialog, ScrollArea, Separator, Skeleton, Tabs, Tooltip
 
 **Components to install** (new):
 - Popover, Select, Input, Textarea, DropdownMenu
 - Sheet (for mobile sidebar), ContextMenu, Toggle, ToggleGroup
 - Alert, AlertDialog (for confirmations)
-- Command (cmdk wrapper — needed for Phase 3)
+- Command (cmdk wrapper - needed for Phase 3)
 
 **Migration strategy**:
-1. Do NOT re-run `npx shadcn@latest init` — `components.json` already exists and is configured correctly
+1. Do NOT re-run `npx shadcn@latest init` - `components.json` already exists and is configured correctly
 2. Install new components via `npx shadcn@latest add <component>` (one-by-one)
 3. For each page, replace remaining hand-rolled components with shadcn equivalents
 4. Migrate inline `style={{}}` to Tailwind utility classes page-by-page
-5. Keep Apple SF Pro Display font stack — override shadcn's default font
+5. Keep Apple SF Pro Display font stack - override shadcn's default font
 6. Preserve existing Apple HIG design token names where they don't conflict
 
 **Tailwind v4 compatibility note**: The project uses Tailwind CSS v4 with `@theme` directive and `@tailwindcss/postcss` plugin. Design tokens are defined in `globals.css` via `@theme {}` blocks, not in `tailwind.config.ts`. The shadcn CLI may need `--tailwind v4` flag or manual post-install adjustments to generated components. Verify each new component works with the v4 `@theme` approach.
 
 **CSS architecture**:
-- `globals.css` already defines CSS variables via `@theme` blocks — extend, don't replace
+- `globals.css` already defines CSS variables via `@theme` blocks - extend, don't replace
 - Components use Tailwind utilities referencing CSS variables
 - No more inline `style={{}}` except for truly dynamic values (stream positions, drag coordinates)
 - Animation keyframes stay in globals.css (move inline `<style>` blocks to globals.css)
@@ -99,15 +99,15 @@ export const queryKeys = {
 ```
 
 **Query hooks** (`hooks/`):
-- `useSessions()` — list with auto-refetch
-- `useSession(id)` — single session detail
-- `useEmployees()` — org roster
-- `useCronJobs()` — cron list
-- `useCosts()` — cost summary
-- `useGoals()` — goal tree
-- `useSkills()` — installed skills
-- `useConfig()` — gateway config
-- `useStatus()` — gateway health
+- `useSessions()` - list with auto-refetch
+- `useSession(id)` - single session detail
+- `useEmployees()` - org roster
+- `useCronJobs()` - cron list
+- `useCosts()` - cost summary
+- `useGoals()` - goal tree
+- `useSkills()` - installed skills
+- `useConfig()` - gateway config
+- `useStatus()` - gateway health
 
 **WebSocket + React Query integration**:
 - WebSocket stays for real-time streaming (session deltas, live events)
@@ -118,9 +118,9 @@ export const queryKeys = {
   - `session:started` → invalidate `queryKeys.sessions.all`
   - `activity` → invalidate relevant query based on event type
 - This gives us: instant streaming via WS + consistent data via Query cache
-- The existing `useGateway()` hook is preserved as-is — the invalidation hook is a consumer, not a replacement
+- The existing `useGateway()` hook is preserved as-is - the invalidation hook is a consumer, not a replacement
 
-**Provider setup** (add to `client-providers.tsx` — the existing client component wrapper):
+**Provider setup** (add to `client-providers.tsx` - the existing client component wrapper):
 ```typescript
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -134,7 +134,7 @@ const queryClient = new QueryClient({
 })
 ```
 
-**Important**: The project uses Next.js App Router with `output: "export"` (static export). There is no `_app.tsx` — the app wraps in `client-providers.tsx`. All proposed features must work client-side only. Use `useRouter()` from `next/navigation` (NOT `useNavigate()` which doesn't exist in Next.js).
+**Important**: The project uses Next.js App Router with `output: "export"` (static export). There is no `_app.tsx` - the app wraps in `client-providers.tsx`. All proposed features must work client-side only. Use `useRouter()` from `next/navigation` (NOT `useNavigate()` which doesn't exist in Next.js).
 
 ### 1.3 Theme System Reconciliation
 
@@ -154,10 +154,10 @@ const queryClient = new QueryClient({
 1. Configure Tailwind v4 dark mode selector to match `[data-theme="dark"]`, `[data-theme="glass"]`, and `[data-theme="color"]` (all three are dark-background themes)
 2. In `globals.css`, add: `@custom-variant dark (&:where([data-theme="dark"], [data-theme="glass"], [data-theme="color"]) *)` (Tailwind v4 syntax)
 3. This makes shadcn's `dark:` utilities work with the existing `data-theme` system
-4. Keep all 5 themes — do NOT reduce to just dark/light
+4. Keep all 5 themes - do NOT reduce to just dark/light
 5. Verify each shadcn component renders correctly in all 5 themes
 
-**Existing toggle**: The settings page already has theme selection. No new toggle needed in sidebar — just verify it works with the reconciled system.
+**Existing toggle**: The settings page already has theme selection. No new toggle needed in sidebar - just verify it works with the reconciled system.
 
 ---
 
@@ -177,7 +177,7 @@ const queryClient = new QueryClient({
 │  ├ Session title... │
 │  └ Session title... │
 ├─────────────────────┤
-│ ▼ pravko-lead (3)   │  ← expandable
+│ ▼ content-lead (3)   │  ← expandable
 │  │ 🟢 Latest msg... │  ← preview
 │  │    2 min ago     │
 │  ├ 🔵 Running task  │
@@ -185,8 +185,8 @@ const queryClient = new QueryClient({
 │  └ ⚪ Old session   │
 │      yesterday      │
 │                     │
-│ ▶ homy-lead (1)     │  ← collapsed
-│ ▶ sqlnoir-lead (2)  │
+│ ▶ ops-lead (1)     │  ← collapsed
+│ ▶ datalab-lead (2)  │
 │                     │
 │ 🤖 Direct (5)       │  ← Jimbo sessions
 │  ├ Session title... │
@@ -205,7 +205,7 @@ const queryClient = new QueryClient({
 - Last message timestamp
 - Hover: pin button, context menu trigger
 
-**Employee entry (expanded)** — shows up to 5 latest sessions:
+**Employee entry (expanded)** - shows up to 5 latest sessions:
 - Each session: status dot + title (or "Untitled") + timestamp
 - Last message preview (1 line, truncated)
 - Click session → opens in active tab/pane
@@ -220,7 +220,7 @@ const queryClient = new QueryClient({
 
 **Search**: Filters by employee name, session title, and message content (debounced, 300ms).
 
-**Persistence**: Expanded/collapsed state, pinned sessions, read state — all localStorage.
+**Persistence**: Expanded/collapsed state, pinned sessions, read state - all localStorage.
 
 ### 2.2 Tab Bar
 
@@ -229,7 +229,7 @@ const queryClient = new QueryClient({
 **Layout** (between header and chat area, 36px height):
 ```
 ┌──────────────────────────────────────────────────┐
-│ [🟢 pravko-lead ×] [🔵 homy-lead ×] [+ New]    │
+│ [🟢 content-lead ×] [🔵 ops-lead ×] [+ New]    │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -257,14 +257,14 @@ const queryClient = new QueryClient({
 
 ### 2.3 Split View
 
-**Goal**: Active multitasking — send messages to multiple employees simultaneously, watch parallel work streams.
+**Goal**: Active multitasking - send messages to multiple employees simultaneously, watch parallel work streams.
 
 **Modes**: Single (default) | Dual | Triple
 
 **Layout (dual)**:
 ```
 ┌─────────────────────┬─────────────────────┐
-│ Tab: pravko-lead    │ Tab: homy-lead      │
+│ Tab: content-lead    │ Tab: ops-lead      │
 ├─────────────────────┼─────────────────────┤
 │                     │                     │
 │  Chat messages      │  Chat messages      │
@@ -293,7 +293,7 @@ const queryClient = new QueryClient({
 **Controls**:
 - Split toggle in toolbar: icons showing 1-pane / 2-pane / 3-pane layout
 - `Cmd+\` → cycle split modes
-- `Cmd+Alt+1/2/3` → focus pane (same shortcut family as tab switching — in split mode, focuses pane instead of switching tab)
+- `Cmd+Alt+1/2/3` → focus pane (same shortcut family as tab switching - in split mode, focuses pane instead of switching tab)
 - Drag divider between panes to resize (min 300px per pane)
 - On window resize below minimum, auto-collapse to fewer panes
 
@@ -321,11 +321,11 @@ const queryClient = new QueryClient({
 ```
 
 **Rules**:
-- NotificationBell moves INTO the header (not position:fixed) — part of the button group
+- NotificationBell moves INTO the header (not position:fixed) - part of the button group
 - All toolbar buttons: 32px × 32px, 8px gap between them
 - Button group: `display: flex; align-items: center; gap: 8px`
 - Dropdowns: `position: absolute` relative to their button, consistent z-index (z-50)
-- No more z-index conflicts — single stacking context
+- No more z-index conflicts - single stacking context
 - Mobile: bell in mobile header, split toggle hidden
 
 **Chat-specific additions** (only on chat page):
@@ -379,7 +379,7 @@ const queryClient = new QueryClient({
 
 ### 3.2 Breadcrumb Navigation
 
-**Goal**: Clear orientation — user always knows where they are and can navigate back.
+**Goal**: Clear orientation - user always knows where they are and can navigate back.
 
 **Implementation**:
 - `BreadcrumbContext` provider wrapping all routes
@@ -394,8 +394,8 @@ const queryClient = new QueryClient({
 
 **Examples**:
 - Dashboard → `Dashboard`
-- Chat with employee → `Chat > pravko-lead`
-- Chat with specific session → `Chat > pravko-lead > Blog Strategy`
+- Chat with employee → `Chat > content-lead`
+- Chat with specific session → `Chat > content-lead > Blog Strategy`
 - Cron job runs → `Cron > daily-report > Runs`
 - Settings → `Settings`
 
@@ -427,12 +427,12 @@ CREATE TABLE goals (
 ```
 
 **API endpoints**:
-- `GET /api/goals` — list all goals (flat, filterable by level/department/status)
-- `GET /api/goals/tree` — full tree structure
-- `POST /api/goals` — create goal
-- `PUT /api/goals/:id` — update goal
-- `DELETE /api/goals/:id` — delete (cascades to children)
-- `GET /api/goals/:id/tasks` — kanban tasks linked to this goal
+- `GET /api/goals` - list all goals (flat, filterable by level/department/status)
+- `GET /api/goals/tree` - full tree structure
+- `POST /api/goals` - create goal
+- `PUT /api/goals/:id` - update goal
+- `DELETE /api/goals/:id` - delete (cascades to children)
+- `GET /api/goals/:id/tasks` - kanban tasks linked to this goal
 
 **UI** (`/goals` page):
 - Tree view: company goals → department goals → linked tasks
@@ -443,7 +443,7 @@ CREATE TABLE goals (
 - Filter bar: by status, department, level
 
 **Kanban integration**:
-- Kanban boards are currently stored as JSON files (`board.json`) in each department's org directory (e.g., `~/.jinn/org/pravko/board.json`)
+- Kanban boards are currently stored as JSON files (`board.json`) in each department's org directory (e.g., `~/.jinn/org/content/board.json`)
 - Board JSON format: `{ todo: Task[], in_progress: Task[], done: Task[] }` where each Task has `{ id, title, description, assignee, ... }`
 - Add optional `goalId: string` field to the Task type
 - When rendering kanban cards, display linked goal as small badge (goal title, truncated)
@@ -456,7 +456,7 @@ CREATE TABLE goals (
 
 **Current state**: The frontend costs page exists but has no working backend API. Zero `/api/costs/*` or `/api/budgets/*` routes exist in `api.ts`. Cost data exists only as `total_cost` and `total_turns` columns on the sessions SQLite table (accumulated by `accumulateSessionCost()` after session completion). All cost aggregation endpoints need to be **created from scratch**.
 
-**Create cost aggregation API** (backend — new routes in `api.ts`):
+**Create cost aggregation API** (backend - new routes in `api.ts`):
 - `GET /api/costs/summary?period=day|week|month`
   - Aggregates `total_cost` from sessions table grouped by period
   - Returns: total spend, spend by employee, spend by department, spend by day
@@ -474,10 +474,10 @@ budgets:
     monthly: 100  # USD
     action: warn  # warn | pause
   employees:
-    pravko-lead:
+    content-lead:
       monthly: 30
       action: pause
-    homy-lead:
+    ops-lead:
       monthly: 20
       action: warn
 ```
@@ -495,7 +495,7 @@ CREATE TABLE budget_events (
 ```
 
 **Enforcement logic** (in session manager):
-- Budget check happens in `SessionManager.route()` BEFORE calling `engine.run()` (not before `createSession()` — the session stub can exist, but execution is gated)
+- Budget check happens in `SessionManager.route()` BEFORE calling `engine.run()` (not before `createSession()` - the session stub can exist, but execution is gated)
 - Aggregation query: `SELECT SUM(total_cost) FROM sessions WHERE employee = ? AND created_at >= date('now', 'start of month')`
 - At 80% of budget → emit `budget:warning` event (notification to user)
 - At 100% with `action: pause` → refuse to run engine, set session status to `paused`, emit `budget:paused`
@@ -517,7 +517,7 @@ CREATE TABLE budget_events (
 ### 5.1 Vitest (Unit Tests)
 
 **Backend** (`packages/jinn`):
-- `vitest.config.ts` — ESM mode, coverage reporter
+- `vitest.config.ts` - ESM mode, coverage reporter
 - Test files: `src/**/*.test.ts`
 - Key test targets:
   - API routes: mock HTTP requests, assert responses (using supertest or native fetch)
@@ -528,7 +528,7 @@ CREATE TABLE budget_events (
 - Mocking: SQLite via in-memory database (`:memory:`), file system via `memfs` or temp dirs
 
 **Frontend** (`packages/web`):
-- `vitest.config.ts` — jsdom environment, React testing library
+- `vitest.config.ts` - jsdom environment, React testing library
 - Test files: `src/**/*.test.tsx`
 - Key test targets:
   - Chat sidebar: rendering, filtering, expand/collapse, pin/unpin
@@ -542,18 +542,18 @@ CREATE TABLE budget_events (
 
 **Config**: `playwright.config.ts` in monorepo root.
 
-**Setup**: Start gateway in test mode (in-memory SQLite, fixed port, no Slack connector) via `globalSetup`. Engine calls must be mocked — create a `MockEngine` that returns canned responses with simulated streaming delays. Without this, chat E2E tests would require actual Claude Code execution (slow, expensive, flaky).
+**Setup**: Start gateway in test mode (in-memory SQLite, fixed port, no Slack connector) via `globalSetup`. Engine calls must be mocked - create a `MockEngine` that returns canned responses with simulated streaming delays. Without this, chat E2E tests would require actual Claude Code execution (slow, expensive, flaky).
 
 **Test suites** (`e2e/`):
-- `smoke.spec.ts` — Dashboard loads, all nav links work, no console errors
-- `chat.spec.ts` — Open chat, send message, see streaming response, session appears in sidebar
-- `chat-tabs.spec.ts` — Open multiple tabs, switch between them, close tabs
-- `chat-split.spec.ts` — Enable split view, assign sessions to panes
-- `command-palette.spec.ts` — Open with Cmd+K, search, navigate, close
-- `cron.spec.ts` — View jobs, manual trigger, view run history
-- `org.spec.ts` — View employees, department boards
-- `costs.spec.ts` — View cost summary, budget indicators
-- `theme.spec.ts` — Toggle dark/light mode, persists on reload
+- `smoke.spec.ts` - Dashboard loads, all nav links work, no console errors
+- `chat.spec.ts` - Open chat, send message, see streaming response, session appears in sidebar
+- `chat-tabs.spec.ts` - Open multiple tabs, switch between them, close tabs
+- `chat-split.spec.ts` - Enable split view, assign sessions to panes
+- `command-palette.spec.ts` - Open with Cmd+K, search, navigate, close
+- `cron.spec.ts` - View jobs, manual trigger, view run history
+- `org.spec.ts` - View employees, department boards
+- `costs.spec.ts` - View cost summary, budget indicators
+- `theme.spec.ts` - Toggle dark/light mode, persists on reload
 
 **Assertion patterns**: Visual regression optional (screenshot comparison). Primary: DOM assertions + network request validation.
 
@@ -638,52 +638,52 @@ jobs:
 ## File Impact Summary
 
 ### New files
-- `packages/web/src/lib/queryKeys.ts` — React Query key factory
-- `packages/web/src/lib/queryClient.ts` — QueryClient config
-- `packages/web/src/hooks/use-sessions.ts` — session query hooks
-- `packages/web/src/hooks/use-employees.ts` — org query hooks
-- `packages/web/src/hooks/use-costs.ts` — cost query hooks
-- `packages/web/src/hooks/use-goals.ts` — goal query hooks
-- `packages/web/src/hooks/use-query-invalidation.ts` — WS → React Query bridge
-- `packages/web/src/context/BreadcrumbContext.tsx` — navigation breadcrumbs
-- `packages/web/src/components/BreadcrumbBar.tsx` — breadcrumb display
-- `packages/web/src/components/chat/chat-tabs.tsx` — tab bar
-- `packages/web/src/components/chat/chat-split.tsx` — split view container
-- `packages/web/src/app/goals/page.tsx` — goals page
-- `packages/jinn/src/gateway/goals.ts` — goals API routes
-- `packages/jinn/src/gateway/costs.ts` — cost aggregation API routes (new from scratch)
-- `packages/jinn/src/gateway/budgets.ts` — budget API routes
-- `packages/jinn/src/engines/mock.ts` — mock engine for E2E tests
+- `packages/web/src/lib/queryKeys.ts` - React Query key factory
+- `packages/web/src/lib/queryClient.ts` - QueryClient config
+- `packages/web/src/hooks/use-sessions.ts` - session query hooks
+- `packages/web/src/hooks/use-employees.ts` - org query hooks
+- `packages/web/src/hooks/use-costs.ts` - cost query hooks
+- `packages/web/src/hooks/use-goals.ts` - goal query hooks
+- `packages/web/src/hooks/use-query-invalidation.ts` - WS → React Query bridge
+- `packages/web/src/context/BreadcrumbContext.tsx` - navigation breadcrumbs
+- `packages/web/src/components/BreadcrumbBar.tsx` - breadcrumb display
+- `packages/web/src/components/chat/chat-tabs.tsx` - tab bar
+- `packages/web/src/components/chat/chat-split.tsx` - split view container
+- `packages/web/src/app/goals/page.tsx` - goals page
+- `packages/jinn/src/gateway/goals.ts` - goals API routes
+- `packages/jinn/src/gateway/costs.ts` - cost aggregation API routes (new from scratch)
+- `packages/jinn/src/gateway/budgets.ts` - budget API routes
+- `packages/jinn/src/engines/mock.ts` - mock engine for E2E tests
 - `packages/jinn/vitest.config.ts`
 - `packages/web/vitest.config.ts`
 - `playwright.config.ts`
-- `e2e/` — E2E test directory
+- `e2e/` - E2E test directory
 - `.github/workflows/ci.yml`
 
 ### Modified files (existing)
-- `packages/web/components.json` — already exists, may need minor updates for new components
-- `packages/web/src/app/globals.css` — add `@custom-variant dark` for shadcn compatibility, extend themes
-- `packages/web/src/components/ui/*` — existing 9 shadcn components preserved, new ones added alongside
-- `packages/web/src/app/chat/page.tsx` — tab + split view integration
-- `packages/web/src/components/chat/chat-sidebar.tsx` — enhanced sidebar
-- `packages/web/src/components/chat/chat-messages.tsx` — shadcn migration
-- `packages/web/src/components/chat/chat-input.tsx` — shadcn migration
-- `packages/web/src/components/page-layout.tsx` — toolbar fix, breadcrumbs, cmdk
-- `packages/web/src/components/global-search.tsx` — replace internals with cmdk + React Query
-- `packages/web/src/components/notifications/notification-bell.tsx` — move into header flow
-- `packages/web/src/app/client-providers.tsx` — add QueryClientProvider + query invalidation hook
-- `packages/web/src/app/providers.tsx` — existing ThemeProvider preserved, no changes needed
-- `packages/web/src/lib/api.ts` — wrap with React Query
-- `packages/web/package.json` — new dependencies
-- `packages/jinn/src/gateway/api.ts` — goals + budgets + cost aggregation routes
-- `packages/jinn/src/sessions/manager.ts` — budget enforcement before engine.run()
-- `packages/jinn/src/shared/types.ts` — goal + budget types
-- `packages/jinn/package.json` — vitest dependency
-- `turbo.json` — add `test` pipeline task
-- Root `package.json` — update test script to include both packages
+- `packages/web/components.json` - already exists, may need minor updates for new components
+- `packages/web/src/app/globals.css` - add `@custom-variant dark` for shadcn compatibility, extend themes
+- `packages/web/src/components/ui/*` - existing 9 shadcn components preserved, new ones added alongside
+- `packages/web/src/app/chat/page.tsx` - tab + split view integration
+- `packages/web/src/components/chat/chat-sidebar.tsx` - enhanced sidebar
+- `packages/web/src/components/chat/chat-messages.tsx` - shadcn migration
+- `packages/web/src/components/chat/chat-input.tsx` - shadcn migration
+- `packages/web/src/components/page-layout.tsx` - toolbar fix, breadcrumbs, cmdk
+- `packages/web/src/components/global-search.tsx` - replace internals with cmdk + React Query
+- `packages/web/src/components/notifications/notification-bell.tsx` - move into header flow
+- `packages/web/src/app/client-providers.tsx` - add QueryClientProvider + query invalidation hook
+- `packages/web/src/app/providers.tsx` - existing ThemeProvider preserved, no changes needed
+- `packages/web/src/lib/api.ts` - wrap with React Query
+- `packages/web/package.json` - new dependencies
+- `packages/jinn/src/gateway/api.ts` - goals + budgets + cost aggregation routes
+- `packages/jinn/src/sessions/manager.ts` - budget enforcement before engine.run()
+- `packages/jinn/src/shared/types.ts` - goal + budget types
+- `packages/jinn/package.json` - vitest dependency
+- `turbo.json` - add `test` pipeline task
+- Root `package.json` - update test script to include both packages
 
 ### Deleted files
-- None — all changes are additive or in-place replacements
+- None - all changes are additive or in-place replacements
 
 ---
 

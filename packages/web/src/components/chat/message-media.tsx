@@ -154,8 +154,8 @@ export function MessageMedia({ media, isUser }: { media: MediaAttachment[]; isUs
         <div
           className={
             images.length > 1
-              ? 'mt-[var(--space-2)] grid grid-cols-2 gap-[var(--space-2)] max-w-[280px]'
-              : 'mt-[var(--space-2)] max-w-[280px]'
+              ? 'mt-[var(--space-2)] grid grid-cols-2 gap-[var(--space-2)] w-full max-w-[var(--chat-media-multi,520px)]'
+              : 'mt-[var(--space-2)] w-full max-w-[var(--chat-media-single,440px)]'
           }
         >
           {images.map((m, mi) => (

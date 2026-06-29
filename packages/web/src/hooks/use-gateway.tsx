@@ -91,7 +91,28 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         },
       },
     );
-    return () => socket.close();
+
+    // Resume listeners: a half-open socket can survive a tab backgrounding, a
+    // network handoff, or an iOS bfcache restore in readyState=OPEN while being
+    // functionally dead. On every "we're back" signal, reconnect immediately if
+    // the socket isn't open (this clears any pending backoff and connects now).
+    // The onOpen handler then bumps connectionSeq, which drives per-pane catch-up.
+    const resume = () => {
+      if (!socket.isOpen()) socket.reconnect();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") resume();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("online", resume);
+    window.addEventListener("pageshow", resume); // iOS bfcache restore
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("online", resume);
+      window.removeEventListener("pageshow", resume);
+      socket.close();
+    };
   }, []);
 
   const subscribe = useCallback((fn: Listener) => {

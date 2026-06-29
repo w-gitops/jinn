@@ -13,7 +13,7 @@
 ## Built-in MCP Servers
 
 ### Browser (Playwright)
-Full browser automation — navigate, click, type, screenshot, extract content.
+Full browser automation - navigate, click, type, screenshot, extract content.
 
 ```yaml
 mcp:

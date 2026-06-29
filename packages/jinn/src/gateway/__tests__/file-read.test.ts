@@ -17,7 +17,7 @@ beforeAll(async () => {
 
 describe("readPathCandidates — resolution order", () => {
   it("relative path: JINN_HOME first, then ~/Projects, then cwd, then literal", () => {
-    const rel = "docs/superpowers/specs/2026-05-31-movekit-support-design.md";
+    const rel = "docs/specs/demo-project-design.md";
     const candidates = files.readPathCandidates(rel);
 
     // CRITICAL: JINN_HOME (~/.jinn equivalent) must be the FIRST candidate.

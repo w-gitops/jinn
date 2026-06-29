@@ -37,9 +37,9 @@ Standard 5-field cron expressions:
 ```
 
 Examples:
-- `0 9 * * 1-5` — 9:00 AM, Monday through Friday
-- `*/30 * * * *` — Every 30 minutes
-- `0 0 1 * *` — Midnight on the 1st of each month
+- `0 9 * * 1-5` - 9:00 AM, Monday through Friday
+- `*/30 * * * *` - Every 30 minutes
+- `0 0 1 * *` - Midnight on the 1st of each month
 
 ## Hot Reload
 
@@ -69,7 +69,7 @@ Each job execution is logged to `~/.jinn/cron/runs/<jobId>.jsonl`. Each line is 
 
 When a cron job produces analytical, reporting, or decision-informing output, it should **always target {{portalSlug}}** (the COO), not the employee directly. {{portalName}} then delegates to the employee via a child session, reviews the output, filters noise, and delivers the final result.
 
-**Correct** — cron → {{portalSlug}} → employee (via child session) → {{portalSlug}} reviews → delivery:
+**Correct** - cron → {{portalSlug}} → employee (via child session) → {{portalSlug}} reviews → delivery:
 ```json
 {
   "id": "daily-pulse",
@@ -86,7 +86,7 @@ When a cron job produces analytical, reporting, or decision-informing output, it
 }
 ```
 
-**Incorrect** — cron → employee → delivery (bypasses COO review):
+**Incorrect** - cron → employee → delivery (bypasses COO review):
 ```json
 {
   "id": "daily-pulse",
