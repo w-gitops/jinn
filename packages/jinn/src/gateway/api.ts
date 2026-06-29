@@ -174,6 +174,8 @@ export interface ApiContext {
   reloadConfig?: () => void;
   hookRegistry?: import("./hook-registry.js").HookRegistry;
   hookSecret?: string;
+  /** Command gate — supplies the PreToolUse verdict for the relay. */
+  commandGate?: import("./command-gate.js").CommandGate;
   /** PTY-backed Claude engine used by CLI-mode message sends so the user sees the
    *  prompt + response stream into the live xterm. Distinct from the headless
    *  "claude" engine in sessionManager (which chat/cron/connectors use). */
@@ -2150,8 +2152,11 @@ export async function handleApiRequest(
       const _parsed = await readJsonBody(req, res, { maxBytes: HOOK_BODY_MAX_BYTES });
       if (!_parsed.ok) return;
       const hookBody = _parsed.body as { jinnSessionId?: string; hook?: import("./hook-registry.js").HookPayload };
-      const result = handleHookPost(
-        { reg: context.hookRegistry, secret: context.hookSecret, remoteAddress: remote },
+      // Interactive PTY sessions register a hook listener; headless `claude -p`
+      // sessions do not. The gate uses this to decide whether an "ask" can render.
+      const interactive = !!(hookBody.jinnSessionId && context.hookRegistry.hasListener(hookBody.jinnSessionId));
+      const result = await handleHookPost(
+        { reg: context.hookRegistry, secret: context.hookSecret, remoteAddress: remote, gate: context.commandGate, interactive },
         req.headers["x-jinn-hook-secret"] as string | undefined,
         hookBody,
       );
@@ -2172,7 +2177,8 @@ export async function handleApiRequest(
           updateSession(hookBody.jinnSessionId, { engineSessionId: hookBody.hook.session_id });
         }
       }
-      return json(res, { message: result.body }, result.status);
+      // For PreToolUse the relay needs the verdict; other events just get {message}.
+      return json(res, result.verdict ? { message: result.body, verdict: result.verdict } : { message: result.body }, result.status);
     }
 
     return notFound(res);

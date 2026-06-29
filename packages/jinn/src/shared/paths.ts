@@ -20,6 +20,8 @@ export const CRON_RUNS = path.join(JINN_HOME, "cron", "runs");
 export const ORG_DIR = path.join(JINN_HOME, "org");
 export const SKILLS_DIR = path.join(JINN_HOME, "skills");
 export const DOCS_DIR = path.join(JINN_HOME, "docs");
+/** Command-safety policy (machine form of the command-safety skill). Hot-reloaded. */
+export const POLICY_PATH = path.join(JINN_HOME, "policy", "command-safety.json");
 export const LOGS_DIR = path.join(JINN_HOME, "logs");
 export const TMP_DIR = path.join(JINN_HOME, "tmp");
 export const ENGINE_LIMITS_DIR = path.join(TMP_DIR, "engine-limits");
@@ -33,6 +35,8 @@ export const GATEWAY_INFO_FILE = path.join(JINN_HOME, "gateway.json");
 export const CLAUDE_SETTINGS_DIR = path.join(JINN_HOME, "tmp", "settings");
 /** The hook-relay script written once at boot. */
 export const HOOK_RELAY_SCRIPT = path.join(JINN_HOME, "hook-relay.mjs");
+/** Shared Tier-1 matcher, copied beside the relay so it can import it for its local floor. */
+export const COMMAND_TIER1_SCRIPT = path.join(JINN_HOME, "command-tier1.mjs");
 export const CLAUDE_SKILLS_DIR = path.join(JINN_HOME, ".claude", "skills");
 export const AGENTS_SKILLS_DIR = path.join(JINN_HOME, ".agents", "skills");
 export const TEMPLATE_DIR = path.join(__dirname, "..", "..", "..", "template");

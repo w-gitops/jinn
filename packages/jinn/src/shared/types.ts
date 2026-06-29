@@ -635,6 +635,14 @@ export interface JinnConfig {
     language?: string;
     languages?: string[];
   };
+  tts?: {
+    enabled?: boolean;
+    /** Base URL of the Chatterbox TTS server, e.g. "http://192.168.200.42:9004/v1". */
+    url?: string;
+    voice?: string;
+    /** Audio format — always use "mp3" (NEVER "wav" — Chatterbox wav is IEEE-float, not PCM). */
+    format?: "mp3" | "opus";
+  };
   /** /talk voice loop — optional, off unless explicitly configured. */
   talk?: {
     enabled?: boolean;

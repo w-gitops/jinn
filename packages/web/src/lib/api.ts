@@ -86,17 +86,6 @@ async function extractErrorMessage(res: Response): Promise<string> {
   return `API error: ${res.status}`;
 }
 
-async function extractErrorMessage(res: Response): Promise<string> {
-  try {
-    const body = await res.json();
-    if (body.error) return String(body.error);
-    if (body.message) return String(body.message);
-  } catch {
-    // Response wasn't JSON — fall through
-  }
-  return `API error: ${res.status}`;
-}
-
 async function get<T>(path: string): Promise<T> {
   const res = await authFetch(path);
   if (!res.ok) throw new Error(await extractErrorMessage(res));
