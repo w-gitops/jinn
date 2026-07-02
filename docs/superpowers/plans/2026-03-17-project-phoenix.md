@@ -14,7 +14,7 @@
 
 ## File Structure
 
-### Phase 1 — New files
+### Phase 1 - New files
 | File | Responsibility |
 |------|---------------|
 | `packages/web/src/lib/query-client.ts` | QueryClient singleton with default options |
@@ -26,7 +26,7 @@
 | `packages/web/src/hooks/use-config.ts` | React Query hooks for config/status API |
 | `packages/web/src/hooks/use-query-invalidation.ts` | WS event → React Query cache invalidation bridge |
 
-### Phase 2 — New files
+### Phase 2 - New files
 | File | Responsibility |
 |------|---------------|
 | `packages/web/src/components/chat/chat-tabs.tsx` | Tab bar component with state persistence |
@@ -34,13 +34,13 @@
 | `packages/web/src/components/chat/chat-split.tsx` | Split view container (1/2/3 panes) |
 | `packages/web/src/hooks/use-chat-tabs.ts` | Tab state management (open/close/switch/persist) |
 
-### Phase 3 — New files
+### Phase 3 - New files
 | File | Responsibility |
 |------|---------------|
 | `packages/web/src/context/breadcrumb-context.tsx` | Breadcrumb provider + useBreadcrumbs hook |
 | `packages/web/src/components/breadcrumb-bar.tsx` | Breadcrumb display (single = title, multi = trail) |
 
-### Phase 4 — New files
+### Phase 4 - New files
 | File | Responsibility |
 |------|---------------|
 | `packages/jinn/src/gateway/costs.ts` | Cost aggregation API routes |
@@ -50,7 +50,7 @@
 | `packages/web/src/hooks/use-goals.ts` | React Query hooks for goals API |
 | `packages/web/src/app/goals/page.tsx` | Goals tree page |
 
-### Phase 5 — New files
+### Phase 5 - New files
 | File | Responsibility |
 |------|---------------|
 | `packages/jinn/vitest.config.ts` | Backend vitest config (ESM, in-memory SQLite) |
@@ -132,7 +132,7 @@ At the top of `packages/web/src/app/globals.css`, after the `@import` lines and 
 
 ```css
 /* :where() has zero specificity so shadcn's dark: utilities remain overridable.
-   data-theme is never "system" after JS hydration — ThemeProvider resolves it to dark/light. */
+   data-theme is never "system" after JS hydration - ThemeProvider resolves it to dark/light. */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="glass"], [data-theme="color"]) *);
 ```
 
@@ -652,7 +652,7 @@ function QueryInvalidationBridge() {
 }
 ```
 
-**Important note**: `useGateway()` is NOT context-based — it's a standalone hook that creates its own WebSocket connection internally. Each call creates a new connection. Mounting `useQueryInvalidation()` (which calls `useGateway()`) will create a separate WS connection from the ones used by chat, dashboard, etc. This is acceptable for invalidation purposes (the connection is lightweight). Accept the duplicate connection for now — refactoring `useGateway` into a context provider is a separate task.
+**Important note**: `useGateway()` is NOT context-based - it's a standalone hook that creates its own WebSocket connection internally. Each call creates a new connection. Mounting `useQueryInvalidation()` (which calls `useGateway()`) will create a separate WS connection from the ones used by chat, dashboard, etc. This is acceptable for invalidation purposes (the connection is lightweight). Accept the duplicate connection for now - refactoring `useGateway` into a context provider is a separate task.
 
 Add `<QueryInvalidationBridge />` inside `QueryClientProvider` in `client-providers.tsx`, after the existing providers:
 
@@ -688,7 +688,7 @@ git commit -m "feat(web): add WS → React Query invalidation bridge with 500ms 
 
 ## Phase 2: Chat Overhaul
 
-### Task 7: Fix toolbar — move NotificationBell into header flow
+### Task 7: Fix toolbar - move NotificationBell into header flow
 
 **Files:**
 - Modify: `packages/web/src/components/page-layout.tsx`
@@ -796,7 +796,7 @@ Employee groups show an unread count badge (accent color pill) when they have se
 - [ ] **Step 5: Add context menu (right-click)**
 
 Use the shadcn `ContextMenu` component (installed in Task 1). On right-click of any employee group or session item, show:
-- Open in new tab (Phase 2 — wire up in Task 10)
+- Open in new tab (Phase 2 - wire up in Task 10)
 - Pin / Unpin
 - Mark all as read
 - Delete session / Delete all for employee
@@ -1094,9 +1094,9 @@ The current `chat/page.tsx` is ~1092 lines with all chat logic inline. We need t
 - [ ] **Step 1: Extract ChatPane from page.tsx**
 
 Create `packages/web/src/components/chat/chat-pane.tsx`. This component receives:
-- `sessionId: string | null` — which session to display
-- `isActive: boolean` — whether this pane has focus (for border highlight)
-- `onFocus: () => void` — called when user clicks in this pane
+- `sessionId: string | null` - which session to display
+- `isActive: boolean` - whether this pane has focus (for border highlight)
+- `onFocus: () => void` - called when user clicks in this pane
 
 It encapsulates:
 - Message loading + display (ChatMessages)
@@ -1268,7 +1268,7 @@ Manual: Toggle split mode, verify 2-pane and 3-pane layouts, verify each pane in
 
 ```bash
 git add packages/web/src/components/chat/chat-split.tsx packages/web/src/app/chat/page.tsx
-git commit -m "feat(web): split view for active multitasking — 1/2/3 panes with independent chat sessions"
+git commit -m "feat(web): split view for active multitasking - 1/2/3 panes with independent chat sessions"
 ```
 
 ---
@@ -1403,7 +1403,7 @@ Replace the static page title in the header with `<BreadcrumbBar />`.
 
 Each page adds `useBreadcrumbs()` on mount. Examples:
 - Dashboard: `useBreadcrumbs([{ label: 'Dashboard' }])`
-- Chat: `useBreadcrumbs([{ label: 'Chat', href: '/chat' }])` — updates to `[{ label: 'Chat', href: '/chat' }, { label: employeeName }]` when session selected
+- Chat: `useBreadcrumbs([{ label: 'Chat', href: '/chat' }])` - updates to `[{ label: 'Chat', href: '/chat' }, { label: employeeName }]` when session selected
 - Cron: `useBreadcrumbs([{ label: 'Cron' }])`
 - Settings: `useBreadcrumbs([{ label: 'Settings' }])`
 
@@ -1475,14 +1475,14 @@ Manual: Press Cmd+K, verify search works, navigate to pages, create new chat fro
 
 ```bash
 git add packages/web/src/components/global-search.tsx
-git commit -m "feat(web): replace GlobalSearch with cmdk command palette — actions, recents, sessions, skills"
+git commit -m "feat(web): replace GlobalSearch with cmdk command palette - actions, recents, sessions, skills"
 ```
 
 ---
 
 ## Phase 4: New Capabilities
 
-### Task 14: Goals — backend SQLite table + API routes
+### Task 14: Goals - backend SQLite table + API routes
 
 **Files:**
 - Create: `packages/jinn/src/gateway/goals.ts`
@@ -1567,12 +1567,12 @@ cd ~/Projects/jinn && pnpm build
 
 ```bash
 git add packages/jinn/src/gateway/goals.ts packages/jinn/src/gateway/api.ts packages/jinn/src/sessions/registry.ts packages/jinn/src/shared/types.ts
-git commit -m "feat(api): goals hierarchy — SQLite table, CRUD API routes, tree structure"
+git commit -m "feat(api): goals hierarchy - SQLite table, CRUD API routes, tree structure"
 ```
 
 ---
 
-### Task 15: Goals — frontend page
+### Task 15: Goals - frontend page
 
 **Files:**
 - Create: `packages/web/src/hooks/use-goals.ts`
@@ -1711,7 +1711,7 @@ cd ~/Projects/jinn && pnpm build
 
 ```bash
 git add packages/jinn/src/gateway/costs.ts packages/jinn/src/gateway/api.ts
-git commit -m "feat(api): cost aggregation API — summary by period, breakdown by employee"
+git commit -m "feat(api): cost aggregation API - summary by period, breakdown by employee"
 ```
 
 ---
@@ -1786,7 +1786,7 @@ cd ~/Projects/jinn && pnpm build
 
 ```bash
 git add packages/jinn/src/gateway/budgets.ts packages/jinn/src/gateway/api.ts packages/jinn/src/sessions/registry.ts packages/jinn/src/sessions/manager.ts
-git commit -m "feat(api): budget system — config-driven limits, enforcement before engine.run(), override support"
+git commit -m "feat(api): budget system - config-driven limits, enforcement before engine.run(), override support"
 ```
 
 ---
@@ -1816,11 +1816,11 @@ Create `packages/web/src/hooks/use-costs.ts` with `useCostSummary(period)`, `use
 - [ ] **Step 3: Rewrite costs page to use real data**
 
 Replace the current costs page content with:
-- Summary cards (total spend, daily avg, projected month-end) — using `useCostSummary()`
-- Daily spend bar chart (last 30 days) — simple CSS bars or a lightweight chart lib
-- Per-employee table with budget progress bars — using `useCostsByEmployee()` + `useBudgets()`
-- Budget event log — using `useBudgetEvents()`
-- Inline budget editor — edit monthly limits per employee
+- Summary cards (total spend, daily avg, projected month-end) - using `useCostSummary()`
+- Daily spend bar chart (last 30 days) - simple CSS bars or a lightweight chart lib
+- Per-employee table with budget progress bars - using `useCostsByEmployee()` + `useBudgets()`
+- Budget event log - using `useBudgetEvents()`
+- Inline budget editor - edit monthly limits per employee
 
 - [ ] **Step 4: Verify build + manual test**
 
@@ -1877,7 +1877,7 @@ In `packages/jinn/package.json`, add to scripts:
 "test:watch": "vitest"
 ```
 
-- [ ] **Step 4: Write first test — cost aggregation**
+- [ ] **Step 4: Write first test - cost aggregation**
 
 Create `packages/jinn/src/gateway/__tests__/costs.test.ts`:
 
@@ -1962,7 +1962,7 @@ export default defineConfig({
 "test:watch": "vitest"
 ```
 
-- [ ] **Step 4: Write first test — chat tabs hook**
+- [ ] **Step 4: Write first test - chat tabs hook**
 
 Create `packages/web/src/hooks/__tests__/use-chat-tabs.test.ts`:
 
@@ -2120,7 +2120,7 @@ cd ~/Projects/jinn && pnpm build
 
 ```bash
 git add packages/jinn/src/engines/mock.ts
-git commit -m "feat(api): mock engine for E2E tests — canned responses with simulated streaming"
+git commit -m "feat(api): mock engine for E2E tests - canned responses with simulated streaming"
 ```
 
 ---
@@ -2294,7 +2294,7 @@ Note: The `needs: [build]` ensures the build job passed first (gate), but we re-
 
 ```bash
 git add .github/workflows/ci.yml
-git commit -m "ci: add GitHub Actions workflow — typecheck, unit tests, build, E2E"
+git commit -m "ci: add GitHub Actions workflow - typecheck, unit tests, build, E2E"
 ```
 
 ---

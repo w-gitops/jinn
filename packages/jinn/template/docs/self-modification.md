@@ -37,10 +37,10 @@ Engines have full file access within `~/.jinn/`. To avoid breaking the gateway:
 
 ### Do Not
 
-- Break `config.yaml` structure — invalid YAML will prevent config reload
-- Corrupt `jinn.db` — the SQLite database is managed by the gateway process
-- Write invalid JSON to `jobs.json` — this will cancel all cron jobs with nothing to replace them
-- Delete the `docs/` directory — these reference docs are needed for self-awareness
+- Break `config.yaml` structure - invalid YAML will prevent config reload
+- Corrupt `sessions/registry.db` - the SQLite database is managed by the gateway process
+- Write invalid JSON to `jobs.json` - this will cancel all cron jobs with nothing to replace them
+- Delete the `docs/` directory - these reference docs are needed for self-awareness
 - Modify files outside `~/.jinn/` unless explicitly instructed by the user
 
 ## Example: Creating a Cron Job at Runtime

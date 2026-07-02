@@ -25,6 +25,7 @@ export class SlackConnector implements Connector {
   private channelNameCache = new Map<string, { name: string; cachedAt: number }>();
   private botUserId: string | null = null;
   private static CHANNEL_CACHE_TTL_MS = 3600_000; // 1 hour
+  private static CHANNEL_CACHE_MAX_ENTRIES = 1000;
 
   private readonly capabilities: ConnectorCapabilities = {
     threading: true,
@@ -80,6 +81,12 @@ export class SlackConnector implements Connector {
       const result = await this.app.client.conversations.info({ channel: channelId });
       const name = result.channel?.name;
       if (name) {
+        // Bound the cache: evict oldest entries (Map preserves insertion order)
+        while (this.channelNameCache.size >= SlackConnector.CHANNEL_CACHE_MAX_ENTRIES) {
+          const oldestKey = this.channelNameCache.keys().next().value;
+          if (oldestKey === undefined) break;
+          this.channelNameCache.delete(oldestKey);
+        }
         this.channelNameCache.set(channelId, { name, cachedAt: Date.now() });
         return name;
       }
@@ -302,13 +309,23 @@ export class SlackConnector implements Connector {
       const messageTs = event.item.ts;
       const emoji = event.reaction;
 
-      // Skip old reactions replayed on boot
-      if (this.ignoreOldMessagesOnBoot && isOldSlackMessage(messageTs, this.bootTimeMs)) {
-        logger.debug(`Ignoring old Slack reaction on ${messageTs}`);
+      // Skip reactions that were replayed on boot. Gate on the REACTION's own event time
+      // (event_ts), NOT the reacted-to message's age — a fresh reaction on an old message
+      // (e.g. approving an approval card that has been waiting for hours) must still be honored.
+      const reactionTs = (event as any).event_ts || messageTs;
+      if (this.ignoreOldMessagesOnBoot && isOldSlackMessage(reactionTs, this.bootTimeMs)) {
+        logger.debug(`Ignoring old (replayed-on-boot) Slack reaction event ${reactionTs}`);
         return;
       }
 
       logger.info(`[slack] Reaction :${emoji}: by ${event.user} on ${channelId}:${messageTs}`);
+
+      // Instant ack so the user can see the gateway heard the reaction.
+      try {
+        await this.app.client.reactions.add({ channel: channelId, timestamp: messageTs, name: "eyes" });
+      } catch (err) {
+        logger.debug(`[slack] eyes ack skipped (likely already reacted): ${err}`);
+      }
 
       // Fetch the reacted-to message text
       // Try conversations.history first (works for root messages),
@@ -415,34 +432,44 @@ export class SlackConnector implements Connector {
 
   async sendMessage(target: Target, text: string): Promise<string | undefined> {
     if (!text || !text.trim()) return undefined;
-    const chunks = formatResponse(text);
-    let lastTs: string | undefined;
-    for (const chunk of chunks) {
-      if (!chunk.trim()) continue;
-      const res = await this.app.client.chat.postMessage({
-        channel: target.channel,
-        text: chunk,
-      });
-      lastTs = res.ts;
+    try {
+      const chunks = formatResponse(text);
+      let lastTs: string | undefined;
+      for (const chunk of chunks) {
+        if (!chunk.trim()) continue;
+        const res = await this.app.client.chat.postMessage({
+          channel: target.channel,
+          text: chunk,
+        });
+        lastTs = res.ts;
+      }
+      return lastTs;
+    } catch (err) {
+      logger.error(`Slack sendMessage error: ${err instanceof Error ? err.message : err}`);
+      return undefined;
     }
-    return lastTs;
   }
 
   async replyMessage(target: Target, text: string): Promise<string | undefined> {
     if (!text || !text.trim()) return undefined;
-    const threadTs = target.thread || target.messageTs;
-    const chunks = formatResponse(text);
-    let lastTs: string | undefined;
-    for (const chunk of chunks) {
-      if (!chunk.trim()) continue;
-      const res = await this.app.client.chat.postMessage({
-        channel: target.channel,
-        thread_ts: threadTs,
-        text: chunk,
-      });
-      lastTs = res.ts;
+    try {
+      const threadTs = target.thread || target.messageTs;
+      const chunks = formatResponse(text);
+      let lastTs: string | undefined;
+      for (const chunk of chunks) {
+        if (!chunk.trim()) continue;
+        const res = await this.app.client.chat.postMessage({
+          channel: target.channel,
+          thread_ts: threadTs,
+          text: chunk,
+        });
+        lastTs = res.ts;
+      }
+      return lastTs;
+    } catch (err) {
+      logger.error(`Slack replyMessage error: ${err instanceof Error ? err.message : err}`);
+      return undefined;
     }
-    return lastTs;
   }
 
   async addReaction(target: Target, emoji: string) {
@@ -474,10 +501,13 @@ export class SlackConnector implements Connector {
   async editMessage(target: Target, text: string) {
     if (!target.messageTs) return;
     if (!text || !text.trim()) return;
+    // Apply the same mrkdwn conversion as sends; edits are single-message,
+    // so keep only the first chunk (truncated to the platform limit).
+    const [converted] = formatResponse(text);
     await this.app.client.chat.update({
       channel: target.channel,
       ts: target.messageTs,
-      text,
+      text: converted,
     });
   }
 

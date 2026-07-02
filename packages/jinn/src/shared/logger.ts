@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { LOGS_DIR } from "./paths.js";
+import { redactText } from "./redact.js";
 
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 } as const;
 type LogLevel = keyof typeof LEVELS;
@@ -26,7 +27,8 @@ export function configureLogger(opts: {
 
 function log(level: LogLevel, message: string) {
   if (LEVELS[level] < LEVELS[minLevel]) return;
-  const line = `${new Date().toISOString()} [${level.toUpperCase()}] ${message}`;
+  const safeMessage = redactText(message);
+  const line = `${new Date().toISOString()} [${level.toUpperCase()}] ${safeMessage}`;
   if (writeToStdout) console.log(line);
   if (logStream) logStream.write(line + "\n");
 }

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Employee, JinnConfig } from "../shared/types.js";
 import { JINN_HOME, ORG_DIR, CRON_JOBS, DOCS_DIR } from "../shared/paths.js";
+import { gatewayBaseUrl } from "../gateway/gateway-info.js";
 
 /**
  * Token budget strategy:
@@ -36,6 +37,31 @@ interface Section {
   summary: string; // compact fallback when budget is tight
 }
 
+export interface TalkThreadSummary {
+  id: string;
+  label: string;
+  status: string;
+  lastActivity: string;
+}
+
+/**
+ * Compact live roster of the talk session's COO threads, rebuilt every turn so
+ * the orchestrator's reuse-vs-spawn decision is grounded in real state instead
+ * of conversation memory. Null when there are no threads (section omitted).
+ */
+export function buildTalkThreadsSection(threads?: TalkThreadSummary[]): string | null {
+  if (!threads || threads.length === 0) return null;
+  const lines = [`## Your open COO threads`];
+  for (const t of threads) {
+    lines.push(`- \`${t.id}\` — "${t.label}" (${t.status}, last activity ${t.lastActivity})`);
+  }
+  lines.push(
+    ``,
+    `Continue one: POST /api/talk/delegate with {"sessionId":"<your-id>","thread":"<id above>","brief":"..."} — new topic: {"thread":"new","label":"<short topic>","brief":"..."}. Never call /api/sessions directly.`,
+  );
+  return lines.join("\n");
+}
+
 /**
  * Build a rich system prompt for engine sessions.
  * This is what makes Jinn "smart" — the engine sees all of this context
@@ -55,13 +81,26 @@ export function buildContext(opts: {
   language?: string;
   channelName?: string;
   hierarchy?: import("../shared/types.js").OrgHierarchy;
+  /**
+   * Extra ESSENTIAL persona injected for the hands-free voice orchestrator
+   * (source:"talk"). Layered on top of the base identity so the session keeps
+   * the gateway/delegation knowledge from CLAUDE.md while behaving as the thin
+   * voice layer above the COO. Empty/undefined for all normal sessions.
+   */
+  voicePersona?: string;
+  /**
+   * Live roster of the orchestrator's COO child threads (source:"talk" only).
+   * Rebuilt every turn so reuse-vs-spawn decisions are grounded in real state.
+   * Undefined/empty for all normal sessions — section is omitted.
+   */
+  talkThreads?: TalkThreadSummary[];
 }): string {
   const maxChars = opts.config?.context?.maxChars ?? DEFAULT_MAX_CONTEXT_CHARS;
   const sections: Section[] = [];
 
   // Compute gateway URL once — used by multiple sections
   const gatewayUrl = opts.config
-    ? `http://${opts.config.gateway.host || "127.0.0.1"}:${opts.config.gateway.port || 7777}`
+    ? gatewayBaseUrl({ port: opts.config.gateway.port || 7777, host: opts.config.gateway.host })
     : "http://127.0.0.1:7777";
 
   // Resolve personalized names from config
@@ -92,14 +131,45 @@ export function buildContext(opts: {
     });
   }
 
-  // ── STANDARD: Self-evolution ────────────────────────────────
-  if (!opts.employee) {
+  // ── ESSENTIAL: Voice orchestrator persona (source:"talk" only) ──
+  // Layered right after identity so the hands-free voice behaviour governs the
+  // turn, while the base identity + CLAUDE.md still supply gateway/delegation
+  // know-how. No trimming — this defines how a talk turn must behave.
+  if (opts.voicePersona && opts.voicePersona.trim()) {
     sections.push({
-      tier: Tier.STANDARD,
-      marker: "## Self-evolution",
-      content: buildEvolutionContext(portalName),
-      summary: `## Self-evolution\nUpdate knowledge files in \`~/.jinn/knowledge/\` when you learn new info about the user or their projects.`,
+      tier: Tier.ESSENTIAL,
+      marker: "# Voice mode",
+      content: opts.voicePersona,
+      summary: "", // always included, never trimmed
     });
+  }
+
+  // ── ESSENTIAL: Live COO thread roster (source:"talk" only) ──
+  const rosterSection = buildTalkThreadsSection(opts.talkThreads);
+  if (rosterSection) {
+    sections.push({
+      tier: Tier.ESSENTIAL,
+      marker: "## Your open COO threads",
+      content: rosterSection,
+      summary: "", // always included, never trimmed
+    });
+  }
+
+  // ── STANDARD: Onboarding (gated on portal setup completion) ────────
+  // Steady-state self-evolution guidance lives in CLAUDE.md/AGENTS.md (auto-loaded).
+  // Only the dynamic onboarding flow for a fresh install is emitted here.
+  if (!opts.employee) {
+    const portal = opts.config?.portal;
+    const setupComplete = portal?.setupComplete === true || portal?.onboarded === true;
+    const onboarding = buildOnboardingContext({ portalName, operatorName, setupComplete });
+    if (onboarding) {
+      sections.push({
+        tier: Tier.STANDARD,
+        marker: "## Onboarding mode",
+        content: onboarding,
+        summary: `## Onboarding mode\nFresh install — run the onboarding skill (see CLAUDE.md).`,
+      });
+    }
   }
 
   // ── ESSENTIAL: Session context ──────────────────────────────
@@ -120,26 +190,30 @@ export function buildContext(opts: {
     });
   }
 
-  // ── STANDARD: Organization ──────────────────────────────────
-  const orgCtx = buildOrgContext(opts.hierarchy);
-  if (orgCtx) {
-    sections.push({
-      tier: Tier.STANDARD,
-      marker: "## Organization",
-      content: orgCtx,
-      summary: `## Organization\nEmployee files are in \`${ORG_DIR}/\`. Read them directly when needed.`,
-    });
+  // ── STANDARD: Organization (COO only — employees get their chain of command) ──
+  if (!opts.employee) {
+    const orgCtx = buildOrgContext(opts.hierarchy);
+    if (orgCtx) {
+      sections.push({
+        tier: Tier.STANDARD,
+        marker: "## Organization",
+        content: orgCtx,
+        summary: `## Organization\nEmployee files are in \`${ORG_DIR}/\`. Read them directly when needed.`,
+      });
+    }
   }
 
-  // ── STANDARD: Cron jobs (only enabled, with disabled count) ─
-  const cronCtx = buildCronContext();
-  if (cronCtx) {
-    sections.push({
-      tier: Tier.STANDARD,
-      marker: "## Scheduled cron",
-      content: cronCtx,
-      summary: "## Scheduled cron jobs\nCron definitions are in `~/.jinn/cron/jobs.json`. Read directly when needed.",
-    });
+  // ── STANDARD: Cron jobs (COO only — employees don't manage the schedule) ──
+  if (!opts.employee) {
+    const cronCtx = buildCronContext();
+    if (cronCtx) {
+      sections.push({
+        tier: Tier.STANDARD,
+        marker: "## Scheduled cron",
+        content: cronCtx,
+        summary: "## Scheduled cron jobs\nCron definitions are in `~/.jinn/cron/jobs.json`. Read directly when needed.",
+      });
+    }
   }
 
   // ── OPTIONAL: Knowledge / docs (filenames only, never inlined)
@@ -168,7 +242,7 @@ export function buildContext(opts: {
     sections.push({
       tier: Tier.STANDARD,
       marker: "## Available connectors",
-      content: buildConnectorContext(opts.connectors, gatewayUrl, portalName),
+      content: buildConnectorContext(opts.connectors, gatewayUrl),
       summary: `## Available connectors: ${opts.connectors.join(", ")}\nUse \`curl POST ${gatewayUrl}/api/connectors/<name>/send\` to send messages.`,
     });
   }
@@ -184,22 +258,17 @@ export function buildContext(opts: {
     });
   }
 
-  // ── OPTIONAL: Delegation protocol (COO only) ───────────────
-  if (!opts.employee) {
-    sections.push({
-      tier: Tier.OPTIONAL,
-      marker: "## Employee Delegation",
-      content: buildDelegationProtocol(gatewayUrl, portalName, opts.config),
-      summary: `## Employee Delegation Protocol\nDelegate via \`POST ${gatewayUrl}/api/sessions\` with \`{prompt, employee, parentSessionId}\`. Check children via \`GET /api/sessions/:id/children\`.`,
-    });
-  }
+  // Delegation protocol lives in CLAUDE.md/AGENTS.md (auto-loaded). The live
+  // gateway URL + the /api/sessions endpoints needed to delegate are emitted
+  // in the Gateway API reference section below, so nothing is lost here.
 
-  // ── STANDARD: Gateway API reference ─────────────────────────
+  // ── STANDARD: Gateway API reference (audience-scoped; full table in CLAUDE.md) ──
+  const employeeNode = opts.employee ? opts.hierarchy?.nodes[opts.employee.name] : undefined;
   sections.push({
     tier: Tier.STANDARD,
     marker: `## ${portalName} Gateway API`,
-    content: buildApiReference(gatewayUrl, portalName),
-    summary: `## ${portalName} Gateway API (${gatewayUrl})\nEndpoints: /api/status, /api/sessions, /api/cron, /api/org, /api/skills, /api/config, /api/connectors, /api/logs`,
+    content: buildApiReference(gatewayUrl, portalName, opts.employee, employeeNode?.directReports?.length ?? 0),
+    summary: `## ${portalName} Gateway API (${gatewayUrl})\nFull endpoint reference: CLAUDE.md / AGENTS.md.`,
   });
 
   // ── Assemble with progressive trimming by tier ──────────────
@@ -267,7 +336,7 @@ function buildChainOfCommand(
   if (node.parentName) {
     const parent = hierarchy.nodes[node.parentName];
     if (parent) {
-      lines.push(`- **Your manager**: ${parent.employee.displayName} (${parent.employee.rank})`);
+      lines.push(`- **Your manager**: ${parent.employee.displayName} (\`${node.parentName}\`, ${parent.employee.rank})`);
     } else {
       lines.push(`- **Your manager**: ${node.parentName}`);
     }
@@ -279,7 +348,7 @@ function buildChainOfCommand(
   if (node.directReports.length > 0) {
     const reports = node.directReports.map((name) => {
       const r = hierarchy.nodes[name];
-      return r ? `${r.employee.displayName} (${r.employee.rank})` : name;
+      return r ? `${r.employee.displayName} (\`${name}\`, ${r.employee.rank})` : name;
     });
     lines.push(`- **Your direct reports**: ${reports.join(", ")}`);
   }
@@ -301,40 +370,25 @@ function buildChainOfCommand(
   return "\n" + lines.join("\n") + "\n";
 }
 
-function buildIdentity(portalName: string, operatorName?: string, language?: string): string {
+/**
+ * COO identity ANCHOR — intentionally minimal. The full operating manual
+ * (principles, home-dir layout, org system, delegation, toolbox, conventions)
+ * lives in `CLAUDE.md` / `AGENTS.md` at `~/.jinn` and is auto-loaded by every
+ * engine (claude reads CLAUDE.md; codex/agy read AGENTS.md → symlinked to
+ * CLAUDE.md). We only anchor identity + point at the manual so the manual is
+ * never duplicated into this prompt.
+ */
+export function buildIdentity(portalName: string, operatorName?: string, language?: string): string {
   const operatorLine = operatorName
-    ? `\nThe user's name is **${operatorName}**. Address them by name when appropriate.`
+    ? `\n\nThe person you are speaking with is **${operatorName}** — your operator. Address them directly, in the second person ("you"), never in the third person.`
     : "";
-
   const languageInstruction = language && language !== "English"
-    ? `\n**Language**: Always respond in ${language}. All your communication with the user must be in ${language}.`
+    ? `\n\n**Language**: Always respond in ${language}.`
     : "";
 
   return `# You are ${portalName}
 
-${portalName} is a personal AI assistant and gateway daemon. You are proactive, helpful, and opinionated — not a passive tool. You anticipate needs, suggest improvements, and take initiative when appropriate.${operatorLine}
-
-## Core principles
-- **Be proactive**: Don't just answer questions — suggest next steps, flag issues, offer to do related tasks.
-- **Be concise**: Respect the user's time. Lead with the answer, not the reasoning.
-- **Be capable**: You have access to the filesystem, can run commands, call APIs, send messages via connectors, and manage the system.
-- **Be honest**: If you don't know something or can't do something, say so clearly.
-- **Remember context**: You're part of a persistent system. Sessions can be resumed. Build on previous work.
-${languageInstruction}
-## Your home directory
-Your working directory is \`~/.jinn\` (${JINN_HOME}). This contains:
-- \`config.yaml\` — your configuration (engines, connectors, logging)
-- \`org/\` — employee definitions (YAML files defining AI workers)
-- \`skills/\` — reusable skill prompts
-- \`docs/\` — documentation and knowledge base
-- \`knowledge/\` — persistent knowledge files
-- \`cron/\` — scheduled job definitions and run history
-- \`sessions/\` — session database
-- \`logs/\` — gateway logs
-- \`CLAUDE.md\` — user-defined instructions (always follow these)
-- \`AGENTS.md\` — agent/employee documentation
-
-You can read, write, and modify any of these files to configure yourself, create new employees, add skills, etc.`;
+You are ${portalName}, COO of ${operatorName ? `${operatorName}'s` : "the user's"} AI organization. Your full operating manual is in \`CLAUDE.md\` / \`AGENTS.md\` at \`~/.jinn\` (${JINN_HOME}) — auto-loaded by your engine. Follow it.${operatorLine}${languageInstruction}`;
 }
 
 function buildSessionContext(opts: {
@@ -371,8 +425,11 @@ function buildConfigContext(config: JinnConfig, gatewayUrl: string): string {
   if (config.engines.codex?.model) {
     lines.push(`- Codex model: ${config.engines.codex.model}`);
   }
-  if (config.engines.gemini?.model) {
-    lines.push(`- Gemini model: ${config.engines.gemini.model}`);
+  if (config.engines.antigravity) {
+    lines.push(`- Antigravity model: ${config.engines.antigravity.model ?? "Gemini 3.5 Flash (Medium)"}`);
+  }
+  if (config.engines.grok) {
+    lines.push(`- Grok model: ${config.engines.grok.model ?? "grok-build"}`);
   }
   if (config.logging) {
     lines.push(`- Log level: ${config.logging.level || "info"}`);
@@ -396,18 +453,13 @@ function buildOrgContext(hierarchy?: import("../shared/types.js").OrgHierarchy):
         }
         const emp = node.employee;
         const indent = "  ".repeat(node.depth);
-        let entry = `${indent}- **${emp.displayName}** (${name}) — ${emp.department}, ${emp.rank}`;
-        if (emp.persona) {
-          const firstLine = emp.persona.trim().split("\n")[0].trim().slice(0, 120);
-          entry += `\n${indent}  _${firstLine}_`;
-        }
-        lines.push(entry);
+        lines.push(`${indent}- **${emp.displayName}** (${name}) — ${emp.department}, ${emp.rank}`);
       }
       if (deepCount > 0) {
         lines.push(`${"  ".repeat(MAX_DEPTH)}- ... and ${deepCount} more at deeper levels`);
       }
 
-      lines.push(`\nYou can create new employees by writing YAML files to \`${ORG_DIR}/\``);
+      lines.push(`\nFull persona/details: \`GET /api/org/employees/:name\` or the YAML under \`${ORG_DIR}/\`. Create new employees by writing YAML files there.`);
       return lines.join("\n");
     }
 
@@ -439,14 +491,9 @@ function buildOrgContext(hierarchy?: import("../shared/types.js").OrgHierarchy):
       const displayMatch = content.match(/displayName:\s*(.+)/);
       const deptMatch = content.match(/department:\s*(.+)/);
       const rankMatch = content.match(/rank:\s*(.+)/);
-      const personaMatch = content.match(/persona:\s*[|>]?\s*\n?\s*(.+)/);
-      let entry = `- **${displayMatch?.[1] || name}** (${name}) — ${deptMatch?.[1] || "unassigned"}, ${rankMatch?.[1] || "employee"}`;
-      if (personaMatch?.[1]) {
-        entry += `\n  _${personaMatch[1].trim().slice(0, 120)}_`;
-      }
-      lines.push(entry);
+      lines.push(`- **${displayMatch?.[1] || name}** (${name}) — ${deptMatch?.[1] || "unassigned"}, ${rankMatch?.[1] || "employee"}`);
     }
-    lines.push(`\nYou can create new employees by writing YAML files to \`${ORG_DIR}/\``);
+    lines.push(`\nFull persona/details: \`GET /api/org/employees/:name\` or the YAML under \`${ORG_DIR}/\`. Create new employees by writing YAML files there.`);
     return lines.join("\n");
   } catch {
     return null;
@@ -482,8 +529,23 @@ function buildCronContext(): string | null {
 /**
  * Knowledge context: lists filenames and sizes only — never inlines content.
  * The AI reads files on demand. This saves ~200K+ chars compared to full inlining.
+ *
+ * The listing (readdir + per-file stat over ~100 files) runs on every session
+ * turn, so the built section is cached with a short TTL.
  */
+const KNOWLEDGE_CACHE_TTL_MS = 30_000;
+let knowledgeCache: { builtAt: number; value: string | null } | null = null;
+
 function buildKnowledgeContext(): string | null {
+  if (knowledgeCache && Date.now() - knowledgeCache.builtAt < KNOWLEDGE_CACHE_TTL_MS) {
+    return knowledgeCache.value;
+  }
+  const value = buildKnowledgeContextUncached();
+  knowledgeCache = { builtAt: Date.now(), value };
+  return value;
+}
+
+function buildKnowledgeContextUncached(): string | null {
   const dirs = [
     { dir: DOCS_DIR, label: "docs" },
     { dir: path.join(JINN_HOME, "knowledge"), label: "knowledge" },
@@ -534,21 +596,12 @@ function buildKnowledgeContext(): string | null {
   return lines.join("\n");
 }
 
-function buildConnectorContext(connectors: string[], gatewayUrl: string, portalName: string): string {
-  const lines: string[] = [`## Available connectors: ${connectors.join(", ")}`];
-  lines.push(`You can send messages and interact with external services via the ${portalName} gateway API.`);
-  lines.push(`Use bash with curl to call these endpoints:\n`);
-
-  for (const name of connectors) {
-    lines.push(`### ${name}`);
-    lines.push(`- **Send message**: \`curl -X POST ${gatewayUrl}/api/connectors/${name}/send -H 'Content-Type: application/json' -d '{"channel":"CHANNEL_ID","text":"message"}'\``);
-    lines.push(`- **Send threaded reply**: add \`"thread":"THREAD_TS"\` to the JSON body`);
-    lines.push(`- You can proactively send messages without being asked — e.g., to notify about completed tasks, errors, or status updates`);
-  }
-
-  lines.push(`\n- **List all connectors**: \`curl ${gatewayUrl}/api/connectors\``);
-  lines.push(`- Channel IDs and connector config can be found in \`~/.jinn/config.yaml\``);
-  return lines.join("\n");
+function buildConnectorContext(connectors: string[], gatewayUrl: string): string {
+  return [
+    `## Available connectors: ${connectors.join(", ")}`,
+    `Send a message: \`curl -X POST ${gatewayUrl}/api/connectors/<name>/send -H 'Content-Type: application/json' -d '{"channel":"CHANNEL_ID","text":"message"}'\` (add \`"thread":"THREAD_TS"\` for a threaded reply).`,
+    `Channel IDs are in \`~/.jinn/config.yaml\`. You may send proactively (completed tasks, errors, status updates). Details: CLAUDE.md / AGENTS.md.`,
+  ].join("\n");
 }
 
 function buildEnvironmentContext(): string | null {
@@ -599,144 +652,59 @@ function buildEnvironmentContext(): string | null {
   return lines.join("\n");
 }
 
-function buildEvolutionContext(portalName: string): string {
-  const profilePath = path.join(JINN_HOME, "knowledge", "user-profile.md");
-  let profileContent = "";
-  try { profileContent = fs.readFileSync(profilePath, "utf-8").trim(); } catch {}
-
-  const isNew = profileContent.length < 50;
-
-  const lines: string[] = [`## Self-evolution`];
-
-  if (isNew) {
-    lines.push(`**ONBOARDING MODE**: This is a new or unconfigured ${portalName} installation.`);
-    lines.push(`Before answering the user's request, introduce yourself briefly and ask them:`);
-    lines.push(`1. What's your name and what do you do? (business, role, projects)`);
-    lines.push(`2. What should ${portalName} help you automate? (code reviews, deployments, monitoring, etc.)`);
-    lines.push(`3. Communication preferences — emoji style, verbosity (concise vs detailed), language`);
-    lines.push(`4. Any active projects ${portalName} should know about?`);
-    lines.push(`\nAfter the user responds, write their answers to \`~/.jinn/knowledge/user-profile.md\` and \`~/.jinn/knowledge/preferences.md\`.`);
-    lines.push(`Then proceed to help with their original request.`);
-  } else {
-    lines.push(`You learn and evolve over time. When you discover new information about the user, their projects, or their preferences:`);
-    lines.push(`- Update \`~/.jinn/knowledge/user-profile.md\` with business/identity info`);
-    lines.push(`- Update \`~/.jinn/knowledge/preferences.md\` with style/communication preferences`);
-    lines.push(`- Update \`~/.jinn/knowledge/projects.md\` with project details`);
-    lines.push(`- If the user gives you persistent feedback (e.g. "always do X", "never do Y"), update \`~/.jinn/CLAUDE.md\``);
-    lines.push(`\nDo this silently — don't announce every file update. Just evolve.`);
-  }
-
-  return lines.join("\n");
+/**
+ * Operator-aware onboarding directive, gated on portal.setupComplete.
+ * Legacy installs that only have portal.onboarded are handled by buildContext.
+ * Returns null once the setup conversation is complete — no repeat noise on steady-state sessions.
+ */
+export function buildOnboardingContext(opts: {
+  portalName: string;
+  operatorName?: string;
+  setupComplete: boolean;
+}): string | null {
+  if (opts.setupComplete) return null;
+  const { portalName, operatorName } = opts;
+  const name = operatorName ? operatorName : "your operator";
+  return [
+    `## Onboarding mode`,
+    `This is a fresh ${portalName} install and you have NOT yet completed onboarding ${operatorName ? `with ${operatorName}` : ""}.`,
+    operatorName
+      ? `You already know their name is **${operatorName}** (from setup) — greet them by name and DO NOT ask for their name again.`
+      : `Ask the user's name once, then use it.`,
+    `Run the **onboarding** skill (\`skills/onboarding/SKILL.md\`): a warm, multi-turn, game-like setup where you and ${name} get to know each other and build their org together. Speak in the second person.`,
+    `Each beat must offer an explicit skip ("just say 'skip' or 'later'"). Never trap ${name}.`,
+    `When onboarding wraps, set \`portal.setupComplete: true\` in \`config.yaml\` so this never repeats.`,
+  ].join("\n");
 }
 
 /**
- * Delegation protocol: condensed version focusing on the essential API patterns.
- * Verbose examples and multi-paragraph explanations have been trimmed.
+ * Audience-scoped Gateway API reference. The FULL endpoint table lives in
+ * CLAUDE.md/AGENTS.md (auto-loaded by every engine) — injecting it here too
+ * was pure duplication. What remains dynamic is the live base URL and the
+ * short list of calls each audience actually makes.
  */
-function buildDelegationProtocol(gatewayUrl: string, _portalName: string, config?: JinnConfig): string {
-  const defaultEngine = config?.engines.default || "claude";
-  const engineConfig = defaultEngine === "codex"
-    ? config?.engines.codex
-    : defaultEngine === "gemini"
-      ? config?.engines.gemini ?? config?.engines.claude
-      : config?.engines.claude;
-  const childOverride = engineConfig?.childEffortOverride;
-
-  const effortOverrideNote = childOverride
-    ? `\n> **Note**: \`childEffortOverride\` is set to \`"${childOverride}"\`. All child sessions use this effort level.`
-    : "";
-
-  return `## Employee Delegation Protocol
-
-You are the COO. You orchestrate employees by creating **linked child sessions**.
-
-### How delegation works
-
-1. **Detect**: Spot \`@employee-name\` tags or infer the right employee from context.
-
-2. **Check for existing children first**:
-\`\`\`bash
-curl -s ${gatewayUrl}/api/sessions/<your-session-id>/children
-\`\`\`
-If a child exists for this employee, reuse it (skip to step 5).
-
-3. **Brief**: Craft clear, targeted instructions — translate user words into actionable briefs.
-
-4. **Spawn**:
-\`\`\`bash
-curl -s -X POST ${gatewayUrl}/api/sessions \\
-  -H 'Content-Type: application/json' \\
-  -d '{"prompt": "<brief>", "employee": "<name>", "parentSessionId": "<your-session-id>"}'
-\`\`\`
-
-5. **Follow up** (existing child):
-\`\`\`bash
-curl -s -X POST ${gatewayUrl}/api/sessions/<child-id>/message \\
-  -H 'Content-Type: application/json' \\
-  -d '{"message": "<follow-up>"}'
-\`\`\`
-
-6. **Follow up via GET**: When a child replies, the gateway wakes you with a notification message, so you can end your turn and be called back. Callbacks are best-effort though — if you resume and a child you're waiting on hasn't reported, poll \`GET /api/sessions/:id?last=N\` (check \`status\` is \`idle\`) rather than stalling. Read only the latest messages to avoid context pollution.
-
-### Key rules
-- **Always reuse** child sessions — never create duplicates for the same employee.
-- **Parallel spawning**: For independent sub-tasks, spawn multiple employees simultaneously.
-- **Cross-reference**: Compare results from multiple employees before responding.
-- **Effort levels**: Include \`"effortLevel"\` in the API body: \`"low"\` (lookups), \`"medium"\` (routine), \`"high"\` (code/architecture).
-
-### Oversight Levels
-
-| Level | When | You do |
-|-------|------|--------|
-| **TRUST** | Simple lookups, status checks | Skim, relay directly |
-| **VERIFY** | Code changes, routine work | Read fully, spot-check key files |
-| **THOROUGH** | Architecture, breaking changes, security | Full review, multi-turn follow-up, verify changes |
-
-### Manager Delegation
-
-When a department has 3+ employees, promote a senior to **manager**. Managers handle their own delegation; you review their summaries, not individual work.
-
-### Your session ID
-
-Your current session ID is in the "Current session" section above. Use it as \`parentSessionId\`.${effortOverrideNote}`;
-}
-
-function buildApiReference(gatewayUrl: string, portalName: string): string {
-  return `## ${portalName} Gateway API (${gatewayUrl})
-
-You can call these endpoints with curl to inspect and manage the gateway:
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| \`/api/status\` | GET | Gateway status, uptime, engine info |
-| \`/api/sessions\` | GET | List all sessions |
-| \`/api/sessions/:id\` | GET | Session detail (includes messages) |
-| \`/api/sessions\` | POST | Create new session (\`{prompt, engine?, employee?, parentSessionId?}\`) |
-| \`/api/sessions/:id/message\` | POST | Send follow-up message to existing session (\`{message}\`) |
-| \`/api/sessions/:id/attachments\` | POST | Push a file/image into THIS chat so the web UI renders it (\`{path}\` or \`{url}\` or \`{content}\` base64, optional \`text\`) |
-| \`/api/sessions/:id/children\` | GET | List child sessions of a parent |
-
-**Sending a file/image back into the chat** — when you produce a file (chart, screenshot, PDF, export) and want it to appear in the web dashboard, POST its local path to your own session. Only the path is read server-side; the file is copied into \`~/.jinn/uploads/\` and rendered inline (images/audio inline, other types as a download card):
-
-\`\`\`bash
-curl -s -X POST ${gatewayUrl}/api/sessions/<your-session-id>/attachments \\
-  -H 'Content-Type: application/json' \\
-  -d '{"path":"/tmp/chart.png","text":"Here is the revenue chart"}'
-\`\`\`
-
-Note: attachments render in the web **chat view** only — they cannot appear in the raw CLI/xterm terminal stream.
-| \`/api/cron\` | GET | List cron jobs |
-| \`/api/cron/:id\` | PUT | Update cron job (toggle enabled, etc.) |
-| \`/api/cron/:id/runs\` | GET | Cron run history |
-| \`/api/org\` | GET | Organization structure |
-| \`/api/org/employees/:name\` | GET | Employee details |
-| \`/api/skills\` | GET | List skills |
-| \`/api/skills/:name\` | GET | Skill content |
-| \`/api/config\` | GET | Current config |
-| \`/api/config\` | PUT | Update config |
-| \`/api/connectors\` | GET | List connectors |
-| \`/api/connectors/:name/send\` | POST | Send message via connector |
-| \`/api/logs\` | GET | Recent log lines |`;
+function buildApiReference(gatewayUrl: string, portalName: string, employee?: Employee, directReportCount = 0): string {
+  const header = `## ${portalName} Gateway API (base URL: ${gatewayUrl})`;
+  const authLine = `Privileged endpoints require local gateway auth; the web UI and built-in delegation tools handle this automatically.`;
+  const attachmentsLine =
+    `- Push a file/image into this chat (web view): \`curl -X POST ${gatewayUrl}/api/sessions/<your-session-id>/attachments -H 'Content-Type: application/json' -d '{"path":"/abs/path","text":"caption"}'\``;
+  if (!employee) {
+    return `${header}\n${authLine}\nThe full endpoint reference is in CLAUDE.md / AGENTS.md (auto-loaded). Substitute the base URL above.\n${attachmentsLine}`;
+  }
+  // Anyone who manages reports needs the delegation endpoints — rank alone undercounts (seniors can have reportsTo'd reports).
+  if (employee.rank === "manager" || employee.rank === "executive" || directReportCount > 0) {
+    return [
+      header,
+      authLine,
+      `- Delegate to another employee: \`POST ${gatewayUrl}/api/sessions\` with \`{prompt, employee, parentSessionId}\``,
+      `- Follow up on a child session: \`POST ${gatewayUrl}/api/sessions/:id/message\` with \`{message}\``,
+      `- Read a child's latest replies: \`GET ${gatewayUrl}/api/sessions/:id?last=N\``,
+      `- Valid \`employee\` values are the slugs in your chain of command, \`GET ${gatewayUrl}/api/org\`, or \`ls ${ORG_DIR}/\``,
+      attachmentsLine,
+      `Full endpoint table: CLAUDE.md / AGENTS.md.`,
+    ].join("\n");
+  }
+  return [header, authLine, attachmentsLine, `Full endpoint table: CLAUDE.md / AGENTS.md.`].join("\n");
 }
 
 /**

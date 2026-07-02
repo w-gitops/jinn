@@ -112,6 +112,10 @@ export class DiscordConnector implements Connector {
 
   async stop(): Promise<void> {
     this.status = "stopped";
+    for (const interval of this.typingIntervals.values()) {
+      clearInterval(interval);
+    }
+    this.typingIntervals.clear();
     await this.client.destroy();
     logger.info("Discord connector stopped");
   }
@@ -180,7 +184,10 @@ export class DiscordConnector implements Connector {
       const channel = await this.client.channels.fetch(target.channel);
       if (!channel || !channel.isTextBased()) return;
       const msg = await (channel as TextChannel).messages.fetch(target.messageTs);
-      await msg.edit(text.slice(0, 2000));
+      // Edits are single-message: keep only the first chunk (same boundary
+      // logic as sends, truncated to the platform limit).
+      const [chunk] = formatResponse(text);
+      await msg.edit(chunk);
     } catch (err) {
       logger.error(`Discord editMessage error: ${err instanceof Error ? err.message : err}`);
     }

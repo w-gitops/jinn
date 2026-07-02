@@ -1,15 +1,111 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import type { InterruptibleEngine, EngineRunOpts, EngineResult, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
+import { resolveBin } from "../shared/resolve-bin.js";
+
+const CODEX_SESSIONS_DIR = path.join(os.homedir(), ".codex", "sessions");
+
+// Hard backstop so a genuinely stuck turn (no terminal event ever) can't hang
+// forever. This is not a normal turn limit; long-running work can span days.
+const TURN_TIMEOUT_MS = 14 * 24 * 60 * 60 * 1000;
 
 interface LiveProcess {
   proc: ChildProcess;
   terminationReason: string | null;
 }
 
+export interface CodexEngineOpts {
+  codexSessionsDir?: string;
+}
+
+export function codexCliFlags(flags: string[] | undefined): string[] {
+  // `--chrome` is a Claude Code flag. Older shared employee/config paths can
+  // still provide it via cliFlags; Codex rejects it before a session starts.
+  return (flags ?? []).filter((flag) => flag !== "--chrome");
+}
+
+/**
+ * Most-recent-turn input-context size from a codex per-turn usage object.
+ * codex's `cached_input_tokens` is a SUBSET of `input_tokens` (OpenAI semantics),
+ * so the window fill is `input_tokens` alone — summing would double-count.
+ * Best-effort: returns undefined on any shape mismatch.
+ */
+export function extractCodexContextTokens(usage: unknown): number | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const last = (usage as Record<string, unknown>).last_token_usage;
+  if (last && typeof last === "object") {
+    const n = Number((last as Record<string, unknown>).input_tokens ?? 0);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  }
+  const n = Number((usage as Record<string, unknown>).input_tokens ?? 0);
+  // Some Codex CLI builds report cumulative/billed input tokens here, not the
+  // active context window. A value above any supported Codex window is unusable
+  // for the UI context meter, so omit it instead of showing impossible values
+  // like 9282k/272k.
+  if (n > 1_000_000) return undefined;
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+function walkJsonl(dir: string, out: string[] = []): string[] {
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const entry of entries) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) walkJsonl(p, out);
+    else if (entry.isFile() && entry.name.endsWith(".jsonl")) out.push(p);
+  }
+  return out;
+}
+
+function codexSessionIdFromTranscript(filePath: string): string | undefined {
+  try {
+    const first = fs.readFileSync(filePath, "utf-8").split("\n", 1)[0];
+    const msg = JSON.parse(first);
+    const id = msg?.payload?.id;
+    return typeof id === "string" && id ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function latestCodexTranscript(sessionId: string, root: string): string | undefined {
+  return walkJsonl(root)
+    .map((file) => {
+      try { return { file, mtimeMs: fs.statSync(file).mtimeMs }; }
+      catch { return undefined; }
+    })
+    .filter((entry): entry is { file: string; mtimeMs: number } => !!entry)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .find(({ file }) => codexSessionIdFromTranscript(file) === sessionId)?.file;
+}
+
+export function lastCodexTranscriptContextTokens(sessionId: string, root = CODEX_SESSIONS_DIR): number | undefined {
+  const file = latestCodexTranscript(sessionId, root);
+  if (!file) return undefined;
+  let last: number | undefined;
+  try {
+    for (const line of fs.readFileSync(file, "utf-8").split("\n")) {
+      if (!line.trim()) continue;
+      let msg: any;
+      try { msg = JSON.parse(line); } catch { continue; }
+      if (msg?.type !== "event_msg" || msg?.payload?.type !== "token_count") continue;
+      const ctx = extractCodexContextTokens(msg.payload.info?.last_token_usage);
+      if (ctx) last = ctx;
+    }
+  } catch {
+    return undefined;
+  }
+  return last;
+}
+
 export class CodexEngine implements InterruptibleEngine {
   name = "codex" as const;
   private liveProcesses = new Map<string, LiveProcess>();
+
+  constructor(private readonly opts: CodexEngineOpts = {}) {}
 
   kill(sessionId: string, reason = "Interrupted"): void {
     const live = this.liveProcesses.get(sessionId);
@@ -31,6 +127,12 @@ export class CodexEngine implements InterruptibleEngine {
     }
   }
 
+  /** Batch engine: no warm-PTY reuse, every live process is an in-flight turn.
+   *  Nothing idle to recycle on org-reload — no-op. */
+  killIdle(): void {
+    /* no-op */
+  }
+
   isAlive(sessionId: string): boolean {
     const live = this.liveProcesses.get(sessionId);
     return !!live && !live.proc.killed && live.proc.exitCode === null;
@@ -38,14 +140,17 @@ export class CodexEngine implements InterruptibleEngine {
 
   async run(opts: EngineRunOpts): Promise<EngineResult> {
     let prompt = opts.prompt;
-    if (opts.systemPrompt) {
+    // Only inject the system prompt on the FIRST turn of a conversation. On a
+    // resume (warm follow-up / restored session), codex already has it in the
+    // thread, so re-prepending it every turn just duplicates/bloats context.
+    if (opts.systemPrompt && !opts.resumeSessionId) {
       prompt = opts.systemPrompt + "\n\n---\n\n" + prompt;
     }
     if (opts.attachments?.length) {
       prompt += "\n\nAttached files:\n" + opts.attachments.map((a) => `- ${a}`).join("\n");
     }
 
-    const bin = opts.bin || "codex";
+    const bin = resolveBin("codex", opts.bin);
     const isResume = !!opts.resumeSessionId;
     const args = isResume
       ? this.buildResumeArgs(opts, prompt)
@@ -77,9 +182,86 @@ export class CodexEngine implements InterruptibleEngine {
       let resultText = "";
       let numTurns = 0;
       let turnError: string | null = null;
+      let lastContextTokens: number | undefined;
       let lineBuf = "";
+      let hardTimeout: NodeJS.Timeout | undefined;
+      let terminalSettleTimer: NodeJS.Timeout | undefined;
       const onStream = opts.onStream || null;
+      let lastStreamedTextBlock: string | null = null;
       const STDERR_MAX = 10 * 1024; // 10KB rolling window for error reporting
+
+      const clearTimers = () => {
+        if (hardTimeout) { clearTimeout(hardTimeout); hardTimeout = undefined; }
+        if (terminalSettleTimer) { clearTimeout(terminalSettleTimer); terminalSettleTimer = undefined; }
+      };
+      const resetTextBlockRun = () => { lastStreamedTextBlock = null; };
+      const streamTextBlock = (delta: StreamDelta) => {
+        if (!onStream) return;
+        const needsBoundary =
+          lastStreamedTextBlock !== null &&
+          !lastStreamedTextBlock.endsWith("\n") &&
+          !delta.content.startsWith("\n");
+        onStream(needsBoundary ? { ...delta, content: `\n\n${delta.content}` } : delta);
+        lastStreamedTextBlock = delta.content;
+      };
+
+      // Settle the turn on codex's parsed terminal event (`turn.completed` →
+      // "usage" / `turn.failed` → "turn_failed"), decoupled from proc.on("close").
+      // `close` only fires once every fd onto the child's stdout pipe is gone, but a
+      // bash/shell tool call can leave a grandchild that inherits and holds that pipe
+      // after codex itself exits, hanging the turn forever (the same freeze class
+      // fixed for grok in 94a50cc). Mirrors GrokEngine.settleOnTerminal / PiEngine.
+      const settleOnTerminal = () => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        this.liveProcesses.delete(sessionId);
+        // Detached child has signalled turn end and will exit; don't let its (or a
+        // lingering grandchild's) open stdout pipe keep the event loop busy.
+        try { proc.unref?.(); } catch { /* not detached / already gone */ }
+
+        const resolvedThreadId = threadId || opts.resumeSessionId || "";
+        if (resolvedThreadId) {
+          const transcriptCtx = lastCodexTranscriptContextTokens(
+            resolvedThreadId,
+            this.opts.codexSessionsDir ?? CODEX_SESSIONS_DIR,
+          );
+          if (transcriptCtx) lastContextTokens = transcriptCtx;
+        }
+
+        logger.info(`Codex turn settled on terminal event (thread: ${threadId || "none"}, turns: ${numTurns})`);
+        resolve({
+          sessionId: resolvedThreadId,
+          result: resultText,
+          error: resultText.trim() ? undefined : (turnError ?? undefined),
+          numTurns: numTurns || undefined,
+          ...(typeof lastContextTokens === "number" ? { contextTokens: lastContextTokens } : {}),
+        });
+      };
+
+      // Defer the terminal settle one tick: lets the rest of the current stdout
+      // chunk finish parsing (so multiple `turn.completed` events accumulate) and a
+      // promptly-firing `close` win with its own accounting, while still resolving
+      // the turn when `close` never comes (held-pipe hang).
+      const scheduleTerminalSettle = () => {
+        if (settled || terminalSettleTimer) return;
+        terminalSettleTimer = setTimeout(settleOnTerminal, 0);
+        terminalSettleTimer.unref?.();
+      };
+
+      hardTimeout = setTimeout(() => {
+        if (settled) return;
+        const live = this.liveProcesses.get(sessionId);
+        if (live) live.terminationReason = "Codex turn timed out";
+        logger.warn(`Codex turn timed out after ${TURN_TIMEOUT_MS}ms for session ${sessionId}; terminating process`);
+        // Group-kill (signalProcess uses process.kill(-pid)) tears down any lingering
+        // grandchild too, so close fires and settle() reports the termination reason.
+        this.signalProcess(proc, "SIGTERM");
+        setTimeout(() => {
+          if (proc.exitCode === null) this.signalProcess(proc, "SIGKILL");
+        }, 2000).unref?.();
+      }, TURN_TIMEOUT_MS);
+      hardTimeout.unref?.();
 
       proc.stdout.on("data", (d: Buffer) => {
         lineBuf += d.toString();
@@ -95,25 +277,38 @@ export class CodexEngine implements InterruptibleEngine {
               logger.info(`Codex session got thread ID: ${threadId}`);
               break;
             case "tool_start":
+              resetTextBlockRun();
               if (onStream) onStream(parsed.delta);
               break;
             case "tool_end":
+              resetTextBlockRun();
               if (onStream) onStream(parsed.delta);
               break;
             case "text":
-              resultText += parsed.delta.content;
-              if (onStream) onStream(parsed.delta);
+              // Each agent_message item is a COMPLETE assistant message; codex emits
+              // several per turn (preamble + final). The result must be the FINAL
+              // message, not all of them concatenated — so replace, don't append.
+              // Adjacent live blocks need a paragraph boundary because the web UI
+              // appends text deltas like chunks.
+              resultText = parsed.delta.content;
+              streamTextBlock(parsed.delta);
               break;
             case "error":
+              resetTextBlockRun();
               turnError = parsed.message;
               if (onStream) onStream({ type: "error", content: parsed.message });
               break;
             case "usage":
+              resetTextBlockRun();
               numTurns++;
+              if (parsed.contextTokens) lastContextTokens = parsed.contextTokens;
+              scheduleTerminalSettle(); // turn.completed = end of turn
               break;
             case "turn_failed":
+              resetTextBlockRun();
               turnError = parsed.message;
               if (onStream) onStream({ type: "error", content: parsed.message });
+              scheduleTerminalSettle(); // turn.failed = end of turn
               break;
           }
         }
@@ -136,6 +331,7 @@ export class CodexEngine implements InterruptibleEngine {
       proc.on("close", (code) => {
         if (settled) return;
         settled = true;
+        clearTimers();
 
         const terminationReason = this.liveProcesses.get(sessionId)?.terminationReason ?? null;
         this.liveProcesses.delete(sessionId);
@@ -148,10 +344,11 @@ export class CodexEngine implements InterruptibleEngine {
                 threadId = parsed.threadId;
                 break;
               case "text":
-                resultText += parsed.delta.content;
+                resultText = parsed.delta.content; // final message wins (see above)
                 break;
               case "usage":
                 numTurns++;
+                if (parsed.contextTokens) lastContextTokens = parsed.contextTokens;
                 break;
               case "error":
                 turnError = parsed.message;
@@ -163,24 +360,38 @@ export class CodexEngine implements InterruptibleEngine {
           }
         }
 
+        const resolvedThreadId = threadId || opts.resumeSessionId || "";
+        if (resolvedThreadId) {
+          const transcriptCtx = lastCodexTranscriptContextTokens(
+            resolvedThreadId,
+            this.opts.codexSessionsDir ?? CODEX_SESSIONS_DIR,
+          );
+          if (transcriptCtx) lastContextTokens = transcriptCtx;
+        }
+
         logger.info(`Codex engine exited with code ${code} (thread: ${threadId || "none"}, turns: ${numTurns})`);
 
         if (terminationReason) {
           resolve({
-            sessionId: threadId || opts.resumeSessionId || "",
+            sessionId: resolvedThreadId,
             result: resultText,
             error: terminationReason,
             numTurns: numTurns || undefined,
+            ...(typeof lastContextTokens === "number" ? { contextTokens: lastContextTokens } : {}),
           });
           return;
         }
 
         if (code === 0 || (code !== null && threadId)) {
+          // A non-empty agent message means the turn genuinely succeeded — don't
+          // surface a transient/benign error item (e.g. the `web_search_request`
+          // deprecation notice that codex emits before the answer) as a failure.
           resolve({
-            sessionId: threadId || opts.resumeSessionId || "",
+            sessionId: resolvedThreadId,
             result: resultText,
-            error: turnError ?? undefined,
+            error: resultText.trim() ? undefined : (turnError ?? undefined),
             numTurns: numTurns || undefined,
+            ...(typeof lastContextTokens === "number" ? { contextTokens: lastContextTokens } : {}),
           });
           return;
         }
@@ -188,15 +399,17 @@ export class CodexEngine implements InterruptibleEngine {
         const errMsg = turnError || `Codex exited with code ${code}: ${stderr.slice(0, 500)}`;
         logger.error(errMsg);
         resolve({
-          sessionId: threadId || opts.resumeSessionId || "",
+          sessionId: resolvedThreadId,
           result: resultText,
           error: errMsg,
+          ...(typeof lastContextTokens === "number" ? { contextTokens: lastContextTokens } : {}),
         });
       });
 
       proc.on("error", (err) => {
         if (settled) return;
         settled = true;
+        clearTimers();
         this.liveProcesses.delete(sessionId);
         reject(new Error(`Failed to spawn Codex CLI: ${err.message}`));
       });
@@ -209,7 +422,7 @@ export class CodexEngine implements InterruptibleEngine {
     if (opts.effortLevel && opts.effortLevel !== "default") args.push("-c", `model_reasoning_effort="${opts.effortLevel}"`);
     args.push("--json", "--color", "never", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check");
     if (opts.cwd) args.push("-C", opts.cwd);
-    if (opts.cliFlags?.length) args.push(...opts.cliFlags);
+    args.push(...codexCliFlags(opts.cliFlags));
     args.push(prompt);
     return args;
   }
@@ -219,7 +432,7 @@ export class CodexEngine implements InterruptibleEngine {
     if (opts.model) args.push("--model", opts.model);
     if (opts.effortLevel && opts.effortLevel !== "default") args.push("-c", `model_reasoning_effort="${opts.effortLevel}"`);
     args.push("--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check");
-    if (opts.cliFlags?.length) args.push(...opts.cliFlags);
+    args.push(...codexCliFlags(opts.cliFlags));
     args.push(opts.resumeSessionId!);
     args.push(prompt);
     return args;
@@ -233,7 +446,7 @@ export class CodexEngine implements InterruptibleEngine {
     | { type: "tool_end"; delta: StreamDelta }
     | { type: "text"; delta: StreamDelta }
     | { type: "error"; message: string }
-    | { type: "usage" }
+    | { type: "usage"; contextTokens?: number }
     | { type: "turn_failed"; message: string }
     | null {
     const trimmed = line.trim();
@@ -339,7 +552,13 @@ export class CodexEngine implements InterruptibleEngine {
 
       if (itemType === "error") {
         const message = String(item.message || "Unknown error");
-        if (message.includes("Under-development features") || message.includes("Model metadata")) {
+        // Benign notices codex emits as `error` items but that don't fail the turn.
+        if (
+          message.includes("Under-development features") ||
+          message.includes("Model metadata") ||
+          message.includes("deprecated") ||
+          message.includes("web_search_request")
+        ) {
           logger.debug(`[codex] suppressed warning: ${message.slice(0, 200)}`);
           return null;
         }
@@ -350,7 +569,8 @@ export class CodexEngine implements InterruptibleEngine {
     }
 
     if (eventType === "turn.completed") {
-      return { type: "usage" };
+      const usage = msg.usage as Record<string, unknown> | undefined;
+      return { type: "usage", contextTokens: extractCodexContextTokens(usage?.last_token_usage) };
     }
 
     if (eventType === "turn.failed") {

@@ -1,10 +1,36 @@
-export type StreamDeltaType = "text" | "text_snapshot" | "tool_use" | "tool_result" | "status" | "error";
+export type StreamDeltaType = "text" | "text_snapshot" | "tool_use" | "tool_result" | "status" | "error" | "context" | "block";
+
+export type ChatBlockType = "task-list";
+export type ChatBlockStatus = "queued" | "running" | "done" | "error";
+export type ChatBlockOp = "put" | "patch" | "remove";
+
+export interface ChatBlock {
+  id: string;
+  type: ChatBlockType;
+  version: number;
+  status?: ChatBlockStatus;
+  sourceEngine?: string;
+  title?: string;
+  summary?: string;
+  payload: JsonObject;
+}
+
+export interface ChatBlockEnvelope {
+  op: ChatBlockOp;
+  block: ChatBlock;
+}
 
 export interface StreamDelta {
   type: StreamDeltaType;
   content: string;
   toolName?: string;
   toolId?: string;
+  /** First 200 chars of the stringified tool input. Present on PreToolUse-sourced
+   *  `tool_use` deltas (fired just before the tool runs, full input assembled).
+   *  Absent on the SSE-proxy `content_block_start` delta (input not yet known). */
+  input?: string;
+  /** Structured chat-view UI update. CLI and connector transports may ignore it. */
+  block?: ChatBlockEnvelope;
 }
 
 export interface Engine {
@@ -19,6 +45,12 @@ export interface InterruptibleEngine extends Engine {
   isAlive(sessionId: string): boolean;
   /** Kill all live engine processes during gateway shutdown. */
   killAll(): void;
+  /** Recycle only IDLE warm PTYs (no in-flight turn), leaving active turns
+   *  untouched. Used on org-reload so the next turn cold-respawns with the fresh
+   *  persona without interrupting a turn that is currently running. Engines with
+   *  no warm-PTY reuse (batch engines spawn fresh per turn) implement this as a
+   *  no-op — there is nothing idle to recycle and live processes are active turns. */
+  killIdle(): void;
 }
 
 export function isInterruptibleEngine(engine: Engine): engine is InterruptibleEngine {
@@ -43,6 +75,12 @@ export interface EngineRunOpts {
   sessionId?: string;
   /** Session source ("cron", "web", "slack", …) — used by the interactive engine for lifecycle policy. */
   source?: string;
+  /** Interactive engines only: called when a turn that already settled as
+   *  failed (API-error StopFailure) later produces a real Stop — the CLI
+   *  retried past the grace window and finished. The gateway should persist
+   *  `result` as a follow-up assistant message and restore idle status.
+   *  `sessionId` is the engine-native session id ("" if unknown). */
+  onLateRecovery?: (info: { result: string; sessionId: string }) => void;
 }
 
 export interface EngineResult {
@@ -51,6 +89,10 @@ export interface EngineResult {
   cost?: number;
   durationMs?: number;
   numTurns?: number;
+  /** Most recent turn's INPUT context size (input + cache-read + cache-creation
+   *  tokens) — i.e. how full the context window currently is. Undefined when the
+   *  engine doesn't surface usage. */
+  contextTokens?: number;
   error?: string;
   /**
    * Optional rate limit metadata returned by an engine.
@@ -152,13 +194,24 @@ export interface Session {
   employee: string | null;
   model: string | null;
   title: string | null;
+  /** ≤140-char whitespace-flattened excerpt of the creation prompt — "what was asked". */
+  promptExcerpt?: string | null;
   parentSessionId: string | null;
+  /** Forwarded SSO identity captured from an auth proxy (opt-in via
+   *  `gateway.userHeader`). Null/undefined for single-user installs. */
+  userId?: string | null;
   status: "idle" | "running" | "error" | "waiting" | "interrupted";
   effortLevel: string | null;
   totalCost: number;
   totalTurns: number;
+  /** Most recent turn's input-context token count (for the UI context meter). */
+  lastContextTokens: number | null;
   queueDepth?: number;
   transportState?: "idle" | "queued" | "running" | "error" | "interrupted";
+  /** Serialize-time only (in-memory, never persisted): post-settle background
+   *  work — the CLI still has upstream API requests in flight (background
+   *  subagents/tasks) after the turn settled. Null when none. */
+  backgroundActivity?: { activeStreams: number; lastActivityAt: string } | null;
   createdAt: string;
   lastActivity: string;
   lastError: string | null;
@@ -223,7 +276,7 @@ export interface OrgNode {
   directReports: string[];
   /** Depth in tree (root = 0, root's reports = 1, etc.) */
   depth: number;
-  /** Path from root to this node (excluding virtual root), e.g. ["pravko-lead", "pravko-writer"] */
+  /** Path from root to this node (excluding virtual root), e.g. ["content-lead", "content-writer"] */
   chain: string[];
 }
 
@@ -369,13 +422,156 @@ export interface PortalConfig {
   operatorName?: string;
   language?: string;
   onboarded?: boolean;
+  setupComplete?: boolean;
 }
+
+/**
+ * Model + capability registry.
+ *
+ * The resolved registry (see shared/models.ts) is the single source of truth for
+ * which engines/models exist and what they support. A NEW model shipping is a
+ * config edit (`models:` block in config.yaml), zero code change. When the block
+ * is absent, the registry is synthesized from `engines.<name>.model` so existing
+ * configs keep working.
+ */
+
+/** How an engine conveys reasoning-effort to its CLI. */
+export type EffortMechanism = "claude-flag" | "codex-config" | "grok-flag" | "pi-flag" | "none";
+
+/** A single model and its capabilities, as exposed to the UI / validation. */
+export interface ModelInfo {
+  id: string;
+  label: string;
+  supportsEffort: boolean;
+  /** Valid effort levels for THIS model (empty when supportsEffort is false). */
+  effortLevels: string[];
+  /** Context window size in tokens (for the UI context meter). Omit if unknown. */
+  contextWindow?: number;
+}
+
+/** Resolved per-engine registry entry. */
+export interface EngineRegistryEntry {
+  name: string;
+  /** Engine is registered/usable in this build. */
+  available: boolean;
+  /** Default model id for new sessions on this engine. */
+  defaultModel: string;
+  effortMechanism: EffortMechanism;
+  models: ModelInfo[];
+}
+
+/** Resolved registry, keyed by engine name. */
+export type ModelRegistry = Record<string, EngineRegistryEntry>;
+
+// --- Engine quota/limit snapshots ---
+
+export interface EngineLimitWindow {
+  name: string;
+  usedPercent?: number;
+  windowDurationMins?: number;
+  /** Unix timestamp in seconds. */
+  resetsAt?: number;
+  resetsAtIso?: string;
+}
+
+export interface EngineLimitContext {
+  usedPercent?: number;
+  remainingPercent?: number;
+  contextWindowSize?: number;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+}
+
+export interface EngineLimitCredits {
+  hasCredits?: boolean;
+  unlimited?: boolean;
+  balance?: string;
+  limit?: number;
+  used?: number;
+  remainingPercent?: number;
+  resetsAt?: number;
+  resetsAtIso?: string;
+}
+
+export interface EngineLimitBucket {
+  id: string;
+  name?: string;
+  planType?: string;
+  primary?: EngineLimitWindow;
+  secondary?: EngineLimitWindow;
+  credits?: EngineLimitCredits;
+}
+
+export interface EngineLimitEngineSnapshot {
+  name: string;
+  available: boolean;
+  status: "live" | "snapshot" | "static" | "unsupported" | "error";
+  source: string;
+  refreshedAt: string;
+  defaultModel?: string;
+  models: ModelInfo[];
+  accountPlan?: string;
+  windows?: EngineLimitWindow[];
+  buckets?: EngineLimitBucket[];
+  credits?: EngineLimitCredits;
+  context?: EngineLimitContext;
+  costUsd?: number;
+  unsupportedReason?: string;
+  error?: string;
+  stale?: boolean;
+}
+
+export interface EngineLimitsResponse {
+  generatedAt: string;
+  default: string;
+  engines: Record<string, EngineLimitEngineSnapshot>;
+}
+
+// --- config.yaml `models:` block shapes (all fields optional/forgiving) ---
+
+export interface ModelConfigEntry {
+  id: string;
+  label?: string;
+  supportsEffort?: boolean;
+  effortLevels?: string[];
+  contextWindow?: number;
+}
+
+export interface EngineModelsConfig {
+  /** Default model id; falls back to the first listed model. */
+  default?: string;
+  effortMechanism?: EffortMechanism;
+  models: ModelConfigEntry[];
+}
+
+/** `models:` block keyed by engine name (claude | codex | antigravity | grok | pi). */
+export type ModelsConfig = Record<string, EngineModelsConfig>;
 
 export interface JinnConfig {
   jinn?: { version?: string };
-  gateway: { port: number; host: string; streaming?: boolean };
+  gateway: {
+    port: number;
+    host: string;
+    streaming?: boolean;
+    /** Opt-in unsafe local convenience: allow POST /api/files to write a custom managed path. Default false. */
+    allowFileCustomPaths?: boolean;
+    /** Opt-in unsafe local convenience: allow POST /api/files {open:true} to open uploaded files. Default false. */
+    allowFileOpen?: boolean;
+    /** Require token/cookie auth even on loopback. Network binds require auth by default. */
+    authRequired?: boolean;
+    /** Disable gateway auth. Refused on network binds unless insecureAllowUnauthenticatedNetwork is true. */
+    authDisabled?: boolean;
+    /** Explicit escape hatch for unauthenticated 0.0.0.0/LAN/Tailscale binds. */
+    insecureAllowUnauthenticatedNetwork?: boolean;
+    /** Opt-in: when set, POST /api/sessions reads the forwarded SSO identity
+     *  from this request header (set by an auth proxy such as oauth2-proxy,
+     *  Traefik forward-auth, or IAP) and persists it on the session. Accepts a
+     *  single header name or a priority-ordered list. Unset = single-user
+     *  no-op (sessions default to "web-user", header never read). */
+    userHeader?: string | string[];
+  };
   engines: {
-    default: "claude" | "codex" | "gemini";
+    default: "claude" | "codex" | "antigravity" | "grok" | "pi" | "hermes";
     claude: {
       bin: string;
       model: string;
@@ -385,8 +581,17 @@ export interface JinnConfig {
       maxLivePtys?: number;
     };
     codex: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };
-    gemini?: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };
+    /** Antigravity (`agy`) engine. `bin` is optional — resolved dynamically
+     *  (PATH + common install dirs) when absent. agy ignores model/effort flags
+     *  today, so those fields are forward-looking. */
+    antigravity?: { bin?: string; model?: string; effortLevel?: string; childEffortOverride?: string };
+    grok?: { bin?: string; model?: string; effortLevel?: string; childEffortOverride?: string };
+    pi?: { bin?: string; model?: string; effortLevel?: string; childEffortOverride?: string };
+    /** Hermes (`hermes` CLI) engine. `bin` optional — PATH-resolved. No effort. */
+    hermes?: { bin?: string; model?: string };
   };
+  /** Optional model + capability registry. When absent, synthesized from engines.<name>.model. */
+  models?: ModelsConfig;
   connectors: Record<string, any> & {
     web?: WebConnectorConfig;
     slack?: SlackConnectorConfig;
@@ -430,5 +635,28 @@ export interface JinnConfig {
     language?: string;
     languages?: string[];
   };
-  remotes?: Record<string, { url: string; label?: string }>;
+  tts?: {
+    enabled?: boolean;
+    /** Base URL of the Chatterbox TTS server, e.g. "http://192.168.200.42:9004/v1". */
+    url?: string;
+    voice?: string;
+    /** Audio format — always use "mp3" (NEVER "wav" — Chatterbox wav is IEEE-float, not PCM). */
+    format?: "mp3" | "opus";
+  };
+  /** /talk voice loop — optional, off unless explicitly configured. */
+  talk?: {
+    enabled?: boolean;
+    /** Engine for the hands-free voice orchestrator session. When unset (or
+     *  unavailable) the talk session falls back to `engines.default`, then to the
+     *  first available engine — see talk/engine-resolver.ts. */
+    engine?: string;
+    /** Model for the hands-free voice orchestrator session (default: "sonnet" — capable enough to orchestrate). */
+    orchestratorModel?: string;
+    kokoro?: {
+      voice?: string;
+      modelDir?: string;
+      sidecarPort?: number;
+    };
+  };
+  remotes?: Record<string, { url: string; label?: string; token?: string }>;
 }

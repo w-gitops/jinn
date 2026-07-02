@@ -6,8 +6,9 @@ import os from "node:os";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import Busboy from "busboy";
-import { FILES_DIR, UPLOADS_DIR } from "../shared/paths.js";
+import { FILES_DIR, UPLOADS_DIR, JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
+import { redactText } from "../shared/redact.js";
 import { insertFile, getFile, listFiles, deleteFile, setFilePath, insertMessage, type FileMeta, type MessageMedia } from "../sessions/registry.js";
 import type { ApiContext } from "./api.js";
 
@@ -55,6 +56,22 @@ export function isServablePath(absPath: string): boolean {
     return resolved === r || resolved.startsWith(r + path.sep);
   });
 }
+
+export function resolveCustomUploadPath(requestedPath: string | null | undefined): string | null {
+  if (!requestedPath) return null;
+  const resolved = path.resolve(expandPath(requestedPath));
+  return isServablePath(resolved) ? resolved : null;
+}
+
+function allowCustomUploadPaths(context: ApiContext): boolean {
+  return context.getConfig().gateway?.allowFileCustomPaths === true;
+}
+
+export function allowUploadedFileOpen(context: Pick<ApiContext, "getConfig">): boolean {
+  return context.getConfig().gateway?.allowFileOpen === true;
+}
+
+class FileRequestError extends Error {}
 
 /** Delete date-bucket directories under UPLOADS_DIR older than maxAgeDays. Returns count removed. */
 export function cleanupOldUploads(maxAgeDays = 30): number {
@@ -129,6 +146,163 @@ function expandPath(p: string): string {
   return p;
 }
 
+// ── Arbitrary file read (web UI) ─────────────────────────────────
+// CEO has waived path allowlisting: single-user machine behind Tailscale, risk
+// accepted. This endpoint reads ANY file on disk. Guards: 5 MB size cap +
+// binary detection (no allowlist, no secrets denylist).
+
+/** Max bytes we'll read into memory for inline display. Larger files → tooLarge flag. */
+export const MAX_READ_SIZE = 5 * 1024 * 1024; // 5 MB
+
+/** MIME types treated as binary regardless of NUL-byte scan. */
+function isBinaryMime(mime: string): boolean {
+  return (
+    mime.startsWith("image/") ||
+    mime.startsWith("audio/") ||
+    mime.startsWith("video/") ||
+    mime.startsWith("font/") ||
+    mime === "application/pdf" ||
+    mime === "application/zip" ||
+    mime === "application/gzip" ||
+    mime === "application/x-tar" ||
+    mime === "application/octet-stream" ||
+    mime === "application/msword" ||
+    mime.startsWith("application/vnd.")
+  );
+}
+
+/**
+ * Build the ordered list of candidate absolute paths for a requested path.
+ *  - Absolute (`/…`) or home (`~…`) → single verbatim candidate (with ~ expanded).
+ *  - Relative → JINN_HOME first (most artifacts live there), then ~/Projects,
+ *    then the gateway cwd, then the literal path resolved against cwd.
+ * Exposed for unit-testing the resolution ORDER without touching disk.
+ */
+export function readPathCandidates(requestedPath: string): string[] {
+  const p = String(requestedPath ?? "").trim();
+  if (!p) return [];
+  // Absolute or home-relative → use verbatim (expand ~).
+  if (p.startsWith("/") || p.startsWith("~")) {
+    return [path.resolve(expandPath(p))];
+  }
+  // Relative → ordered roots. JINN_HOME wins.
+  return [
+    path.resolve(JINN_HOME, p),
+    path.resolve(os.homedir(), "Projects", p),
+    path.resolve(process.cwd(), p),
+    path.resolve(p),
+  ];
+}
+
+/**
+ * Resolve a requested path to the first candidate that exists as a regular file.
+ * Returns { resolvedPath: null, candidates } when none exist.
+ */
+export function resolveReadPath(requestedPath: string): { resolvedPath: string | null; candidates: string[] } {
+  const candidates = readPathCandidates(requestedPath);
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+        return { resolvedPath: candidate, candidates };
+      }
+    } catch {
+      // unreadable candidate — skip
+    }
+  }
+  return { resolvedPath: null, candidates };
+}
+
+export interface FileReadAssessment { allowed: boolean; reason?: string }
+
+function pathSegments(absPath: string): string[] {
+  return path.resolve(absPath).split(path.sep).filter(Boolean).map((s) => s.toLowerCase());
+}
+
+function realpathOrResolved(absPath: string): string {
+  const resolved = path.resolve(absPath);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function isInsidePath(child: string, parent: string): boolean {
+  const c = path.resolve(child);
+  const p = path.resolve(parent);
+  return c === p || c.startsWith(p + path.sep);
+}
+
+function assessSingleResolvedPath(resolved: string): FileReadAssessment {
+  const base = path.basename(resolved).toLowerCase();
+  const segments = pathSegments(resolved);
+  const home = realpathOrResolved(os.homedir());
+  const jinnHome = realpathOrResolved(JINN_HOME);
+  if (base.startsWith(".env")) return { allowed: false, reason: "Refusing to read environment secret files" };
+  if (/^(?:id_rsa|id_dsa|id_ecdsa|id_ed25519|.*\.pem|.*\.key|auth\.json|credentials(?:\.json)?|token(?:\.json|\.txt)?)$/i.test(base)) {
+    return { allowed: false, reason: "Refusing to read private keys or token files" };
+  }
+  if (isInsidePath(resolved, path.join(home, ".ssh"))) return { allowed: false, reason: "Refusing to read SSH secrets" };
+  if (isInsidePath(resolved, path.join(jinnHome, "secrets"))) return { allowed: false, reason: "Refusing to read Jinn secrets" };
+  if (segments.includes(".claude") && base.startsWith("auth")) return { allowed: false, reason: "Refusing to read Claude auth files" };
+  if (segments.includes(".codex") && base === "auth.json") return { allowed: false, reason: "Refusing to read Codex auth files" };
+  return { allowed: true };
+}
+
+export function assessFileRead(absPath: string, _opts: { authenticated?: boolean } = {}): FileReadAssessment {
+  const requested = path.resolve(expandPath(absPath));
+  const candidates = [requested];
+  const real = realpathOrResolved(requested);
+  if (real !== requested) candidates.push(real);
+  for (const candidate of candidates) {
+    const assessment = assessSingleResolvedPath(candidate);
+    if (!assessment.allowed) return assessment;
+  }
+  return { allowed: true };
+}
+
+export interface FileClassification {
+  mime: string;
+  size: number;
+  /** true when the file is over MAX_READ_SIZE — content is NOT read. */
+  tooLarge: boolean;
+  /** true when detected as binary (by MIME or NUL byte) — content is NOT returned. */
+  binary: boolean;
+  /** utf-8 text content; only present for non-binary, non-too-large files. */
+  content?: string;
+}
+
+/**
+ * Classify an existing file: size cap → binary detection → text read.
+ * Caller must guarantee absPath is a regular file. Pure-ish (touches disk
+ * read-only); unit-tested against temp files.
+ */
+export function classifyFile(absPath: string): FileClassification {
+  const stat = fs.statSync(absPath);
+  const size = stat.size;
+  const mime = mimeFromFilename(absPath);
+
+  if (size > MAX_READ_SIZE) {
+    return { mime, size, tooLarge: true, binary: false };
+  }
+
+  // MIME says binary → don't even read it as text.
+  if (isBinaryMime(mime)) {
+    return { mime, size, tooLarge: false, binary: true };
+  }
+
+  const buffer = fs.readFileSync(absPath);
+  // Scan first 8 KB for a NUL byte → binary.
+  const scanLen = Math.min(buffer.length, 8192);
+  for (let i = 0; i < scanLen; i++) {
+    if (buffer[i] === 0) {
+      return { mime, size, tooLarge: false, binary: true };
+    }
+  }
+
+  return { mime, size, tooLarge: false, binary: false, content: redactText(buffer.toString("utf-8")) };
+}
+
 function readBody(req: HttpRequest): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -169,15 +343,19 @@ interface UploadResult {
 async function saveFile(result: UploadResult, context: ApiContext): Promise<FileMeta> {
   // Always sanitize the filename — it ends up as a path segment on disk and in headers.
   const safeName = sanitizeUploadFilename(result.filename);
+  const customPath = resolveCustomUploadPath(result.customPath);
+  if (result.customPath && (!allowCustomUploadPaths(context) || !customPath)) {
+    throw new FileRequestError("custom upload paths are disabled or outside managed storage");
+  }
 
   // Session-scoped uploads land in date-bucketed dirs; everything else stays in FILES_DIR/<id>/.
   const sessionScoped = !!result.sessionId;
   const storageDir = sessionScoped
     ? uploadDir(result.sessionId!)
     : path.join(FILES_DIR, result.id);
-  fs.mkdirSync(storageDir, { recursive: true });
+  await fs.promises.mkdir(storageDir, { recursive: true });
   const storagePath = path.join(storageDir, safeName);
-  fs.writeFileSync(storagePath, result.buffer);
+  await fs.promises.writeFile(storagePath, result.buffer);
 
   const mimetype = mimeFromFilename(safeName);
   const meta = insertFile({
@@ -186,19 +364,18 @@ async function saveFile(result: UploadResult, context: ApiContext): Promise<File
     size: result.buffer.length,
     mimetype,
     // For session uploads, record the absolute on-disk path so download + path-injection can find it.
-    path: sessionScoped ? storagePath : result.customPath,
+    path: sessionScoped ? storagePath : customPath,
   });
 
   // Write to custom path if provided
-  if (result.customPath) {
-    const expanded = expandPath(result.customPath);
-    fs.mkdirSync(path.dirname(expanded), { recursive: true });
-    fs.writeFileSync(expanded, result.buffer);
+  if (customPath) {
+    await fs.promises.mkdir(path.dirname(customPath), { recursive: true });
+    await fs.promises.writeFile(customPath, result.buffer);
   }
 
   // Open file if requested
-  if (result.open) {
-    const targetPath = result.customPath ? expandPath(result.customPath) : storagePath;
+  if (result.open && allowUploadedFileOpen(context)) {
+    const targetPath = customPath || storagePath;
     const { spawn } = await import("node:child_process");
     spawn("open", [targetPath], { stdio: "ignore", detached: true }).unref();
   }
@@ -257,6 +434,11 @@ async function handleMultipartUpload(req: HttpRequest, res: ServerResponse, cont
         }, context);
         json(res, meta, 201);
       } catch (err) {
+        if (err instanceof FileRequestError) {
+          badRequest(res, err.message);
+          resolve();
+          return;
+        }
         serverError(res, err instanceof Error ? err.message : "Upload failed");
       }
       resolve();
@@ -325,6 +507,9 @@ async function handleJsonUpload(req: HttpRequest, res: ServerResponse, context: 
     }, context);
     json(res, meta, 201);
   } catch (err) {
+    if (err instanceof FileRequestError) {
+      return badRequest(res, err.message);
+    }
     serverError(res, err instanceof Error ? err.message : "Upload failed");
   }
 }
@@ -350,6 +535,7 @@ interface TransferResult {
 }
 
 const MAX_TRANSFER_SIZE = 50 * 1024 * 1024; // 50 MB
+type RemoteConfig = { remotes?: Record<string, { url: string; label?: string; token?: string }> };
 
 /** Resolve a file spec to { buffer, filename, relativePath }. */
 function resolveFileSpec(spec: TransferSpec): { buffer: Buffer; filename: string; relativePath: string | null } {
@@ -393,7 +579,7 @@ function resolveFileSpec(spec: TransferSpec): { buffer: Buffer; filename: string
 }
 
 /** Resolve destination URL — accept raw URL or remote name from config. Whitelist is enforced after resolution. */
-function resolveDestination(destination: string, config: { remotes?: Record<string, { url: string }> }): string {
+function resolveDestination(destination: string, config: RemoteConfig): string {
   // If it looks like a URL, use directly
   if (destination.startsWith("http://") || destination.startsWith("https://")) {
     return destination.replace(/\/+$/, "");
@@ -407,10 +593,31 @@ function resolveDestination(destination: string, config: { remotes?: Record<stri
 }
 
 /** Check if a destination URL is whitelisted in config remotes. */
-function isAllowedRemote(destUrl: string, config: { remotes?: Record<string, { url: string }> }): boolean {
+function isAllowedRemote(destUrl: string, config: RemoteConfig): boolean {
   if (!config.remotes) return false;
   const normalized = destUrl.replace(/\/+$/, "");
   return Object.values(config.remotes).some(r => r.url.replace(/\/+$/, "") === normalized);
+}
+
+export function buildRemoteUploadBody(filename: string, buffer: Buffer, remotePath: string | null | undefined): Record<string, string> {
+  return {
+    filename,
+    content: buffer.toString("base64"),
+    ...(remotePath ? { path: remotePath } : {}),
+  };
+}
+
+function remoteTokenFor(destUrl: string, config: RemoteConfig): string | undefined {
+  const normalized = destUrl.replace(/\/+$/, "");
+  return Object.values(config.remotes ?? {}).find((remote) => remote.url.replace(/\/+$/, "") === normalized)?.token;
+}
+
+export function remoteUploadHeaders(destUrl: string, config: RemoteConfig): Record<string, string> {
+  const token = remoteTokenFor(destUrl, config);
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  };
 }
 
 /** POST /api/files/transfer — send files to a remote gateway. */
@@ -457,18 +664,13 @@ async function handleTransfer(req: HttpRequest, res: ServerResponse, context: Ap
   const results: TransferResult[] = [];
   for (const spec of fileSpecs) {
     try {
-      const { buffer, filename, relativePath } = resolveFileSpec(spec);
-      const targetPath = spec.remotePath || (relativePath ? `~/.jinn/${relativePath}` : null);
-
-      const uploadBody = {
-        filename,
-        content: buffer.toString("base64"),
-        path: targetPath,
-      };
+      const { buffer, filename } = resolveFileSpec(spec);
+      const targetPath = spec.remotePath || null;
+      const uploadBody = buildRemoteUploadBody(filename, buffer, targetPath);
 
       const response = await fetch(`${destUrl}/api/files`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: remoteUploadHeaders(destUrl, config),
         body: JSON.stringify(uploadBody),
       });
 
@@ -739,6 +941,46 @@ export async function handleFilesRequest(
   method: string,
   context: ApiContext,
 ): Promise<boolean> {
+  // GET /api/files/read?path=<path> — read ANY file on disk for inline display.
+  // No allowlist (CEO-waived). Guards: 5 MB size cap + binary detection.
+  if (method === "GET" && pathname === "/api/files/read") {
+    const reqUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    const requested = reqUrl.searchParams.get("path");
+    if (!requested) {
+      badRequest(res, "path query parameter is required");
+      return true;
+    }
+    const { resolvedPath } = resolveReadPath(requested);
+    if (!resolvedPath) {
+      notFound(res);
+      return true;
+    }
+    if (!fs.statSync(resolvedPath).isFile()) {
+      badRequest(res, "Not a file");
+      return true;
+    }
+    const assessment = assessFileRead(resolvedPath, { authenticated: true });
+    if (!assessment.allowed) {
+      json(res, { error: assessment.reason || "File read blocked by security policy" }, 403);
+      return true;
+    }
+    try {
+      const c = classifyFile(resolvedPath);
+      json(res, {
+        path: requested,
+        resolvedPath,
+        mime: c.mime,
+        size: c.size,
+        ...(c.tooLarge ? { tooLarge: true } : {}),
+        ...(c.binary ? { binary: true } : {}),
+        ...(c.content !== undefined ? { content: c.content } : {}),
+      });
+    } catch (err) {
+      serverError(res, err instanceof Error ? err.message : "Read failed");
+    }
+    return true;
+  }
+
   // POST /api/files/transfer — send files to remote gateway
   if (method === "POST" && pathname === "/api/files/transfer") {
     await handleTransfer(req, res, context);

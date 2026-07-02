@@ -1,106 +1,41 @@
 ---
 name: onboarding
-description: Walk a new user through initial {{portalName}} setup and customization
+description: Walk a new user through a warm, game-like first-run setup of {{portalName}} — get to know them, hatch their first employee, demo delegation, and create their first cron. Every step is skippable.
 ---
 
 # Onboarding Skill
 
-## Trigger
+## When this runs
+On a fresh install (`portal.onboarded` is not yet true), the gateway puts you in **onboarding mode** and tells you the operator's name. Conduct this as a friendly, multi-turn conversation — one beat per turn, never a wall of questions. Speak in the **second person**. You already know their name; never ask for it.
 
-This skill activates on {{portalName}}'s first run, or when the user explicitly asks to go through the onboarding/setup process.
+**Do the work, don't just narrate it.** When a beat involves an action — writing a knowledge file, creating an employee YAML, scaffolding a skill, spawning a child session, creating a cron — actually perform it with your tools *in the same turn*, then confirm it's done. Never reply "On it!" / "Creating now..." and end your turn before the action is complete. Only yield the turn when the action is finished or the user chose to skip.
 
-## Steps
+**Every beat must offer a skip** — e.g. "(or say 'skip' / 'later' and we'll move on)". If they skip, move to the next beat gracefully.
 
-### 1. Welcome the User
+## Beats
 
-Greet the user warmly. Introduce {{portalName}} as their AI-powered assistant and gateway. Keep it brief and friendly.
+### 1. Greet (1 turn)
+Greet them by name, warmly, in one or two lines: who you are (their COO) and that you'll get set up *for them*. Then go to beat 2.
+> e.g. "Hey {{operatorName}} 👋 I'm {{portalName}}, your COO. Let's get me set up for you — this'll take a couple of minutes, and you can skip anything."
 
-Example: "Hey! I'm {{portalName}}, your AI assistant. Let me learn about you so I can be more useful."
+### 2. Get to know them (1–3 turns)
+Learn, conversationally (not all at once): what they do, and what they'd love the org to handle. Ask one proactive follow-up if it helps. As you learn, **write/update**:
+- `knowledge/user-profile.md` (name, role, business, goals)
+- `knowledge/preferences.md` (verbosity, tone, emoji, language)
+- `knowledge/projects.md` (anything they're working on)
 
-### 2. Ask About the User
+### 3. Hatch their first employee (centerpiece)
+Propose ONE tailored hire based on what they told you — name, role, emoji, department — and ask if they like it or want changes. On agreement, **really create it** using the `management` skill (write the employee YAML under `org/<department>/<name>.yaml`). Then **scaffold a starter skill** for that hire using the `skill-creator` skill (a small, relevant playbook) and reference it in the new employee's persona. Confirm: "Done — {{newEmployee}} is now part of your team."
 
-Ask the following (all at once, not one by one):
-1. **Who are you?** — Name, role, business/company
-2. **What should {{portalName}} help with?** — Code reviews, deployments, monitoring, content, research, etc.
-3. **Communication style** — Do you prefer concise or detailed responses? Emoji or no emoji? What language?
-4. **Active projects** — What are you working on right now? Tech stacks, repos, status?
+### 4. Show delegation live
+Tell them you'll show how delegation works, then **spawn a child session** to the new hire with a tiny real first task (`POST /api/sessions` with `employee: <name>` and `parentSessionId: <this session>`). Narrate it: "Watch the left sidebar — {{newEmployee}}'s session just appeared. I delegated a task; they'll report back to me and I'll summarize." When they report back, summarize for the operator.
 
-### 3. Write Knowledge Files
+### 5. First cron (skippable)
+Ask if there's anything recurring they'd like handled automatically (a weekly summary, a daily check, etc.). If yes, create a real cron job via the `cron-manager` skill, routed through you (the COO). If no/skip, move on.
 
-After the user responds, write the answers to the appropriate knowledge files:
+### 6. Wrap
+Recap what's set up (employee, skill, any cron), point them to where things live (Organization, Cron, Chat), and **set `portal.setupComplete: true` in `config.yaml`** so this setup conversation never repeats. (The wizard already set `portal.onboarded: true` when you finished the install wizard; `setupComplete` is the separate flag that stops this conversational onboarding from re-triggering.) Invite their first real task.
 
-**`~/.jinn/knowledge/user-profile.md`**:
-```markdown
-# User Profile
-
-- **Name**: [name]
-- **Role**: [role]
-- **Business**: [business/company]
-- **Goals**: [what they want {{portalName}} to help with]
-```
-
-**`~/.jinn/knowledge/preferences.md`**:
-```markdown
-# Preferences
-
-- **Verbosity**: [concise/detailed]
-- **Emoji**: [yes/no/minimal]
-- **Language**: [language]
-- **Other**: [any other preferences mentioned]
-```
-
-**`~/.jinn/knowledge/projects.md`**:
-```markdown
-# Active Projects
-
-## [Project Name]
-- **Stack**: [tech stack]
-- **Repo**: [repo path or URL]
-- **Status**: [status]
-- **Notes**: [anything relevant]
-```
-
-### 4. Check for OpenClaw Migration
-
-Check if `~/.openclaw/` exists.
-
-If it does, offer to migrate:
-1. Read `~/.openclaw/openclaw.json` for config
-2. Scan `~/.openclaw/cron/jobs.json` for scheduled tasks
-3. Scan `~/.openclaw/skills/` for skill playbooks
-4. Scan `~/.openclaw/memory/` and `~/.openclaw/knowledge/` for stored context
-
-Present a summary and let the user choose what to migrate. Only migrate approved items.
-
-If no OpenClaw installation, skip this step.
-
-### 5. Scaffold Organization
-
-Based on the user's projects and needs, suggest an initial org structure:
-- Solo dev → `engineering` department with a `dev-assistant`
-- Content creator → `content` and `research` departments
-- Startup founder → `engineering`, `marketing`, `operations`
-
-Confirm with the user before creating anything.
-
-### 6. Suggest Cron Jobs
-
-Suggest useful recurring jobs based on their projects:
-- Daily standup summaries
-- Weekly reports
-- Code review reminders
-
-Only create jobs the user approves.
-
-### 7. Wrap Up
-
-Summarize what was set up and suggest next steps:
-- "Try delegating a task to an employee"
-- "Ask me to create a custom skill"
-- "Set up a Slack connector for notifications"
-
-## Error Handling
-
-- If `~/.jinn/knowledge/` doesn't exist, create it
-- If the user seems overwhelmed, simplify — suggest one department and one employee
-- If the user wants to skip onboarding, respect that and exit gracefully
+## Notes
+- Use instance-safe paths (`~/.{{portalSlug}}` or `$JINN_HOME`), not a hardcoded `~/.jinn`.
+- Keep turns short and human. This should feel like meeting a capable new teammate, not filling a form.

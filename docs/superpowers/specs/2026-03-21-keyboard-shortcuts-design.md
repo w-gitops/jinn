@@ -1,4 +1,4 @@
-# ICI-424: Linear-style Keyboard Shortcuts — Design Spec
+# ICI-424: Linear-style Keyboard Shortcuts - Design Spec
 
 ## Overview
 
@@ -7,9 +7,9 @@ Add a centralized keyboard shortcut system to the Jinn web dashboard chat page, 
 ## Architecture
 
 ```
-hooks/use-keyboard-shortcuts.ts     — Core hook: shortcut registry + keydown listener + safety guards
-components/chat/shortcut-overlay.tsx — Hint overlay panel (bottom-right, toggled with ?)
-app/chat/page.tsx                   — Wires shortcuts to page actions, renders overlay
+hooks/use-keyboard-shortcuts.ts     - Core hook: shortcut registry + keydown listener + safety guards
+components/chat/shortcut-overlay.tsx - Hint overlay panel (bottom-right, toggled with ?)
+app/chat/page.tsx                   - Wires shortcuts to page actions, renders overlay
 ```
 
 ### Why a hook (not Context/Provider)
@@ -35,16 +35,16 @@ interface ShortcutDef {
 
 | Key | Modifiers | Action | Category |
 |-----|-----------|--------|----------|
-| `n` | — | New chat (`handleNewChat`) | Actions |
-| `j` | — | Select next session in sidebar (wraps) | Navigation |
-| `k` | — | Select previous session in sidebar (wraps) | Navigation |
-| `e` | — | Cycle to next employee group in sidebar (wraps) | Navigation |
-| `Backspace` | — | Open delete confirmation dialog | Actions |
-| `Delete` | — | Open delete confirmation dialog | Actions |
-| `c` | — | Copy chat messages to clipboard + show toast | Actions |
-| `Escape` | — | Close overlay / close modals | Navigation |
-| `/` | — | Focus sidebar search input (via `id="chat-search"`) | Actions |
-| `?` | — | Toggle shortcut hints overlay | Help |
+| `n` | - | New chat (`handleNewChat`) | Actions |
+| `j` | - | Select next session in sidebar (wraps) | Navigation |
+| `k` | - | Select previous session in sidebar (wraps) | Navigation |
+| `e` | - | Cycle to next employee group in sidebar (wraps) | Navigation |
+| `Backspace` | - | Open delete confirmation dialog | Actions |
+| `Delete` | - | Open delete confirmation dialog | Actions |
+| `c` | - | Copy chat messages to clipboard + show toast | Actions |
+| `Escape` | - | Close overlay / close modals | Navigation |
+| `/` | - | Focus sidebar search input (via `id="chat-search"`) | Actions |
+| `?` | - | Toggle shortcut hints overlay | Help |
 | `w` | `meta` | Close current tab | Actions |
 | `[` | `meta`, `shift` | Previous tab | Navigation |
 | `]` | `meta`, `shift` | Next tab | Navigation |
@@ -71,7 +71,7 @@ function matches(e: KeyboardEvent, shortcut: ShortcutDef): boolean
 
 If `document.activeElement` matches `input`, `textarea`, or `[contenteditable]`:
 - **Block** all non-modifier shortcuts (single-key like N, J, K, etc.)
-- **Allow** modifier shortcuts (Cmd+W, Cmd+Shift+[, etc.) — these don't conflict with typing
+- **Allow** modifier shortcuts (Cmd+W, Cmd+Shift+[, etc.) - these don't conflict with typing
 - **Exception**: `Escape` always fires (to blur the input)
 
 ### Modal Guard
@@ -208,8 +208,8 @@ Messages are local state inside ChatPane and not accessible from the page compon
 
 ### ChatSidebar Changes
 - Add `id="chat-search"` to the search input element (for `/` shortcut focus)
-- Add `onOrderComputed` callback prop — called with flat session ID list whenever render order changes
-- Add `onEmployeeOrderComputed` callback prop — called with employee name list in display order
+- Add `onOrderComputed` callback prop - called with flat session ID list whenever render order changes
+- Add `onEmployeeOrderComputed` callback prop - called with employee name list in display order
 
 ### Safety: No-op conditions
 - `Backspace`/`Delete`: no-op when `selectedId` is null (set `enabled: false` dynamically)

@@ -147,6 +147,10 @@ export class WhatsAppConnector implements Connector {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    for (const interval of this.typingIntervals.values()) {
+      clearInterval(interval);
+    }
+    this.typingIntervals.clear();
     await this.sock?.end(undefined);
     logger.info("WhatsApp connector stopped");
   }
@@ -189,9 +193,12 @@ export class WhatsAppConnector implements Connector {
     if (!this.sock || this.connectionStatus !== "running") return;
     try {
       const chunks = formatResponse(text);
+      let lastId: string | undefined;
       for (const chunk of chunks) {
-        await this.sock.sendMessage(target.channel, { text: chunk });
+        const result = await this.sock.sendMessage(target.channel, { text: chunk });
+        if (result?.key?.id) lastId = result.key.id;
       }
+      return lastId;
     } catch (err) {
       logger.error(`WhatsApp replyMessage error: ${err instanceof Error ? err.message : err}`);
     }

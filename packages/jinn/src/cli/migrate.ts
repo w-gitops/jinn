@@ -70,7 +70,11 @@ function stampVersion(version: string): void {
   if (!config.jinn) config.jinn = {};
   config.jinn.version = version;
 
-  fs.writeFileSync(CONFIG_PATH, yaml.dump(config, { lineWidth: -1 }), "utf-8");
+  // Atomic write: the live gateway hot-reloads config.yaml, so a partial write
+  // would corrupt it. Write to a tmp file in the same directory, then rename.
+  const tmpPath = `${CONFIG_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, yaml.dump(config, { lineWidth: -1 }), "utf-8");
+  fs.renameSync(tmpPath, CONFIG_PATH);
 }
 
 /**
@@ -80,12 +84,21 @@ function stampVersion(version: string): void {
 function buildMigrateArgs(engine: string, prompt: string): string[] {
   switch (engine) {
     case "codex":
+      // `codex exec` is Codex's own non-interactive mode (not a claude `-p`).
       return ["exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", prompt];
-    case "gemini":
-      return ["--yolo", prompt];
+    case "grok":
+      return ["--no-auto-update", "--always-approve", "-p", prompt];
     case "claude":
     default:
-      return ["-p", "--dangerously-skip-permissions", prompt];
+      // No `-p`: launch the interactive claude TUI (cc_entrypoint=cli, subsidy-safe)
+      // instead of the headless Agent-SDK `--print` pool. `jinn migrate` is an
+      // operator-run, supervised one-shot launched from a real terminal, so the
+      // inherited TTY (stdio: "inherit") renders the TUI and the operator watches
+      // the migration apply. Trade-off vs `-p`: the TUI does not self-exit after
+      // the turn — the operator closes it (e.g. /exit) once the migration looks
+      // complete. Acceptable for a rare maintenance command, and it keeps the
+      // call fully subsidy-safe with no trace of `-p`.
+      return ["--dangerously-skip-permissions", prompt];
   }
 }
 
@@ -185,9 +198,13 @@ export async function runMigrate(opts: { check?: boolean; auto?: boolean }): Pro
     ].join("\n");
 
     const args = buildMigrateArgs(defaultEngine, prompt);
-    console.log(`${DIM}Engine: ${defaultEngine} (${engineConfig.bin})${RESET}\n`);
+    // `bin` may be absent for engines with optional config (e.g. antigravity);
+    // fall back to the engine name so spawn resolves via PATH (or fails clearly).
+    // Note: antigravity (`agy`) has no headless mode, so migrate is unsupported there.
+    const migrateBin = engineConfig.bin ?? defaultEngine;
+    console.log(`${DIM}Engine: ${defaultEngine} (${migrateBin})${RESET}\n`);
 
-    execFileSync(engineConfig.bin, args, {
+    execFileSync(migrateBin, args, {
       stdio: "inherit",
       cwd: JINN_HOME,
     });

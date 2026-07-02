@@ -23,9 +23,12 @@ import type { Employee, Engine, EngineResult, JinnConfig, Session, StreamDelta }
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
+import { effortLevelsForModel, engineAvailable, type EngineName } from "../shared/models.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
 import { recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { getSession, getMessages, updateSession } from "./registry.js";
+
+const WAIT_CANCEL_POLL_MS = 5000;
 
 /** What detectRateLimit returned for the original turn. */
 export interface RateLimitInfo {
@@ -162,7 +165,7 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
   if (session.engine === "claude" && strategy === "fallback") {
     const fallbackName = config.sessions?.fallbackEngine ?? "codex";
     const fallbackEngine = engines.get(fallbackName);
-    if (fallbackEngine) {
+    if (fallbackEngine && engineAvailable(config, fallbackName as EngineName)) {
       const { resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
       const until = resumeAt ?? new Date(Date.now() + 6 * 60 * 60_000);
       const syncSince = new Date().toISOString();
@@ -197,7 +200,12 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
       });
 
       const fallbackConfig = config.engines.codex;
-      const fallbackEffort = resolveEffort(fallbackConfig, session, employee);
+      const fallbackEffort = resolveEffort(
+        fallbackConfig,
+        session,
+        employee,
+        effortLevelsForModel(config, fallbackName, fallbackConfig.model),
+      );
       const codexResume = typeof engineSessions.codex === "string" ? (engineSessions.codex as string) : undefined;
       const history = getMessages(session.id)
         .filter((m) => m.role === "user" || m.role === "assistant")
@@ -262,7 +270,9 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
 
   // Keep lastActivity fresh while waiting (UI / status endpoints).
   const heartbeat = setInterval(() => {
-    updateSession(session.id, { status: "waiting", lastActivity: new Date().toISOString() });
+    if (getSession(session.id)?.status === "waiting") {
+      updateSession(session.id, { status: "waiting", lastActivity: new Date().toISOString() });
+    }
   }, 60_000);
 
   try {
@@ -270,7 +280,13 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
     let nextDelayMs = delayMs;
 
     while (Date.now() < deadlineMs) {
-      await new Promise<void>((r) => setTimeout(r, nextDelayMs));
+      const stillWaiting = await waitWhileSessionWaiting(session.id, nextDelayMs);
+      if (!stillWaiting) {
+        const currentSession = getSession(session.id);
+        logger.info(`Session ${session.id} stopped while waiting for usage reset (status=${currentSession?.status ?? "deleted"})`);
+        await hooks.onCancelled?.();
+        return { kind: "cancelled" };
+      }
       attempt++;
 
       // Check if session was stopped while waiting. We set status:"waiting"
@@ -345,4 +361,16 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
 
 function defaultRecord(rateLimit: RateLimitInfo): void {
   recordClaudeRateLimit(rateLimit.resetsAt);
+}
+
+async function waitWhileSessionWaiting(sessionId: string, delayMs: number): Promise<boolean> {
+  const end = Date.now() + Math.max(0, delayMs);
+  while (Date.now() < end) {
+    const currentSession = getSession(sessionId);
+    if (!currentSession || currentSession.status !== "waiting") return false;
+    const sleepMs = Math.min(WAIT_CANCEL_POLL_MS, end - Date.now());
+    if (sleepMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, sleepMs));
+  }
+  const currentSession = getSession(sessionId);
+  return !!currentSession && currentSession.status === "waiting";
 }

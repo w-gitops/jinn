@@ -3,7 +3,6 @@
  *
  * - Claude: uses --fork-session flag with --print mode
  * - Codex: copies the JSONL session file with a new UUID
- * - Gemini: copies the JSON session file with a new UUID
  */
 
 import { execFileSync } from "node:child_process";
@@ -13,6 +12,7 @@ import os from "node:os";
 import * as pty from "node-pty";
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "../shared/logger.js";
+import { resolveBin } from "../shared/resolve-bin.js";
 import type { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
 
 export interface ForkResult {
@@ -52,7 +52,7 @@ export interface ForkClaudeOpts {
  *   (no `-p`) and polls the project's transcript directory for the new jsonl to
  *   discover the new session id. Bills as `cc_entrypoint=cli`.
  */
-export function forkClaudeSession(opts: ForkClaudeOpts): ForkResult {
+export async function forkClaudeSession(opts: ForkClaudeOpts): Promise<ForkResult> {
   const { engineSessionId, cwd, interactive } = opts;
 
   if (interactive) {
@@ -61,7 +61,7 @@ export function forkClaudeSession(opts: ForkClaudeOpts): ForkResult {
 
   logger.info(`Forking Claude session ${engineSessionId} in ${cwd} (headless)`);
 
-  const result = execFileSync("claude", [
+  const result = execFileSync(resolveBin("claude"), [
     "--resume", engineSessionId,
     "--fork-session",
     "--print",
@@ -90,11 +90,11 @@ export function forkClaudeSession(opts: ForkClaudeOpts): ForkResult {
  * in a PTY (no `-p`), discover the new session id via transcript-dir polling,
  * then kill the spawn. Bills as `cc_entrypoint=cli`.
  */
-function forkClaudeSessionInteractive(
+async function forkClaudeSessionInteractive(
   engineSessionId: string,
   cwd: string,
   ctx: InteractiveForkCtx,
-): ForkResult {
+): Promise<ForkResult> {
   logger.info(`Forking Claude session ${engineSessionId} in ${cwd} (interactive)`);
 
   // 1. Release the source PTY (best-effort — safe when nothing is warm).
@@ -105,15 +105,13 @@ function forkClaudeSessionInteractive(
   }
 
   // Tiny settle delay so the transcript lock from the previous process is gone
-  // before we spawn the fork. Synchronous busy-wait to keep the fork API sync.
-  const settleUntil = Date.now() + 150;
-  // eslint-disable-next-line no-empty
-  while (Date.now() < settleUntil) {}
+  // before we spawn the fork. Async sleep — never block the gateway event loop.
+  await sleep(150);
 
   const projectDir = claudeProjectDir(cwd);
   const spawnedAfter = Date.now();
 
-  const bin = ctx.bin || "claude";
+  const bin = resolveBin("claude", ctx.bin);
   const args = [
     "--resume", engineSessionId,
     "--fork-session",
@@ -139,7 +137,7 @@ function forkClaudeSessionInteractive(
 
   let newSessionId: string | null = null;
   try {
-    newSessionId = findNewJsonlSinceSync(projectDir, spawnedAfter, 60_000);
+    newSessionId = await findNewJsonlSince(projectDir, spawnedAfter, 60_000);
   } finally {
     // Always kill the interactive TUI — it doesn't exit on its own after the
     // one-turn fork-prompt is submitted.
@@ -154,18 +152,31 @@ function forkClaudeSessionInteractive(
   return { engineSessionId: newSessionId };
 }
 
-/** Translate a cwd into the Claude project directory key (`/` → `-`). */
-function claudeProjectDir(cwd: string): string {
-  const key = cwd.replace(/\//g, "-");
+/**
+ * Translate a cwd into the Claude project directory key. Claude Code slugifies
+ * the cwd by replacing every non-alphanumeric character with "-" (so `~/.jinn`
+ * → `…--jinn`, double-dash; spaces/underscores/unicode become "-" too). Must
+ * match `findTranscriptForSession` in claude-interactive.ts — otherwise the
+ * fork polls a non-existent directory and times out for any cwd containing a
+ * dot (every COO/.jinn session).
+ */
+export function claudeProjectDir(cwd: string): string {
+  const key = cwd.replace(/[^a-zA-Z0-9]/g, "-");
   return path.join(os.homedir(), ".claude", "projects", key);
+}
+
+/** Async sleep — yields the event loop instead of busy-spinning. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
  * Poll a Claude project transcript directory for a new `.jsonl` file whose
  * mtime is after `sinceMs`. Returns the basename without `.jsonl` (the session
- * id) or `null` on timeout. Synchronous polling with 250ms beats.
+ * id) or `null` on timeout. Async polling with 250ms beats — never blocks the
+ * gateway event loop (a chat duplicate would otherwise freeze all WS/HTTP/cron).
  */
-function findNewJsonlSinceSync(projectDir: string, sinceMs: number, timeoutMs: number): string | null {
+async function findNewJsonlSince(projectDir: string, sinceMs: number, timeoutMs: number): Promise<string | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (fs.existsSync(projectDir)) {
@@ -190,12 +201,7 @@ function findNewJsonlSinceSync(projectDir: string, sinceMs: number, timeoutMs: n
         }
       } catch { /* keep polling */ }
     }
-    // Synchronous 250ms sleep via Atomics.wait on a SharedArrayBuffer would be
-    // cleaner, but a tiny busy-loop using a sync child of `false` is overkill.
-    // execFileSync of `sleep` works on darwin/linux and keeps this function sync.
-    const sleepUntil = Date.now() + 250;
-    // eslint-disable-next-line no-empty
-    while (Date.now() < sleepUntil) {}
+    await sleep(250);
   }
   return null;
 }
@@ -227,7 +233,14 @@ export function forkCodexSession(engineSessionId: string): ForkResult {
   // Read source, rewrite session_meta (first line) with new UUID
   const lines = fs.readFileSync(sourceFile, "utf-8").split("\n");
   if (lines.length > 0 && lines[0].trim()) {
-    const meta = JSON.parse(lines[0]);
+    let meta: { payload?: { id?: string }; timestamp?: string };
+    try {
+      meta = JSON.parse(lines[0]);
+    } catch (err) {
+      throw new Error(
+        `Codex session ${engineSessionId}: first line of ${sourceFile} is not valid JSON — ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     if (meta.payload?.id) {
       meta.payload.id = newUuid;
       meta.timestamp = now.toISOString();
@@ -241,61 +254,22 @@ export function forkCodexSession(engineSessionId: string): ForkResult {
 }
 
 /**
- * Fork a Gemini CLI session by copying its JSON file with a new UUID.
- * Returns the new engine session ID.
- */
-export function forkGeminiSession(engineSessionId: string): ForkResult {
-  logger.info(`Forking Gemini session ${engineSessionId}`);
-
-  const geminiTmp = path.join(os.homedir(), ".gemini", "tmp");
-  const sourceFile = findGeminiSessionFile(geminiTmp, engineSessionId);
-  if (!sourceFile) {
-    throw new Error(`Gemini session file not found for ${engineSessionId}`);
-  }
-
-  const data = JSON.parse(fs.readFileSync(sourceFile, "utf-8"));
-  const newUuid = uuidv4();
-  const now = new Date();
-  const ts = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}T${String(now.getUTCHours()).padStart(2, "0")}-${String(now.getUTCMinutes()).padStart(2, "0")}`;
-
-  // Update session ID and message IDs
-  data.sessionId = newUuid;
-  data.startTime = now.toISOString();
-  data.lastUpdated = now.toISOString();
-  if (Array.isArray(data.messages)) {
-    for (const msg of data.messages) {
-      if (msg.id) msg.id = uuidv4();
-    }
-  }
-
-  // Write to same chats directory as the source
-  const chatsDir = path.dirname(sourceFile);
-  const destFile = path.join(chatsDir, `session-${ts}-${newUuid.slice(0, 8)}.json`);
-  fs.writeFileSync(destFile, JSON.stringify(data, null, 2));
-
-  logger.info(`Gemini fork successful: ${engineSessionId} → ${newUuid} (${destFile})`);
-  return { engineSessionId: newUuid };
-}
-
-/**
  * Fork an engine session based on engine type.
  *
  * For Claude, the optional `interactive` ctx routes the fork through a PTY
- * (no `-p`) so it bills as `cc_entrypoint=cli`. Codex/Gemini ignore it.
+ * (no `-p`) so it bills as `cc_entrypoint=cli`. Codex ignores it.
  */
-export function forkEngineSession(
+export async function forkEngineSession(
   engine: string,
   engineSessionId: string,
   cwd: string,
   interactive?: InteractiveForkCtx,
-): ForkResult {
+): Promise<ForkResult> {
   switch (engine) {
     case "claude":
       return forkClaudeSession({ engineSessionId, cwd, interactive });
     case "codex":
       return forkCodexSession(engineSessionId);
-    case "gemini":
-      return forkGeminiSession(engineSessionId);
     default:
       throw new Error(`Unsupported engine for fork: ${engine}`);
   }
@@ -327,25 +301,3 @@ function findCodexSessionFile(root: string, sessionId: string): string | null {
   return null;
 }
 
-function findGeminiSessionFile(tmpRoot: string, sessionId: string): string | null {
-  // Gemini sessions: ~/.gemini/tmp/<project-hash>/chats/session-<ts>-<id-prefix>.json
-  // The filename only has the first 8 chars of the UUID, so we need to read the JSON to match
-  if (!fs.existsSync(tmpRoot)) return null;
-  const prefix = sessionId.slice(0, 8);
-  for (const projHash of fs.readdirSync(tmpRoot)) {
-    const chatsDir = path.join(tmpRoot, projHash, "chats");
-    if (!fs.existsSync(chatsDir) || !fs.statSync(chatsDir).isDirectory()) continue;
-    for (const file of fs.readdirSync(chatsDir)) {
-      if (!file.endsWith(".json")) continue;
-      // Quick check: filename contains the UUID prefix
-      if (file.includes(prefix)) {
-        const filePath = path.join(chatsDir, file);
-        try {
-          const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-          if (data.sessionId === sessionId) return filePath;
-        } catch { /* skip corrupted files */ }
-      }
-    }
-  }
-  return null;
-}

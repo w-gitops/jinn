@@ -31,12 +31,18 @@ export function BreadcrumbProvider({ children }: { children: ReactNode }) {
 
 export function useBreadcrumbs(items?: BreadcrumbItem[]) {
   const ctx = useContext(BreadcrumbContext)
+  const { setItems } = ctx
 
   // Serialize items for stable dependency comparison
   const itemsKey = items ? JSON.stringify(items) : ''
 
   useEffect(() => {
-    if (items) ctx.setItems(items)
+    if (!items) return
+    setItems(items)
+    // Clear on unmount (or when this page's items change) so a previous page's
+    // title (e.g. "Organization") never persists into a route that sets no
+    // breadcrumbs of its own. setItems is a stable useState setter.
+    return () => setItems([])
   }, [itemsKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return ctx

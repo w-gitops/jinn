@@ -85,7 +85,7 @@ describe("migrate: AI session launcher", () => {
     expect(typeof (options as any).cwd).toBe("string");
   });
 
-  it("should pass -p flag with the migration prompt", async () => {
+  it("should NOT pass -p (subsidy-safe interactive spawn, no headless print mode)", async () => {
     const { runMigrate } = await import("../migrate.js");
 
     await runMigrate({});
@@ -95,6 +95,24 @@ describe("migrate: AI session launcher", () => {
     const [_bin, args] = mockExecFileSync.mock.calls[0];
     const argsArray = args as string[];
 
-    expect(argsArray).toContain("-p");
+    // `jinn migrate` (claude) now launches the interactive TUI (cc_entrypoint=cli)
+    // instead of the headless `-p`/`--print` Agent-SDK pool.
+    expect(argsArray).not.toContain("-p");
+    expect(argsArray).not.toContain("--print");
+  });
+
+  it("should still pass --dangerously-skip-permissions and the migration prompt", async () => {
+    const { runMigrate } = await import("../migrate.js");
+
+    await runMigrate({});
+
+    expect(mockExecFileSync).toHaveBeenCalled();
+
+    const [_bin, args] = mockExecFileSync.mock.calls[0];
+    const argsArray = args as string[];
+
+    expect(argsArray).toContain("--dangerously-skip-permissions");
+    // The prompt is the last positional arg and references the migration.
+    expect(argsArray[argsArray.length - 1]).toContain("migration");
   });
 });

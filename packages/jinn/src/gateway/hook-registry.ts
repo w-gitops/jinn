@@ -12,16 +12,32 @@ export interface HookPayload {
 }
 
 type HookListener = (h: HookPayload) => void;
+type UnclaimedHookHandler = (jinnSessionId: string, h: HookPayload) => void;
 interface Buffered { payload: HookPayload; at: number; }
 
 export class HookRegistry {
   private listeners = new Map<string, HookListener>();
   private buffer = new Map<string, Buffered[]>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
-  constructor(private ttlMs = 30_000, sweepIntervalMs = 5_000) {
+  /** Fallback consumer for Stop hooks no turn ever claims (PTY-native turns
+   *  typed straight into the xterm view, or a Stop arriving past the late-
+   *  recovery window). Set once by the gateway. */
+  private unclaimedHandler: UnclaimedHookHandler | undefined;
+  /** Per-session debounce timers for the unclaimed-Stop fallback. */
+  private unclaimedTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  constructor(private ttlMs = 30_000, sweepIntervalMs = 5_000, private unclaimedDelayMs = 2_000) {
     this.sweepTimer = setInterval(() => this.sweep(), sweepIntervalMs);
     // Don't keep the event loop alive for the sweep timer.
     this.sweepTimer.unref?.();
+  }
+
+  /** Install the fallback consumer for unclaimed Stop hooks. A Stop that lands
+   *  with no registered listener is buffered as usual AND starts/refreshes a
+   *  short timer; if the session is still unclaimed when it fires, the handler
+   *  receives the Stop (and the consumed Stops leave the buffer so a later
+   *  register() can't replay them into a NEW turn's resolver). */
+  setUnclaimedHookHandler(handler: UnclaimedHookHandler): void {
+    this.unclaimedHandler = handler;
   }
 
   register(jinnSessionId: string, listener: HookListener): void {
@@ -34,6 +50,9 @@ export class HookRegistry {
       );
     }
     this.listeners.set(jinnSessionId, listener);
+    // A turn claimed the session — the buffered events are its, not the
+    // unclaimed-fallback's.
+    this.cancelUnclaimedTimer(jinnSessionId);
     const pending = this.buffer.get(jinnSessionId);
     if (pending) {
       this.buffer.delete(jinnSessionId);
@@ -42,6 +61,16 @@ export class HookRegistry {
         if (now - b.at <= this.ttlMs) listener(b.payload);
       }
     }
+  }
+
+  /**
+   * True if a live listener is registered for this session. The interactive PTY
+   * engine registers a listener for the duration of a turn; headless `claude -p`
+   * sessions do not. The command gate uses this as the "interactive" signal:
+   * an interactive session can render an "ask", a headless one collapses it to deny.
+   */
+  hasListener(jinnSessionId: string): boolean {
+    return this.listeners.has(jinnSessionId);
   }
 
   unregister(jinnSessionId: string): void {
@@ -55,6 +84,60 @@ export class HookRegistry {
     const arr = this.buffer.get(jinnSessionId) ?? [];
     arr.push({ payload, at: Date.now() });
     this.buffer.set(jinnSessionId, arr);
+    // Unclaimed Stop with real output → arm/refresh the fallback timer. The
+    // delay protects the registration race at turn start: an in-flight run()
+    // registers its listener BEFORE the prompt is even written to the PTY
+    // (claude-interactive.ts run(): register → inject/spawn), so a Stop
+    // belonging to a gateway-run turn can never sit unclaimed for long — by the
+    // time the timer fires, "still unclaimed" means no run() owns this session
+    // (a PTY-native turn) or the Stop arrived past the late-recovery window.
+    if (
+      this.unclaimedHandler &&
+      payload.hook_event_name === "Stop" &&
+      String(payload.last_assistant_message ?? "").trim()
+    ) {
+      this.armUnclaimedTimer(jinnSessionId);
+    }
+  }
+
+  private armUnclaimedTimer(jinnSessionId: string): void {
+    this.cancelUnclaimedTimer(jinnSessionId);
+    const timer = setTimeout(() => this.fireUnclaimed(jinnSessionId), this.unclaimedDelayMs);
+    timer.unref?.();
+    this.unclaimedTimers.set(jinnSessionId, timer);
+  }
+
+  private cancelUnclaimedTimer(jinnSessionId: string): void {
+    const t = this.unclaimedTimers.get(jinnSessionId);
+    if (t) {
+      clearTimeout(t);
+      this.unclaimedTimers.delete(jinnSessionId);
+    }
+  }
+
+  /** Timer expired with the session still unclaimed: hand the buffered Stop(s)
+   *  to the fallback handler. Consumed Stops are REMOVED from the buffer so a
+   *  later register() can't drain a stale Stop into a fresh turn's resolver.
+   *  Only the newest Stop is delivered — the handler syncs the transcript tail
+   *  from an anchor, so intermediate Stops are covered by the same sync. */
+  private fireUnclaimed(jinnSessionId: string): void {
+    this.unclaimedTimers.delete(jinnSessionId);
+    if (!this.unclaimedHandler) return;
+    if (this.listeners.has(jinnSessionId)) return; // claimed in the meantime
+    const arr = this.buffer.get(jinnSessionId);
+    if (!arr || arr.length === 0) return;
+    const isConsumable = (b: Buffered) =>
+      b.payload.hook_event_name === "Stop" && String(b.payload.last_assistant_message ?? "").trim() !== "";
+    const stops = arr.filter(isConsumable);
+    if (stops.length === 0) return;
+    const rest = arr.filter((b) => !isConsumable(b));
+    if (rest.length === 0) this.buffer.delete(jinnSessionId);
+    else this.buffer.set(jinnSessionId, rest);
+    try {
+      this.unclaimedHandler(jinnSessionId, stops[stops.length - 1].payload);
+    } catch (err) {
+      console.warn(`[HookRegistry] unclaimed hook handler threw for ${jinnSessionId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** Drop buffered entries whose `at` is older than ttlMs. */
@@ -73,5 +156,7 @@ export class HookRegistry {
       clearInterval(this.sweepTimer);
       this.sweepTimer = null;
     }
+    for (const t of this.unclaimedTimers.values()) clearTimeout(t);
+    this.unclaimedTimers.clear();
   }
 }

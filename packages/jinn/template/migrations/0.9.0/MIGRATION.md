@@ -46,7 +46,7 @@ Update `jinn.version` in `config.yaml` to `"0.9.0"`.
 - Each instance gets its own channel mapping and credentials
 
 ### Homebrew Formula (PR #33)
-- `brew install hristo2612/tap/jinn` now works
+- Homebrew tap installation now works
 - Includes Node.js dependency management
 
 ## Employee YAML changes
@@ -60,11 +60,11 @@ New optional fields:
 
 Example:
 ```yaml
-name: jimmy-dev
-displayName: Jimmy Dev
+name: backend-dev
+displayName: Backend Dev
 rank: senior
 department: platform
-reportsTo: jimbo
+reportsTo: {{portalSlug}}
 provides:
   - name: code-review
     description: "Review PRs and provide feedback"

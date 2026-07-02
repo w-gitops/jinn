@@ -11,9 +11,9 @@ This skill activates when the user sends `/sync @employee-name`. It pulls in the
 
 ## How It Works
 
-You fetch the conversation yourself using the gateway API. No magic injection — you're in control.
+You fetch the conversation yourself using the gateway API. No magic injection - you're in control.
 
-**Gateway URL**: Use the gateway URL from the "Current configuration" section of your system prompt (e.g., `http://127.0.0.1:7777`). Do not hardcode it — it may vary.
+**Gateway URL**: Use the gateway URL from the "Current configuration" section of your system prompt (e.g., `http://127.0.0.1:7777`). Do not hardcode it - it may vary.
 
 ### Steps
 
@@ -41,15 +41,15 @@ curl -s $GATEWAY_URL/api/sessions/SESSION_ID | jq '.messages'
 
 This returns all messages with `role` and `content` fields. Read through them to understand what was discussed.
 
-4. **Respond naturally** — summarize, highlight key points, offer next steps.
+4. **Respond naturally** - summarize, highlight key points, offer next steps.
 
 ## Your Behavior
 
 After fetching and reading the conversation:
 
-1. **Summarize** the key points — what was discussed, what decisions were made, what work was done
+1. **Summarize** the key points - what was discussed, what decisions were made, what work was done
 2. **Highlight** any action items, blockers, or open questions
-3. **Offer** to take next steps — continue the work, relay instructions, or loop in other employees
+3. **Offer** to take next steps - continue the work, relay instructions, or loop in other employees
 
 ## Edge Cases
 
@@ -64,4 +64,4 @@ User: `/sync @jinn-dev`
 You: *[fetches sessions via API, finds jinn-dev's latest session, reads messages]* "Here's what happened in the latest conversation with @jinn-dev: [summary]. Want me to follow up on anything?"
 
 User: `/sync @content-writer`
-You: *[fetches via API]* "Looking at the recent chat with @content-writer — they finished the blog draft and are waiting for review. Should I ask them to make revisions, or is it ready to publish?"
+You: *[fetches via API]* "Looking at the recent chat with @content-writer - they finished the blog draft and are waiting for review. Should I ask them to make revisions, or is it ready to publish?"

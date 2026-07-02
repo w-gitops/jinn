@@ -1,7 +1,13 @@
 /**
  * Clean raw chat text for display as a preview label.
  * Strips @mentions, #NNN prefixes, markdown syntax, and capitalizes.
+ *
+ * Markdown removal is delegated to the shared `stripMarkdown` (also used by the
+ * Talk transcript). The @mention/#NNN stripping and capitalization are
+ * preview-specific and stay here.
  */
+import { stripMarkdown } from "./strip-markdown"
+
 const CACHE = new Map<string, string>()
 const MAX = 200
 
@@ -12,22 +18,9 @@ export function cleanPreview(raw: string): string {
   text = text.replace(/@[\w-]+/g, "")
   // Strip #NNN session number prefixes
   text = text.replace(/^#\d+\s*/g, "")
-  // Strip markdown headings
-  text = text.replace(/^#{1,6}\s+/gm, "")
-  // Strip bold/italic markers
-  text = text.replace(/\*{1,3}|_{1,3}/g, "")
-  // Strip list markers (-, *, •, numbered)
-  text = text.replace(/^[\s]*[-*•]\s+/gm, "")
-  text = text.replace(/^[\s]*\d+[.)]\s+/gm, "")
-  // Strip blockquotes
-  text = text.replace(/^>\s*/gm, "")
-  // Strip inline code backticks
-  text = text.replace(/`+/g, "")
-  // Strip code fence lines
-  text = text.replace(/^```\w*$/gm, "")
-  // Strip link syntax [text](url) → text
-  text = text.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-  // Collapse whitespace
+  // Strip markdown syntax (shared helper)
+  text = stripMarkdown(text)
+  // Preview labels are single-line — collapse any remaining newlines.
   text = text.replace(/\s+/g, " ").trim()
   // Capitalize first letter
   if (text.length > 0 && text[0] !== text[0].toUpperCase()) {

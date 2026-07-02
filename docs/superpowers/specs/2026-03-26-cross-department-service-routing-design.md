@@ -24,8 +24,8 @@ interface ServiceDeclaration {
 Add `provides` field to employee YAMLs:
 
 ```yaml
-name: jimmy-dev
-displayName: Jimmy Dev
+name: platform-dev
+displayName: Platform Dev
 rank: senior
 department: platform
 provides:
@@ -38,13 +38,13 @@ provides:
 ### Employee type change
 
 ```ts
-// In types.ts — add to Employee interface:
+// In types.ts - add to Employee interface:
 provides?: ServiceDeclaration[];
 ```
 
 ## Service Registry
 
-Built during `scanOrg()` — no new scanner needed. When parsing each employee YAML, also parse the `provides` array. The registry is a flat `Map<string, { provider: Employee; declaration: ServiceDeclaration }>` keyed by service name.
+Built during `scanOrg()` - no new scanner needed. When parsing each employee YAML, also parse the `provides` array. The registry is a flat `Map<string, { provider: Employee; declaration: ServiceDeclaration }>` keyed by service name.
 
 **Collision handling**: If two employees declare the same service name, the higher-ranked one wins. If tied, alphabetical by name. A warning is logged for collisions.
 
@@ -56,7 +56,7 @@ Three pure functions in a new `services.ts` module, operating on the existing `O
 
 Walk up A's `parentName` chain, collect ancestors in a Set. Walk up B's chain until hitting the Set. Return the common ancestor name, or `null` if both are root-level.
 
-Uses the existing `OrgNode.parentName` field. Since `resolveOrgHierarchy` already runs cycle detection (Step 4), infinite loops are impossible — cycles are broken before the tree reaches this function.
+Uses the existing `OrgNode.parentName` field. Since `resolveOrgHierarchy` already runs cycle detection (Step 4), infinite loops are impossible - cycles are broken before the tree reaches this function.
 
 ### `buildRoutePath(from, to, hierarchy)`
 
@@ -66,7 +66,7 @@ Build `[from, ..., LCA, ..., to]` using `parentName` walks from both sides.
 
 Walk the route path, collect each node that has direct reports (i.e., is a manager). Deduplicate. Returns ordered list of manager `OrgNode`s the request conceptually passes through.
 
-**Note**: The route path and manager chain are returned in the API response for audit/tracing. The actual action is simple — create a session with the provider employee directly.
+**Note**: The route path and manager chain are returned in the API response for audit/tracing. The actual action is simple - create a session with the provider employee directly.
 
 ## API Endpoints
 
@@ -81,8 +81,8 @@ List all available services across the org.
       "name": "code-review",
       "description": "Review PRs and provide feedback",
       "provider": {
-        "name": "jimmy-dev",
-        "displayName": "Jimmy Dev",
+        "name": "platform-dev",
+        "displayName": "Platform Dev",
         "department": "platform",
         "rank": "senior"
       }
@@ -100,7 +100,7 @@ Route a service request.
 **Request**:
 ```json
 {
-  "fromEmployee": "pravko-writer",
+  "fromEmployee": "content-writer",
   "service": "code-review",
   "prompt": "Review the new blog template component",
   "parentSessionId": "optional-parent-id"
@@ -112,12 +112,12 @@ Route a service request.
 {
   "sessionId": "new-session-id",
   "provider": {
-    "name": "jimmy-dev",
-    "displayName": "Jimmy Dev",
+    "name": "platform-dev",
+    "displayName": "Platform Dev",
     "department": "platform"
   },
-  "route": ["pravko-writer", "pravko-lead", "jimmy-dev"],
-  "managers": ["pravko-lead"],
+  "route": ["content-writer", "content-lead", "platform-dev"],
+  "managers": ["content-lead"],
   "service": "code-review"
 }
 ```
@@ -126,8 +126,8 @@ Route a service request.
 ```markdown
 ## Cross-service request
 
-**From**: Pravko Writer (pravko)
-**Service**: code-review — Review PRs and provide feedback
+**From**: Content Writer (content)
+**Service**: code-review - Review PRs and provide feedback
 
 ### Request
 Review the new blog template component
@@ -151,10 +151,10 @@ Replace the current 2-line `reportsToLine` / `directReportsLine` in `buildEmploy
 
 ```markdown
 ## Chain of command
-- **Department**: Pravko
-- **Your manager**: Pravko Lead (manager)
-- **Your direct reports**: Pravko Writer (employee), Pravko Designer (employee)
-- **Escalation path**: Pravko Lead -> Jimbo (COO)
+- **Department**: Content
+- **Your manager**: Content Lead (manager)
+- **Your direct reports**: Content Writer (employee), Content Designer (employee)
+- **Escalation path**: Content Lead -> Jimbo (COO)
 ```
 
 Built from existing `OrgNode` data: `parentName`, `directReports`, `chain`. The escalation path walks up `parentName` until root, appending `portalName (COO)` at the end.
@@ -168,7 +168,7 @@ Appended to employee prompts when services exist in the org:
 Other departments provide the following services. To request one, use the cross-request API:
 `POST http://0.0.0.0:7777/api/org/cross-request` with `{"fromEmployee": "your-name", "service": "<name>", "prompt": "<what you need>"}`
 
-- **code-review** -- provided by Jimmy Dev (senior, platform)
+- **code-review** -- provided by Platform Dev (senior, platform)
 - **keyword-research** -- provided by ASODev Growth (senior, asodev)
 ```
 
@@ -180,10 +180,10 @@ Skips services provided by the employee's own department. Skipped entirely if no
 |------|--------|
 | `packages/jinn/src/shared/types.ts` | Add `ServiceDeclaration` interface, add `provides?: ServiceDeclaration[]` to `Employee` |
 | `packages/jinn/src/gateway/org.ts` | Parse `provides` from YAML in `scanOrg()` |
-| `packages/jinn/src/gateway/services.ts` | **New file** — `findCommonAncestor()`, `buildRoutePath()`, `resolveManagerChain()`, `buildServiceRegistry()` |
+| `packages/jinn/src/gateway/services.ts` | **New file** - `findCommonAncestor()`, `buildRoutePath()`, `resolveManagerChain()`, `buildServiceRegistry()` |
 | `packages/jinn/src/gateway/api.ts` | Add `GET /api/org/services` and `POST /api/org/cross-request` endpoints |
 | `packages/jinn/src/sessions/context.ts` | Replace `reportsToLine`/`directReportsLine` with `buildChainOfCommand()`, add `buildServicesContext()` |
-| `packages/jinn/src/gateway/__tests__/services.test.ts` | **New file** — tests for LCA, route path, manager chain, service registry |
+| `packages/jinn/src/gateway/__tests__/services.test.ts` | **New file** - tests for LCA, route path, manager chain, service registry |
 | Template `CLAUDE.md` + `AGENTS.md` | Add service routing docs to API reference table |
 
 ## Non-goals

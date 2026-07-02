@@ -1,7 +1,10 @@
-import { getSession } from "./registry.js";
+import { getSession, listSessionsBySource } from "./registry.js";
 import { loadConfig } from "../shared/config.js";
 import { logger } from "../shared/logger.js";
 import type { Session } from "../shared/types.js";
+import { GATEWAY_INFO_FILE } from "../shared/paths.js";
+import { gatewayBaseUrl, readGatewayInfo } from "../gateway/gateway-info.js";
+import { hydrateAllAttachments, talkSessionsAttachedTo } from "../talk/attachments.js";
 
 /**
  * Notify the parent session that a child session has replied.
@@ -13,6 +16,12 @@ export function notifyParentSession(
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
   options?: { alwaysNotify?: boolean },
 ): void {
+  // Attachment wakes are a SEPARATE relationship from parent ownership: a talk
+  // session can soft-link any session and must be woken when it finishes, even if
+  // that session has no parent (or its parent is elsewhere). So this runs before
+  // the parent early-returns and is independent of alwaysNotify.
+  notifyAttachedTalkSessions(childSession, result);
+
   if (!childSession.parentSessionId) return;
   if (options?.alwaysNotify === false) return;
 
@@ -20,6 +29,81 @@ export function notifyParentSession(
   _sendNotification(childSession, result).catch((err) => {
     logger.warn(`[callbacks] Failed to notify parent session ${childSession.parentSessionId}: ${err instanceof Error ? err.message : String(err)}`);
   });
+}
+
+/** Label for a talk wake: title → employee → "a thread". */
+function talkLabel(s: Session): string {
+  return s.title || s.employee || "a thread";
+}
+
+/**
+ * Talk-tailored wake (voice-friendly): no UUIDs/URLs in the engine `message`, a
+ * clean banner in `displayMessage`. Shared by owned-thread callbacks and
+ * attached-session wakes so both speak in the same voice.
+ */
+export function buildTalkWake(
+  label: string,
+  result: { result?: string | null; error?: string | null },
+): { message: string; displayMessage: string } {
+  if (result.error) {
+    const raw = result.error.trim();
+    const errPreview = raw.length > 500 ? raw.slice(0, 500) + "…" : raw;
+    return {
+      message:
+        `⚠️ Thread "${label}" hit an error.\n\n` +
+        `${errPreview}\n\n` +
+        `Tell the operator plainly in one short sentence — no IDs, no URLs — and offer a next step.`,
+      displayMessage: `⚠️ Thread "${label}" hit an error\n${_clean(raw, 220)}`,
+    };
+  }
+  const raw = (result.result || "").trim() || "(no output)";
+  const llmPreview = raw.length > 500 ? raw.slice(0, 500) + "…" : raw;
+  return {
+    message:
+      `📩 Thread "${label}" reported back.\n\n` +
+      `Reply preview:\n${llmPreview}\n\n` +
+      `Narrate the outcome aloud in 1–2 short sentences — no IDs, no URLs, no markdown. ` +
+      `If there is a link or detail worth seeing, push a card. ` +
+      `To follow up, delegate to this thread via /api/talk/delegate (its id is in your roster).`,
+    displayMessage: `📩 Thread "${label}" reported back\n${_clean(raw, 220)}`,
+  };
+}
+
+/**
+ * Wake every talk session that has ATTACHED the just-finished session. Fire-and-
+ * forget. De-dup: an owned child (parent IS the talk session) is already woken by
+ * the parent-callback path, so it's skipped here to avoid a double notification.
+ */
+export function notifyAttachedTalkSessions(
+  completedSession: Session,
+  result: { result?: string | null; error?: string | null },
+): void {
+  _notifyAttached(completedSession, result).catch((err) => {
+    logger.warn(`[callbacks] Failed to wake attached talk sessions: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}
+
+async function _notifyAttached(
+  completedSession: Session,
+  result: { result?: string | null; error?: string | null },
+): Promise<void> {
+  // Lazy one-time scan so attachments persisted before a restart are visible
+  // (this is the first/primary talkSessionsAttachedTo consumer on the wake path).
+  hydrateAllAttachments({
+    getSession,
+    listTalkSessions: () => listSessionsBySource("talk", 50),
+  });
+  const talkIds = talkSessionsAttachedTo(completedSession.id);
+  if (talkIds.length === 0) return;
+
+  const { message, displayMessage } = buildTalkWake(talkLabel(completedSession), result);
+  for (const talkId of talkIds) {
+    if (talkId === completedSession.parentSessionId) continue; // owned child — already notified
+    const talk = getSession(talkId);
+    if (!talk || talk.source !== "talk") continue;
+    if (talk.status === "error") continue;
+    await _sendRaw(talkId, message, displayMessage);
+  }
 }
 
 /**
@@ -49,8 +133,19 @@ export function notifyRateLimitResumed(
 ): void {
   if (!childSession.parentSessionId) return;
 
-  const employeeName = childSession.employee || "Unknown";
-  _sendRaw(childSession.parentSessionId, `🔄 Employee "${employeeName}" (session ${childSession.id}) has resumed after rate limit cleared.`).catch((err) => {
+  const parent = getSession(childSession.parentSessionId);
+  const isTalkParent = parent?.source === "talk";
+
+  let message: string;
+  if (isTalkParent) {
+    const label = talkLabel(childSession);
+    message = `🔄 Thread "${label}" has resumed after rate limit cleared.`;
+  } else {
+    const employeeName = childSession.employee || "Unknown";
+    message = `🔄 Employee "${employeeName}" (session ${childSession.id}) has resumed after rate limit cleared.`;
+  }
+
+  _sendRaw(childSession.parentSessionId, message).catch((err) => {
     logger.warn(`[callbacks] Failed to send resume notification: ${err instanceof Error ? err.message : String(err)}`);
   });
 }
@@ -70,9 +165,17 @@ async function _sendNotification(
   // it carries full context and the API hints it needs to follow up.
   // `displayMessage` is the clean, human-facing version shown in the web UI
   // notification banner.
+  //
+  // For /talk parents (source:"talk") the engine is the voice orchestrator: UUIDs
+  // and raw API endpoints must NOT appear (they'd be read aloud). Use a label-based
+  // wake message with a narration instruction instead.
+  const isTalkParent = parent.source === "talk";
+
   let message: string;
   let displayMessage: string;
-  if (result.error) {
+  if (isTalkParent) {
+    ({ message, displayMessage } = buildTalkWake(talkLabel(childSession), result));
+  } else if (result.error) {
     message = `⚠️ Employee "${employeeName}" (child session ${childId}) hit an error and could not finish: ${result.error}`;
     displayMessage = `⚠️ ${employeeName} couldn't finish`;
   } else {
@@ -110,13 +213,12 @@ export function notifyDiscordChannel(message: string): void {
 }
 
 async function _sendDiscordNotification(message: string): Promise<void> {
-  let port = 7777;
   let connector = "discord";
   let channel: string | undefined;
+  const gateway = internalGatewayConnection();
 
   try {
     const config = loadConfig();
-    port = config.gateway?.port || 7777;
     connector = config.notifications?.connector || "discord";
     channel = config.notifications?.channel;
   } catch {
@@ -128,11 +230,12 @@ async function _sendDiscordNotification(message: string): Promise<void> {
     return;
   }
 
-  await fetch(`http://127.0.0.1:${port}/api/connectors/${connector}/send`, {
+  const response = await fetch(`${gateway.baseUrl}/api/connectors/${connector}/send`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: internalGatewayHeaders(gateway),
     body: JSON.stringify({ channel, text: message }),
   });
+  if (!response.ok) throw new Error(`connector notification failed (${response.status})`);
 }
 
 async function _sendRaw(
@@ -140,21 +243,41 @@ async function _sendRaw(
   message: string,
   displayMessage?: string,
 ): Promise<void> {
-  let port = 7777;
-  try {
-    const config = loadConfig();
-    port = config.gateway?.port || 7777;
-  } catch {
-    // Use default port if config is unavailable
-  }
+  const gateway = internalGatewayConnection();
 
-  await fetch(`http://127.0.0.1:${port}/api/sessions/${parentSessionId}/message`, {
+  const response = await fetch(`${gateway.baseUrl}/api/sessions/${parentSessionId}/message`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: internalGatewayHeaders(gateway),
     body: JSON.stringify({
       message,
       role: "notification",
       ...(displayMessage ? { displayMessage } : {}),
     }),
   });
+  if (!response.ok) throw new Error(`parent notification failed (${response.status})`);
+}
+
+function internalGatewayConnection(): { baseUrl: string; token?: string } {
+  const info = readGatewayInfo(GATEWAY_INFO_FILE);
+  let fallbackHost: string | undefined;
+  let fallbackPort = 7777;
+  try {
+    const config = loadConfig();
+    fallbackHost = config.gateway?.host;
+    fallbackPort = config.gateway?.port || 7777;
+  } catch {
+    // Use gateway.json/defaults if config is unavailable.
+  }
+  const port = info?.port ?? fallbackPort;
+  return {
+    baseUrl: gatewayBaseUrl({ port, host: info?.host }, fallbackHost),
+    token: info?.token,
+  };
+}
+
+function internalGatewayHeaders(gateway: { token?: string }): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    ...(gateway.token ? { authorization: `Bearer ${gateway.token}` } : {}),
+  };
 }

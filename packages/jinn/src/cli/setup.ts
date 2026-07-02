@@ -4,6 +4,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { execSync, spawn } from "node:child_process";
 import yaml from "js-yaml";
+import { isInstalled, resolveBin } from "../shared/resolve-bin.js";
 import {
   JINN_HOME,
   CONFIG_PATH,
@@ -48,19 +49,17 @@ function prompt(question: string, defaultValue?: string): Promise<string> {
   const suffix = defaultValue ? ` ${DIM}(${defaultValue})${RESET}` : "";
   return new Promise((resolve) => {
     rl.question(`  ${question}${suffix}: `, (answer) => {
-      rl.close();
       resolve(answer.trim() || defaultValue || "");
+      rl.close();
     });
+    rl.on("close", () => resolve(defaultValue || ""));
   });
 }
 
 function whichBin(name: string): string | null {
-  try {
-    const cmd = process.platform === "win32" ? "where" : "which";
-    return execSync(`${cmd} ${name}`, { encoding: "utf-8" }).trim().split("\n")[0];
-  } catch {
-    return null;
-  }
+  // Match the runtime's resolution (PATH + common bin dirs like ~/.local/bin),
+  // not just PATH, so setup doesn't warn about an engine the gateway can find.
+  return isInstalled(name) ? resolveBin(name) : null;
 }
 
 function runVersion(bin: string): string | null {
@@ -250,12 +249,71 @@ engines:
     bin: claude
     model: opus
     effortLevel: medium
-    mode: headless
+    mode: interactive
   codex:
     bin: codex
-    model: gpt-5.4
+    model: gpt-5.5
+  grok:
+    bin: grok
+    model: grok-build
+  hermes:
+    bin: hermes
+    model: openai-codex:gpt-5.5
+# Model + capability registry — single source of truth for the UI selectors.
+# Add a model here (id + label + capability flags); no code change needed.
+# effortLevels gate the effort picker (empty = no effort support). Omit the block
+# to synthesize a minimal registry from engines.<name>.model.
+models:
+  claude:
+    default: opus
+    effortMechanism: claude-flag
+    models:
+      - { id: claude-fable-5, label: "Fable 5", supportsEffort: true, effortLevels: [low, medium, high], contextWindow: 1000000 }
+      - { id: opus, label: "Opus 4.8", supportsEffort: true, effortLevels: [low, medium, high], contextWindow: 1000000 }
+      - { id: claude-sonnet-4-6, label: "Sonnet 4.6", supportsEffort: true, effortLevels: [low, medium, high], contextWindow: 200000 }
+      - { id: claude-haiku-4-5, label: "Haiku 4.5", supportsEffort: true, effortLevels: [low, medium, high], contextWindow: 200000 }
+  codex:
+    default: gpt-5.5
+    effortMechanism: codex-config
+    models:
+      - { id: gpt-5.5, label: "GPT-5.5 Codex", supportsEffort: true, effortLevels: [low, medium, high, xhigh], contextWindow: 258400 }
+  grok:
+    default: grok-build
+    effortMechanism: grok-flag
+    models:
+      - { id: grok-build, label: "Grok Build", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max], contextWindow: 256000 }
+      - { id: grok-composer-2.5-fast, label: "Grok Composer 2.5 Fast", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max], contextWindow: 256000 }
+  antigravity:
+    default: "Gemini 3.5 Flash (Medium)"
+    effortMechanism: none
+    models:
+      - { id: "Gemini 3.5 Flash (Medium)", label: "Gemini 3.5 Flash Medium", supportsEffort: false, effortLevels: [], contextWindow: 1000000 }
+      - { id: "Gemini 3.5 Flash (High)", label: "Gemini 3.5 Flash High", supportsEffort: false, effortLevels: [], contextWindow: 1000000 }
+      - { id: "Gemini 3.5 Flash (Low)", label: "Gemini 3.5 Flash Low", supportsEffort: false, effortLevels: [], contextWindow: 1000000 }
+      - { id: "Gemini 3.1 Pro (High)", label: "Gemini 3.1 Pro High", supportsEffort: false, effortLevels: [], contextWindow: 1000000 }
+      - { id: "Gemini 3.1 Pro (Low)", label: "Gemini 3.1 Pro Low", supportsEffort: false, effortLevels: [], contextWindow: 1000000 }
+      - { id: "Claude Sonnet 4.6 (Thinking)", label: "Claude Sonnet 4.6 Thinking", supportsEffort: false, effortLevels: [], contextWindow: 200000 }
+      - { id: "Claude Opus 4.6 (Thinking)", label: "Claude Opus 4.6 Thinking", supportsEffort: false, effortLevels: [], contextWindow: 200000 }
+      - { id: "GPT-OSS 120B (Medium)", label: "GPT-OSS 120B Medium", supportsEffort: false, effortLevels: [], contextWindow: 131072 }
 connectors: {}
 portal: {}
+
+# ── Optional blocks (uncomment to customize) ──────────────────────────────
+# MCP servers give employees browser, search, fetch, and messaging tools.
+# mcp:
+#   browser: { enabled: true, provider: playwright }
+#   search:  { enabled: false, provider: brave }   # set true + add BRAVE_API_KEY
+#   fetch:   { enabled: true }
+#   gateway: { enabled: true }                      # built-in gateway MCP server
+# Per-session safety limits (can be overridden per-employee in their YAML).
+# sessions:
+#   maxDurationMinutes: 30
+#   maxCostUsd: 10.00
+# Cron alerting — route failed scheduled jobs to a connector channel.
+# cron:
+#   alertConnector: slack
+#   alertChannel: "#alerts"
+
 logging:
   file: true
   stdout: true
@@ -312,7 +370,33 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     info("Install with: npm install -g @openai/codex");
   }
 
-  // 4. Check auth / versions
+  // 4. Check for grok binary
+  const grokPath = whichBin("grok");
+  if (grokPath) {
+    ok(`grok found at ${grokPath}`);
+  } else {
+    fail("grok not found");
+    info("Install with: npm install -g @xai-official/grok");
+  }
+
+  // 4a. Check for hermes binary
+  const hermesPath = whichBin("hermes");
+  if (hermesPath) {
+    ok(`hermes found at ${hermesPath}`);
+  } else {
+    fail("hermes not found");
+    info("Install the Hermes CLI: curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash");
+  }
+
+  // 5. Loudly warn if NO engine is installed — the gateway will start, but it
+  //     cannot run any session until at least one engine CLI is on PATH.
+  if (!claudePath && !codexPath && !grokPath && !hermesPath) {
+    console.log("");
+    warn("No AI engine CLI found (claude, codex, grok, or hermes).");
+    warn("The gateway will start, but sessions will fail until you install one above.");
+  }
+
+  // 6. Check auth / versions
   console.log("");
   if (claudePath) {
     const ver = runVersion("claude");
@@ -323,6 +407,43 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     const ver = runVersion("codex");
     if (ver) ok(`codex --version: ${ver}`);
     else warn("codex --version failed");
+  }
+  if (grokPath) {
+    const ver = runVersion("grok");
+    if (ver) ok(`grok --version: ${ver}`);
+    else warn("grok --version failed");
+  }
+  if (hermesPath) {
+    const ver = runVersion("hermes");
+    if (ver) ok(`hermes --version: ${ver}`);
+    else warn("hermes --version failed");
+  }
+  // A successful --version does NOT mean the engine is authenticated — the #1
+  // silent fresh-install failure. Nudge the login step explicitly.
+  if (claudePath || codexPath || grokPath || hermesPath) {
+    warn("A successful --version does NOT mean the engine is logged in.");
+    if (claudePath) info("First run? Launch `claude` once and use /login to authenticate.");
+    if (codexPath) info("First run? Launch `codex` once and sign in to authenticate.");
+    if (grokPath) info("First run? Launch `grok` once to authenticate, or configure XAI_API_KEY.");
+    if (hermesPath) info("First run? Launch `hermes` once to authenticate, or configure your API key.");
+    info("Do this before `jinn start`, or sessions will fail silently.");
+  }
+
+  // 4b. Speech-to-text (mic) prerequisites — optional. The voice/mic flow on
+  // /talk and /chat transcribes audio with whisper.cpp's `whisper-cli` plus
+  // `ffmpeg` (to resample to 16kHz mono WAV). These are NOT required for the
+  // gateway, text chat, or voice output — only mic input — so missing deps are
+  // guidance, never a hard failure.
+  console.log("");
+  const whisperPath = whichBin("whisper-cli");
+  const ffmpegPath = whichBin("ffmpeg");
+  if (whisperPath && ffmpegPath) {
+    ok("Speech-to-text (mic) ready -- whisper-cli + ffmpeg found");
+  } else {
+    warn("Speech-to-text (mic) unavailable -- mic input will be disabled (text + voice output still work).");
+    if (!ffmpegPath) info("Install ffmpeg with: brew install ffmpeg");
+    if (!whisperPath) info("Install whisper-cli with: brew install whisper-cpp");
+    info("The transcription model is downloaded automatically from the app the first time you use the mic -- no manual fetch needed.");
   }
 
   // 5. Interactive setup (only when stdin is a TTY and config doesn't exist yet)
@@ -336,7 +457,8 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     : "Jinn";
 
   let chosenName = defaultName;
-  let chosenEngine: "claude" | "codex" = "claude";
+  type SetupEngine = "claude" | "codex" | "grok" | "hermes";
+  let chosenEngine: SetupEngine = "claude";
 
   if (isInteractive) {
     console.log("");
@@ -346,12 +468,15 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     const engines: string[] = [];
     if (claudePath) engines.push("claude");
     if (codexPath) engines.push("codex");
+    if (grokPath) engines.push("grok");
+    if (hermesPath) engines.push("hermes");
 
-    if (engines.length === 2) {
-      const engineAnswer = await prompt("Preferred engine? (claude/codex)", "claude");
-      chosenEngine = engineAnswer === "codex" ? "codex" : "claude";
+    if (engines.length > 1) {
+      const defaultEngine = engines.includes("claude") ? "claude" : engines[0];
+      const engineAnswer = await prompt(`Preferred engine? (${engines.join("/")})`, defaultEngine);
+      chosenEngine = engines.includes(engineAnswer) ? engineAnswer as SetupEngine : defaultEngine as SetupEngine;
     } else if (engines.length === 1) {
-      chosenEngine = engines[0] as "claude" | "codex";
+      chosenEngine = engines[0] as SetupEngine;
       ok(`Using ${chosenEngine} as default engine (only engine installed)`);
     }
   }
@@ -362,10 +487,11 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
 
   if (ensureDir(JINN_HOME)) created.push(JINN_HOME);
 
-  // Copy or create config files
+  // Copy or create config files.
+  // DEFAULT_CONFIG (above) is the canonical default. `template/config.yaml` is an
+  // optional override the installer prefers if present (none ships by default).
   const templateConfig = path.join(TEMPLATE_DIR, "config.yaml");
   const templateClaude = path.join(TEMPLATE_DIR, "CLAUDE.md");
-  const templateAgents = path.join(TEMPLATE_DIR, "AGENTS.md");
 
   if (!fs.existsSync(CONFIG_PATH)) {
     let source = fs.existsSync(templateConfig)
@@ -406,13 +532,25 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     created.push(claudeMdPath);
   }
 
+  // AGENTS.md is a symlink to CLAUDE.md: one canonical operating manual, zero
+  // drift. claude reads CLAUDE.md, codex/agy read AGENTS.md → same content.
+  // Fall back to a real copy where symlinks aren't available (e.g. Windows
+  // without privilege). lstatSync (not existsSync) so a pre-existing symlink
+  // is treated as present and not clobbered.
   const agentsMdPath = path.join(JINN_HOME, "AGENTS.md");
-  if (!fs.existsSync(agentsMdPath)) {
-    let source = fs.existsSync(templateAgents)
-      ? fs.readFileSync(templateAgents, "utf-8")
-      : defaultAgentsMd(portalName);
-    source = applyTemplateReplacements(source, templateReplacements);
-    ensureFile(agentsMdPath, source);
+  let agentsExists = false;
+  try { fs.lstatSync(agentsMdPath); agentsExists = true; } catch { /* missing */ }
+  if (!agentsExists) {
+    try {
+      fs.symlinkSync("CLAUDE.md", agentsMdPath); // relative target → portable within ~/.jinn
+    } catch {
+      // Symlinks unavailable: copy the CANONICAL manual (CLAUDE.md) so the
+      // fallback always matches what claude reads.
+      const source = fs.existsSync(claudeMdPath)
+        ? fs.readFileSync(claudeMdPath, "utf-8")
+        : defaultAgentsMd(portalName);
+      ensureFile(agentsMdPath, source);
+    }
     created.push(agentsMdPath);
   }
 
@@ -448,6 +586,9 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
   created.push(...copyTemplateDir(path.join(TEMPLATE_DIR, "docs"), DOCS_DIR, templateReplacements));
   created.push(...copyTemplateDir(path.join(TEMPLATE_DIR, "skills"), SKILLS_DIR, templateReplacements));
   created.push(...copyTemplateDir(path.join(TEMPLATE_DIR, "org"), ORG_DIR, templateReplacements));
+  // Seed talk/ (AURA voice persona + card-reference sidecar). The persona points
+  // the orchestrator at talk/card-reference.md, so both must land in ~/.jinn/talk/.
+  created.push(...copyTemplateDir(path.join(TEMPLATE_DIR, "talk"), path.join(JINN_HOME, "talk"), templateReplacements));
 
   // Copy skills.json manifest
   const templateSkillsJson = path.join(TEMPLATE_DIR, "skills.json");

@@ -21,7 +21,7 @@ Review the results and assess trust level before suggesting:
 
 - 🟢 **VERIFIED** (1000+ installs or known orgs like `vercel-labs`, `anthropics`, `microsoft`): Suggest confidently
 - 🟡 **COMMUNITY** (50–999 installs): Suggest with a note about the install count
-- 🔴 **UNKNOWN** (<50 installs): Show but warn the user — offer to preview the SKILL.md before installing
+- 🔴 **UNKNOWN** (<50 installs): Show but warn the user - offer to preview the SKILL.md before installing
 
 ## Installing a Skill
 

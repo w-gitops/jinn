@@ -13,7 +13,7 @@ engines:
     effortLevel: medium
   codex:
     bin: codex
-    model: gpt-5.4
+    model: gpt-5.5
     effortLevel: high
 
 connectors:

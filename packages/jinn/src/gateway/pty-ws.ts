@@ -1,7 +1,10 @@
 import type { WebSocket } from "ws";
-import type { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
+import type { PtyViewEngine } from "../engines/pty-view-engine.js";
 import { getSession } from "../sessions/registry.js";
 import { JINN_HOME } from "../shared/paths.js";
+import { logger } from "../shared/logger.js";
+
+const RAW_KEY_INPUTS = new Set(["\r", "\x1b", "\t", "\x03", "\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"]);
 
 /**
  * Attach a /ws/pty/:sessionId WebSocket to a session's interactive PTY stream.
@@ -19,17 +22,34 @@ import { JINN_HOME } from "../shared/paths.js";
  *   - On `ws.close`, decrements the viewer count if this socket reported viewing.
  *     Does NOT directly kill the PTY — the lifecycle manager owns that.
  */
-export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: InteractiveClaudeEngine): void {
-  const spawnIfNeeded = (cols: number, rows: number) => {
-    if (engine.hasWarmPty(sessionId)) return;
-    const session = getSession(sessionId);
-    engine.ensureIdleSpawn(sessionId, {
-      claudeSessionId: session?.engineSessionId ?? undefined,
-      model: session?.model ?? undefined,
-      cwd: JINN_HOME,
-      cols,
-      rows,
-    });
+export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: PtyViewEngine): void {
+  let disconnected = false;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const closeWithError = (message: string) => {
+    logger.warn(`PTY websocket for ${sessionId}: ${message}`);
+    if (ws.readyState === ws.OPEN) {
+      try { ws.send(JSON.stringify({ type: "error", message })); } catch { /* ignore */ }
+      ws.close();
+    }
+  };
+
+  const spawnIfNeeded = (cols: number, rows: number): boolean => {
+    try {
+      const session = getSession(sessionId);
+      engine.ensureIdleSpawn(sessionId, {
+        engineSessionId: session?.engineSessionId ?? undefined,
+        model: session?.model ?? undefined,
+        effortLevel: session?.effortLevel ?? undefined,
+        cwd: JINN_HOME,
+        cols,
+        rows,
+      });
+      return true;
+    } catch (err) {
+      closeWithError(`failed to start PTY: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
   };
 
   // Subscribe FIRST, then replay scrollback. Reverse order had a race window
@@ -60,7 +80,24 @@ export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: Int
   let pendingViewing: boolean | null = null;
   let entryReady = false;
 
+  const applyViewingWhenReady = (viewing: boolean, attempts = 20) => {
+    if (disconnected) return;
+    if (engine.hasWarmPty(sessionId)) {
+      entryReady = true;
+      applyViewing(viewing);
+      return;
+    }
+    if (attempts <= 0) {
+      pendingViewing = viewing;
+      entryReady = false;
+      return;
+    }
+    retryTimer = setTimeout(() => applyViewingWhenReady(viewing, attempts - 1), 100);
+    retryTimer.unref?.();
+  };
+
   const applyViewing = (viewing: boolean) => {
+    if (disconnected) return;
     if (viewing && !didEnter) {
       engine.setViewing(sessionId, true);
       didEnter = true;
@@ -75,17 +112,29 @@ export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: Int
     try { msg = JSON.parse(raw.toString()); } catch { return; }
     if (msg?.type === "stdin" && typeof msg.data === "string") {
       engine.writeStdin(sessionId, msg.data);
+    } else if (msg?.type === "key" && typeof msg.data === "string") {
+      if (RAW_KEY_INPUTS.has(msg.data)) engine.writeRaw(sessionId, msg.data);
     } else if (msg?.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
       // First resize spawns the PTY at the real client geometry; subsequent
       // resizes just forward SIGWINCH to claude.
-      spawnIfNeeded(msg.cols, msg.rows);
-      engine.resizePty(sessionId, msg.cols, msg.rows);
-      if (!entryReady) {
+      const hadWarmPty = engine.hasWarmPty(sessionId);
+      if (!spawnIfNeeded(msg.cols, msg.rows)) return;
+      try {
+        engine.resizePty(sessionId, msg.cols, msg.rows);
+      } catch (err) {
+        closeWithError(`failed to resize PTY: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      if (!entryReady && hadWarmPty) {
         entryReady = true;
         if (pendingViewing !== null) {
           applyViewing(pendingViewing);
           pendingViewing = null;
         }
+      } else if (!entryReady && pendingViewing !== null) {
+        const viewing = pendingViewing;
+        pendingViewing = null;
+        applyViewingWhenReady(viewing);
       }
     } else if (msg?.type === "viewing" && typeof msg.viewing === "boolean") {
       if (!entryReady) {
@@ -98,6 +147,13 @@ export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: Int
   });
 
   const onDisconnect = () => {
+    if (disconnected) return;
+    disconnected = true;
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
+    }
+    pendingViewing = null;
     unsubscribe();
     if (didEnter) {
       engine.setViewing(sessionId, false);

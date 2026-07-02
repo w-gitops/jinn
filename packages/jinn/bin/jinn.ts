@@ -49,11 +49,47 @@ program
   });
 
 program
+  .command("restart")
+  .description("Restart the gateway (detached — safe to run from inside a session)")
+  .action(async () => {
+    const { runRestart } = await import("../src/cli/restart.js");
+    await runRestart();
+  });
+
+program
   .command("status")
   .description("Show gateway status")
   .action(async () => {
     const { runStatus } = await import("../src/cli/status.js");
     await runStatus();
+  });
+
+program
+  .command("pair")
+  .description("Create a one-time code for pairing another browser")
+  .option("--json", "Print raw JSON")
+  .action(async (opts: { json?: boolean }) => {
+    const { runPair } = await import("../src/cli/pair.js");
+    await runPair(opts);
+  });
+
+program
+  .command("unpair [deviceId]")
+  .description("List paired browsers or unpair one by id")
+  .option("--json", "Print raw JSON")
+  .action(async (deviceId: string | undefined, opts: { json?: boolean }) => {
+    const { runUnpair } = await import("../src/cli/pair.js");
+    await runUnpair(deviceId, opts);
+  });
+
+program
+  .command("limits")
+  .description("Show engine rate limits, quota windows, and model capabilities")
+  .option("-e, --engine <name>", "Only show one engine")
+  .option("--json", "Print raw JSON")
+  .action(async (opts: { engine?: string; json?: boolean }) => {
+    const { runLimits } = await import("../src/cli/limits.js");
+    await runLimits(opts);
   });
 
 program

@@ -1,19 +1,64 @@
 
-import { lazy, Suspense, useState, useCallback, useEffect, useRef } from 'react'
+import { lazy, Suspense, useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { api } from '@/lib/api'
 import { useOrg } from '@/hooks/use-employees'
 import { ChatMessages } from '@/components/chat/chat-messages'
 import { ChatInput } from '@/components/chat/chat-input'
+import { CliKeybar } from '@/components/chat/cli-keybar'
 import { ChatEmployeePicker } from '@/components/chat/chat-employee-picker'
 import { QueuePanel } from '@/components/chat/queue-panel'
+import { BackgroundActivityPill } from '@/components/chat/background-activity-pill'
+import { ModelSelectorRow, type SelectorValue } from '@/components/chat/model-selector-row'
+import { useLiveSession } from '@/hooks/use-live-session'
 
 const CliTerminal = lazy(() => import('@/components/cli-terminal').then(m => ({ default: m.CliTerminal })))
-import { buildNewSessionParams } from '@/components/chat/new-chat-helpers'
+import type { CliTerminalHandle } from '@/components/cli-terminal'
+import { buildNewSessionParams, resolveNewSessionSelector, shouldPersistNewSessionSelector } from '@/components/chat/new-chat-helpers'
 import type { Employee } from '@/lib/api'
 import type { Message, MediaAttachment } from '@/lib/conversations'
-import { saveIntermediateMessages, loadIntermediateMessages, clearIntermediateMessages, reconcileMessages } from '@/lib/conversations'
+
+// The live read pipeline (load/WS/reconnect/watchdog) now lives in
+// useLiveSession; shouldRecoverStuckTurn moved there too. Re-export it so the
+// existing completion-watchdog test (imports from this module) keeps working.
+export { shouldRecoverStuckTurn } from '@/hooks/use-live-session'
 
 type Listener = (event: string, payload: unknown) => void
+
+const NEW_SESSION_SELECTOR_KEY = 'jinn-chat-new-session-selector'
+const CLI_CAPABLE_ENGINES = new Set(['claude', 'codex', 'antigravity', 'grok'])
+
+function readNewSessionSelector(): SelectorValue {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(NEW_SESSION_SELECTOR_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as SelectorValue
+    return {
+      engine: typeof parsed.engine === 'string' ? parsed.engine : undefined,
+      model: typeof parsed.model === 'string' ? parsed.model : undefined,
+      effortLevel: typeof parsed.effortLevel === 'string' ? parsed.effortLevel : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
+
+function writeNewSessionSelector(value: SelectorValue): void {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(NEW_SESSION_SELECTOR_KEY, JSON.stringify({
+    engine: value.engine,
+    model: value.model,
+    effortLevel: value.effortLevel,
+  }))
+}
+
+function supportsCli(engine: string | undefined): boolean {
+  return !!engine && CLI_CAPABLE_ENGINES.has(engine)
+}
+
+function supportsCliPreference(engine: string | undefined): boolean {
+  return !engine || supportsCli(engine)
+}
 
 interface ChatPaneProps {
   sessionId: string | null
@@ -21,6 +66,8 @@ interface ChatPaneProps {
   onFocus: () => void
   /** Notify parent when a new session is created (e.g. first message in new chat) */
   onSessionCreated?: (sessionId: string, pendingUserMessage?: Message) => void
+  /** Open the parent-level new-chat composer. */
+  onNewChat?: () => void
   /** If set on mount, used as the initial user message before loadSession resolves — for the just-created-from-new-chat case. */
   pendingUserMessage?: Message
   /** Notify parent when session meta changes */
@@ -43,6 +90,8 @@ interface ChatPaneProps {
   focusTrigger?: number
   /** Callback to open keyboard shortcuts overlay */
   onShortcutsClick?: () => void
+  /** Pre-selected employee for a NEW chat (e.g. contacting a session-less employee or an ?employee= deep-link). */
+  initialEmployee?: string | null
 }
 
 export function ChatPane({
@@ -50,6 +99,7 @@ export function ChatPane({
   isActive,
   onFocus,
   onSessionCreated,
+  onNewChat,
   onSessionMetaChange,
   onRefresh,
   portalName = 'Jinn',
@@ -61,27 +111,77 @@ export function ChatPane({
   focusTrigger,
   onShortcutsClick,
   pendingUserMessage,
+  initialEmployee,
 }: ChatPaneProps) {
-  const [messages, setMessages] = useState<Message[]>(() => {
-    const seed = pendingUserMessage ? [pendingUserMessage] : []
-    return seed
-  })
-  // Seed loading=true when mounting with a pendingUserMessage (just-created new chat
-  // where the OLD pane's setLoading(true) was lost in the remount). Otherwise the
-  // thinking indicator wouldn't show until the first WS delta arrives.
-  const [loading, setLoading] = useState<boolean>(() => !!pendingUserMessage)
-  const streamingTextRef = useRef('')
-  const [streamingText, setStreamingText] = useState('')
-  const intermediateStartRef = useRef<number>(-1)
-  const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(null)
-  const sessionIdRef = useRef(sessionId)
-  const onMetaRef = useRef(onSessionMetaChange)
-  useEffect(() => { onMetaRef.current = onSessionMetaChange }, [onSessionMetaChange])
-  const justCompletedAtRef = useRef<number>(0)
-  const loadTokenRef = useRef(0)
+  // If this pane was opened from the onboarding wizard, the wizard stored the
+  // seed user message in sessionStorage so we can display it immediately
+  // (loading=true + seed bubble) without waiting for useLiveSession's first
+  // network fetch. Content-identity reconcile in conversations.ts merges it
+  // with the server-persisted twin once the fetch returns (no duplicate).
+  const seedFromOnboarding = useMemo<Message | undefined>(() => {
+    if (!sessionId || pendingUserMessage) return undefined
+    try {
+      const raw = sessionStorage.getItem('jinn-onboarding-seed')
+      if (!raw) return undefined
+      const data = JSON.parse(raw) as { sessionId: string; message: Message }
+      if (data.sessionId === sessionId) return data.message
+    } catch { /* ignore */ }
+    return undefined
+  }, [sessionId, pendingUserMessage]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Consume the storage entry once detected so a page refresh doesn't re-show
+  // the seed as an optimistic bubble on top of the already-loaded messages.
+  useEffect(() => {
+    if (seedFromOnboarding) sessionStorage.removeItem('jinn-onboarding-seed')
+  }, [seedFromOnboarding])
 
-  // Employee picker state for new chat
-  const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
+  // Live read pipeline (messages, streaming, loading, session, reconnect/watchdog)
+  // is owned by useLiveSession; this pane keeps the composer + send on top and
+  // drives optimistic writes through the hook's write API.
+  const live = useLiveSession(sessionId, {
+    subscribe,
+    connectionSeq,
+    pendingUserMessage: pendingUserMessage ?? seedFromOnboarding,
+    onMeta: onSessionMetaChange,
+    onRefresh,
+  })
+  const {
+    messages,
+    streamingText,
+    loading,
+    hydrating,
+    session: currentSession,
+    liveContextTokens,
+    backgroundActivity,
+    beginSend,
+    failSend,
+    appendLocal,
+    reset: resetPane,
+    reload: reloadSession,
+  } = live
+
+  // Kept local for handleSelectorChange so it stays a stable ([]) callback that
+  // reads the current session id at call time (mirrors the previous behaviour).
+  const sessionIdRef = useRef(sessionId)
+  const selectorPatchSeq = useRef(0)
+  useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
+
+  // CLI → chat view switch: turns typed directly into the xterm may never have
+  // reached the chat transcript (or a session:external-turn WS frame was
+  // missed while the chat view was unmounted), so run a cheap one-shot
+  // reconcile through the same load path session:external-turn uses.
+  const prevViewModeRef = useRef(viewMode)
+  useEffect(() => {
+    const prev = prevViewModeRef.current
+    prevViewModeRef.current = viewMode
+    if (prev === 'cli' && viewMode === 'chat' && sessionId) {
+      reloadSession(sessionId)
+    }
+  }, [viewMode, sessionId, reloadSession])
+
+  // Employee picker state for new chat. Seeded from initialEmployee so a
+  // "contact this employee" click / ?employee= deep-link opens the new chat
+  // with that employee preselected (the pane is remounted via key on change).
+  const [selectedEmployee, setSelectedEmployee] = useState<string | null>(initialEmployee ?? null)
   const { data: orgData } = useOrg()
   const pickerEmployees = Array.isArray(orgData?.employees)
     ? orgData.employees.map((emp) => ({
@@ -89,308 +189,102 @@ export function ChatPane({
         displayName: emp.displayName,
         department: emp.department,
         rank: emp.rank,
+        engine: emp.engine,
+        model: emp.model,
+        effortLevel: emp.effortLevel,
       }))
     : []
-  useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
+  // Reset the employee picker when there is no session (the live read pipeline
+  // clears its own state on a null sessionId; this is the pane-local part).
+  // Falls back to initialEmployee so a preselected contact survives the reset.
+  useEffect(() => { if (!sessionId) setSelectedEmployee(initialEmployee ?? null) }, [sessionId, initialEmployee])
 
-  // Helper: persist intermediate messages to localStorage
-  const persistIntermediate = useCallback((msgs: Message[], sid: string | null) => {
-    if (!sid) return
-    const start = intermediateStartRef.current
-    if (start < 0) return
-    const intermediate = msgs.slice(start)
-    if (intermediate.length > 0) {
-      saveIntermediateMessages(sid, intermediate)
-    }
-  }, [])
-
-  // Listen for session events via subscribe
+  // Engine/Model/Effort selector state (composer). Engine is editable on a new
+  // chat only; model + effort are editable in existing chats too.
+  const [selector, setSelector] = useState<SelectorValue>(() => readNewSessionSelector())
+  const selectorRef = useRef(selector)
+  const newSessionSelectorDirtyRef = useRef(false)
+  const previousSessionIdForSelectorRef = useRef(sessionId)
+  useEffect(() => { selectorRef.current = selector }, [selector])
   useEffect(() => {
-    return subscribe((event, payload) => {
-      const p = payload as Record<string, unknown>
-      const sid = sessionIdRef.current
-      if (!sid || p.sessionId !== sid) return
+    if (previousSessionIdForSelectorRef.current && !sessionId) {
+      newSessionSelectorDirtyRef.current = false
+    }
+    previousSessionIdForSelectorRef.current = sessionId
+  }, [sessionId])
+  const [effortPendingNote, setEffortPendingNote] = useState(false)
+  const [selectorError, setSelectorError] = useState<string | null>(null)
+  const cliTerminalRef = useRef<CliTerminalHandle | null>(null)
 
-      if (event === 'session:delta') {
-        const deltaType = String(p.type || 'text')
+  // Pre-fill for a NEW chat. Explicit employee selection uses employee config;
+  // direct/COO chats reuse the operator's last composer choice.
+  useEffect(() => {
+    if (sessionId) return
+    const emp = selectedEmployee && Array.isArray(orgData?.employees)
+      ? orgData.employees.find((e) => e.name === selectedEmployee)
+      : undefined
+    setSelector(resolveNewSessionSelector({
+      selectedEmployee: emp ?? null,
+      storedSelector: readNewSessionSelector(),
+      currentSelector: selectorRef.current,
+      manuallyChanged: newSessionSelectorDirtyRef.current,
+    }))
+    setEffortPendingNote(false)
+    setSelectorError(null)
+  }, [selectedEmployee, sessionId, orgData])
 
-        if (deltaType === 'text') {
-          const chunk = String(p.content || '')
-          streamingTextRef.current += chunk
-          setStreamingText(streamingTextRef.current)
-        } else if (deltaType === 'text_snapshot') {
-          const snapshot = String(p.content || '')
-          if (snapshot.length >= streamingTextRef.current.length) {
-            streamingTextRef.current = snapshot
-            setStreamingText(snapshot)
-          }
-        } else if (deltaType === 'tool_use') {
-          if (streamingTextRef.current) {
-            const flushed = streamingTextRef.current
-            streamingTextRef.current = ''
-            setStreamingText('')
-            setMessages((prev) => {
-              if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
-              const updated = [
-                ...prev,
-                {
-                  id: crypto.randomUUID(),
-                  role: 'assistant' as const,
-                  content: flushed,
-                  timestamp: Date.now(),
-                },
-              ]
-              persistIntermediate(updated, sid)
-              return updated
-            })
-          }
-          const toolName = String(p.toolName || 'tool')
-          setMessages((prev) => {
-            if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
-            const updated = [
-              ...prev,
-              {
-                id: crypto.randomUUID(),
-                role: 'assistant' as const,
-                content: `Using ${toolName}`,
-                timestamp: Date.now(),
-                toolCall: toolName,
-              },
-            ]
-            persistIntermediate(updated, sid)
-            return updated
-          })
-        } else if (deltaType === 'tool_result') {
-          setMessages((prev) => {
-            const updated = [...prev]
-            const last = updated[updated.length - 1]
-            if (last && last.role === 'assistant' && last.toolCall) {
-              updated[updated.length - 1] = { ...last, content: `Used ${last.toolCall}` }
-            }
-            persistIntermediate(updated, sid)
-            return updated
-          })
-        }
-      }
-
-      if (event === 'session:notification') {
-        const notifMessage = String(p.message || '')
-        if (notifMessage) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: 'notification' as const,
-              content: notifMessage,
-              timestamp: Date.now(),
-            },
-          ])
-        }
-      }
-
-      if (event === 'session:attachment') {
-        const media = Array.isArray(p.media) ? (p.media as MediaAttachment[]) : []
-        // Use the server's canonical message id so the next history fetch merges
-        // (not duplicates) this message. Guard against re-append if the event fires twice.
-        const attachmentId = typeof p.id === 'string' ? p.id : crypto.randomUUID()
-        if (media.length > 0) {
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === attachmentId)) return prev
-            return [
-              ...prev,
-              {
-                id: attachmentId,
-                role: 'assistant' as const,
-                content: String(p.content || ''),
-                timestamp: p.timestamp ? Number(p.timestamp) : Date.now(),
-                media,
-              },
-            ]
-          })
-        }
-      }
-
-      if (event === 'session:interrupted') {
-        streamingTextRef.current = ''
-        setStreamingText('')
-      }
-
-      if (event === 'session:stopped') {
-        setLoading(false)
-        setStreamingText('')
-      }
-
-      if (event === 'session:completed') {
-        streamingTextRef.current = ''
-        setStreamingText('')
-        setLoading(false)
-        intermediateStartRef.current = -1
-        justCompletedAtRef.current = Date.now()
-
-        const completedSessionId = sid || (p.sessionId ? String(p.sessionId) : null)
-        if (completedSessionId) {
-          clearIntermediateMessages(completedSessionId)
-        }
-
-        if (p.result) {
-          setMessages((prev) => {
-            const cleaned = [...prev]
-            const last = cleaned[cleaned.length - 1]
-            // Pop the optimistic streaming-text bubble so the canonical result replaces it,
-            // but NEVER pop an attachment (media) message — it's already persisted and would
-            // otherwise vanish until reload.
-            if (last && last.role === 'assistant' && !last.toolCall && !(last.media && last.media.length > 0)) {
-              cleaned.pop()
-            }
-            return [
-              ...cleaned,
-              {
-                id: crypto.randomUUID(),
-                role: 'assistant' as const,
-                content: String(p.result),
-                timestamp: Date.now(),
-              },
-            ]
-          })
-        }
-        if (p.error && !p.result) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: 'assistant' as const,
-              content: `Error: ${p.error}`,
-              timestamp: Date.now(),
-            },
-          ])
-        }
-        onRefresh?.()
-      }
+  // Pre-fill for an EXISTING chat from the loaded session.
+  useEffect(() => {
+    if (!sessionId || !currentSession) return
+    setSelector({
+      engine: currentSession.engine as string | undefined,
+      model: currentSession.model as string | undefined,
+      effortLevel: (currentSession.effortLevel ?? currentSession.effort_level) as string | undefined,
     })
-  }, [subscribe, persistIntermediate, onRefresh])
+    setEffortPendingNote(false)
+    setSelectorError(null)
+  }, [sessionId, currentSession])
 
-  // Load session data
-  const loadSession = useCallback(async (id: string) => {
-    const myToken = ++loadTokenRef.current
-    try {
-      const session = (await api.getSession(id)) as Record<string, unknown>
-      if (myToken !== loadTokenRef.current) {
+  // Apply a selector change. New chat: just track it (sent on first message).
+  // Existing chat: persist model/effort via PATCH (engine is fixed mid-chat).
+  const handleSelectorChange = useCallback((next: SelectorValue) => {
+    const sid = sessionIdRef.current
+    if (sid) {
+      const previous = selector
+      const lockedGrokModel =
+        currentSession?.engine === 'grok' &&
+        Boolean(currentSession.engineSessionId) &&
+        Boolean(next.model) &&
+        Boolean(previous.model) &&
+        next.model !== previous.model
+
+      if (lockedGrokModel) {
+        setSelectorError('Grok model changes require a new session.')
+        setEffortPendingNote(false)
         return
       }
-      setCurrentSession(session)
-      const meta = {
-        engine: session.engine ? String(session.engine) : undefined,
-        engineSessionId: session.engineSessionId ? String(session.engineSessionId) : undefined,
-        model: session.model ? String(session.model) : undefined,
-        title: session.title ? String(session.title) : undefined,
-        employee: session.employee ? String(session.employee) : undefined,
-      }
-      onMetaRef.current?.(meta)
 
-      const history = session.messages || session.history || []
-      const backendMessages: Message[] = Array.isArray(history)
-        ? history.map((m: Record<string, unknown>) => ({
-            // Preserve the server's stable message id so live-pushed messages
-            // (e.g. attachments) merge/dedupe by id instead of duplicating.
-            id: typeof m.id === 'string' ? m.id : crypto.randomUUID(),
-            role: (m.role as 'user' | 'assistant' | 'notification') || 'assistant',
-            content: String(m.content || m.text || ''),
-            timestamp: m.timestamp ? Number(m.timestamp) : Date.now(),
-            ...(Array.isArray(m.media) && m.media.length > 0
-              ? { media: m.media as MediaAttachment[] }
-              : {}),
-          }))
-        : []
-      if (session.status === 'error' && session.lastError) {
-        const lastMessage = backendMessages[backendMessages.length - 1]
-        const errorText = `Error: ${String(session.lastError)}`
-        if (!lastMessage || lastMessage.role !== 'assistant' || lastMessage.content !== errorText) {
-          backendMessages.push({
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: errorText,
-            timestamp: Date.now(),
-          })
-        }
-      }
-
-      const isRunning = session.status === 'running'
-
-      if (isRunning) {
-        const cached = loadIntermediateMessages(id)
-        if (cached.length > 0) {
-          intermediateStartRef.current = backendMessages.length
-          // Reconcile so a live-pushed attachment not yet in the snapshot survives.
-          setMessages((current) => reconcileMessages(current, [...backendMessages, ...cached]))
-        } else {
-          intermediateStartRef.current = backendMessages.length
-          setMessages((current) => {
-            // If backend has FEWER messages than local, the backend snapshot is stale —
-            // local already contains streaming-completed messages not yet persisted (or
-            // a stale-snapshot race during slow GET). Keep current.
-            if (backendMessages.length < current.length) {
-              return current
-            }
-            const next = backendMessages.length > 0 ? backendMessages : current
-            return reconcileMessages(current, next)
-          })
-        }
-        // Loading state is owned by handleSend (sets true) + WS session:completed/stopped (sets false).
-        // loadSession must NEVER set loading=true — a stale GET arriving after completion would
-        // re-arm the spinner and stick (the WS completion event has already passed).
-      } else {
-        clearIntermediateMessages(id)
-        intermediateStartRef.current = -1
-        setMessages((current) => {
-          // If backend has FEWER messages than local, the backend snapshot is stale —
-          // local already contains streaming-completed messages not yet persisted (or
-          // a stale-snapshot race during slow GET). Keep current.
-          if (backendMessages.length < current.length) {
-            return current
-          }
-          const next = backendMessages.length > 0 ? backendMessages : current
-          return reconcileMessages(current, next)
+      const seq = ++selectorPatchSeq.current
+      setSelector(next)
+      setSelectorError(null)
+      setEffortPendingNote(false)
+      api.updateSession(sid, { model: next.model, effortLevel: next.effortLevel })
+        .then(() => {
+          if (selectorPatchSeq.current === seq) setEffortPendingNote(true)
         })
-      }
-    } catch {
-      setMessages([])
-      setCurrentSession(null)
-      intermediateStartRef.current = -1
+        .catch((err) => {
+          if (selectorPatchSeq.current !== seq) return
+          setSelector(previous)
+          setEffortPendingNote(false)
+          setSelectorError(err instanceof Error ? err.message : 'Model/effort update failed')
+        })
+    } else {
+      newSessionSelectorDirtyRef.current = true
+      setSelector(next)
+      setSelectorError(null)
+      writeNewSessionSelector(next)
     }
-  }, [])
-
-  // Load on session change
-  useEffect(() => {
-    if (!sessionId) {
-      setMessages([])
-      setLoading(false)
-      setCurrentSession(null)
-      streamingTextRef.current = ''
-      setStreamingText('')
-      intermediateStartRef.current = -1
-      setSelectedEmployee(null)
-      return
-    }
-    // Clear streaming state immediately to avoid stale content flash
-    streamingTextRef.current = ''
-    setStreamingText('')
-    // NOTE: do NOT setLoading(false) here. Loading is owned by handleSend (true) and
-    // WS session:completed/stopped (false). Clearing here would clobber the lazy-init
-    // loading=true set by useState() when this pane mounted with pendingUserMessage.
-    loadSession(sessionId)
-  }, [sessionId]) // loadSession is stable (useCallback with [] deps)
-
-  // Reload on reconnect — only fires when WS genuinely reconnects (connectionSeq changes)
-  // Only reloads running sessions; completed sessions don't need a refetch on every WS hiccup.
-  // Debounced 300ms so a burst of connectionSeq bumps collapses into a single loadSession.
-  useEffect(() => {
-    if (!connectionSeq || !sessionIdRef.current) return
-    if (currentSession?.status !== 'running') return
-    const handle = setTimeout(() => {
-      loadSession(sessionIdRef.current!)
-    }, 300)
-    return () => clearTimeout(handle)
-  }, [connectionSeq, currentSession?.status]) // loadSession is stable; sessionIdRef.current is read at call time
+  }, [selector, currentSession?.engine, currentSession?.engineSessionId])
 
 
   const handleInterrupt = useCallback(async () => {
@@ -411,11 +305,8 @@ export function ChatPane({
         timestamp: Date.now(),
         media,
       }
-      setMessages((prev) => {
-        intermediateStartRef.current = prev.length + 1
-        return [...prev, userMsg]
-      })
-      setLoading(true)
+      // Optimistic append + arm loading + mark activity (for the watchdog).
+      beginSend(userMsg)
 
       try {
         // Upload any attached files to the server in parallel and collect file IDs
@@ -437,49 +328,43 @@ export function ChatPane({
             message,
             selectedEmployee,
             attachmentIds,
+            engine: selector.engine,
+            model: selector.model,
+            effortLevel: selector.effortLevel,
           })
-          if (viewMode === 'cli') (params as Record<string, unknown>).mode = 'interactive'
+          if (viewMode === 'cli' && supportsCliPreference(selector.engine)) (params as Record<string, unknown>).mode = 'interactive'
           const session = (await api.createSession(params)) as Record<string, unknown>
+          if (shouldPersistNewSessionSelector({ selectedEmployee, manuallyChanged: newSessionSelectorDirtyRef.current })) {
+            writeNewSessionSelector(selector)
+          }
           sid = String(session.id)
           onSessionCreated?.(sid, userMsg)
           onRefresh?.()
         } else {
           // CLI view → route to the interactive PTY engine so the user sees the prompt
           // get injected into the live xterm + claude's streaming response.
-          const mode = viewMode === 'cli' ? 'interactive' : undefined
+          const mode = viewMode === 'cli' && supportsCli(currentSession?.engine as string | undefined) ? 'interactive' : undefined
           await api.sendMessage(sid, { message, interrupt: interrupt || undefined, attachments: attachmentIds, mode })
           onRefresh?.()
         }
       } catch (err) {
-        setLoading(false)
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: 'assistant' as const,
-            content: `Error: ${err instanceof Error ? err.message : 'Failed to send message'}`,
-            timestamp: Date.now(),
-          },
-        ])
+        failSend(`Error: ${err instanceof Error ? err.message : 'Failed to send message'}`)
       }
     },
     // viewMode MUST be in deps — without it, toggling chat↔CLI keeps the stale
     // closure value and routes CLI sends to the headless engine, which is
     // exactly what made "the xterm shows stale content" reproducible.
-    [sessionId, selectedEmployee, onSessionCreated, onRefresh, viewMode, loading]
+    [sessionId, selectedEmployee, onSessionCreated, onRefresh, viewMode, selector, currentSession?.engine, beginSend, failSend]
   )
 
   const handleStatusRequest = useCallback(async () => {
     if (!sessionId) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: 'assistant' as const,
-          content: 'No active session. Send a message to start one.',
-          timestamp: Date.now(),
-        },
-      ])
+      appendLocal({
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: 'No active session. Send a message to start one.',
+        timestamp: Date.now(),
+      })
       return
     }
 
@@ -497,42 +382,32 @@ export function ChatPane({
         .filter(Boolean)
         .join('\n')
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: 'assistant' as const,
-          content: info,
-          timestamp: Date.now(),
-        },
-      ])
+      appendLocal({
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: info,
+        timestamp: Date.now(),
+      })
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: 'assistant' as const,
-          content: 'Failed to fetch session status.',
-          timestamp: Date.now(),
-        },
-      ])
+      appendLocal({
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: 'Failed to fetch session status.',
+        timestamp: Date.now(),
+      })
     }
-  }, [sessionId])
+  }, [sessionId, appendLocal])
 
   const handleNewSession = useCallback(() => {
     // This just clears the pane state — parent handles actual new session flow
-    setMessages([])
-    setLoading(false)
-    setCurrentSession(null)
-    streamingTextRef.current = ''
-    setStreamingText('')
-    intermediateStartRef.current = -1
-  }, [])
+    resetPane()
+  }, [resetPane])
 
   // Drag & drop state
   const [dragOver, setDragOver] = useState(false)
   const [droppedFiles, setDroppedFiles] = useState<File[]>()
   const dragCounter = useRef(0)
+  const showSessionHydration = Boolean(sessionId && hydrating && messages.length === 0 && !streamingText)
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -621,6 +496,12 @@ export function ChatPane({
           </div>
         </div>
       )}
+      {showSessionHydration && (
+        <div className="flex flex-1 items-center justify-center" role="status" aria-label="Loading chat">
+          <div className="size-5 animate-spin rounded-full border-2 border-[var(--fill-tertiary)] border-t-[var(--accent)]" />
+        </div>
+      )}
+
       {/* Employee picker for new chat (any view mode — the CLI terminal mounts after first message creates the session) */}
       {!sessionId && messages.length === 0 && (
         <div className="flex flex-1 items-center justify-center">
@@ -637,11 +518,11 @@ export function ChatPane({
       {viewMode === 'cli' && sessionId ? (
         // Reserve flex space during lazy-chunk load so the ChatInput below stays
         // pinned to the bottom instead of flashing to the top for a frame.
-        <Suspense fallback={<div style={{ flex: 1, minHeight: 0, background: '#0b0b0c' }} />}>
-          <CliTerminal sessionId={sessionId} />
+        <Suspense fallback={<div style={{ flex: 1, minHeight: 0, background: 'var(--bg)' }} />}>
+          <CliTerminal ref={cliTerminalRef} sessionId={sessionId} />
         </Suspense>
-      ) : (sessionId || messages.length > 0) ? (
-        <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
+      ) : !showSessionHydration && (sessionId || messages.length > 0) ? (
+        <ChatMessages messages={messages} loading={loading} streamingText={streamingText} onRetry={(t) => void handleSend(t)} />
       ) : null}
 
       {/* Queue panel — hidden in the live xterm view (noise on top of the PTY). */}
@@ -651,6 +532,13 @@ export function ChatPane({
           events={events}
           paused={currentSession?.paused as boolean ?? false}
         />
+      )}
+
+      {/* Background-work indicator — the session is officially idle but subagents /
+          background tasks are still running. Informational only (input stays live);
+          hidden while a foreground turn is streaming and in the CLI view. */}
+      {!(viewMode === 'cli' && sessionId) && !loading && (
+        <BackgroundActivityPill activity={backgroundActivity} />
       )}
 
       {/* Input — chat-style composer for every view, including CLI (the PTY engine
@@ -668,6 +556,29 @@ export function ChatPane({
         onDroppedFilesConsumed={() => setDroppedFiles(undefined)}
         focusTrigger={focusTrigger}
         onShortcutsClick={onShortcutsClick}
+        selectorSlot={
+          <ModelSelectorRow
+            mode={sessionId ? 'existing' : 'new'}
+            value={selector}
+            onChange={handleSelectorChange}
+            pendingNote={effortPendingNote}
+            errorNote={selectorError ?? undefined}
+            disabled={loading}
+            contextTokens={liveContextTokens ?? (currentSession?.lastContextTokens as number | null | undefined) ?? undefined}
+            onNewChat={sessionId ? onNewChat : handleNewSession}
+          />
+        }
+        terminalActionsSlot={
+          viewMode === 'cli' && sessionId ? (
+            <CliKeybar variant="hint" onKey={(data) => cliTerminalRef.current?.sendKey(data)} />
+          ) : undefined
+        }
+        mobileTerminalActionsSlot={
+          viewMode === 'cli' && sessionId ? (
+            <CliKeybar onKey={(data) => cliTerminalRef.current?.sendKey(data)} />
+          ) : undefined
+        }
+        reserveTerminalActions={Boolean(sessionId)}
       />
     </div>
   )

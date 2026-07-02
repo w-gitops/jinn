@@ -1,21 +1,13 @@
+import { formatAndChunk } from "../shared/format.js";
+
 const DISCORD_MAX_LENGTH = 2000;
 
+/**
+ * Split text into chunks that fit within Discord's message length limit.
+ * Discord renders standard markdown natively, so no conversion is needed.
+ */
 export function formatResponse(text: string): string[] {
-  if (text.length <= DISCORD_MAX_LENGTH) return [text];
-  const chunks: string[] = [];
-  let remaining = text;
-  while (remaining.length > 0) {
-    if (remaining.length <= DISCORD_MAX_LENGTH) {
-      chunks.push(remaining);
-      break;
-    }
-    let cutAt = remaining.lastIndexOf("\n", DISCORD_MAX_LENGTH);
-    if (cutAt <= 0) cutAt = remaining.lastIndexOf(" ", DISCORD_MAX_LENGTH);
-    if (cutAt <= 0) cutAt = DISCORD_MAX_LENGTH;
-    chunks.push(remaining.slice(0, cutAt));
-    remaining = remaining.slice(cutAt).trimStart();
-  }
-  return chunks;
+  return formatAndChunk(text, DISCORD_MAX_LENGTH);
 }
 
 export async function downloadAttachment(

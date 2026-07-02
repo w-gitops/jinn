@@ -9,6 +9,9 @@ import { THEMES } from "@/lib/themes"
 import type { ThemeId } from "@/lib/themes"
 import { api } from "@/lib/api"
 import { EmojiPicker } from "@/components/ui/emoji-picker"
+import { useModelRegistry } from "@/hooks/use-model-registry"
+import { RemoteAccessPanel } from "@/components/auth/remote-access-panel"
+import { useAuth } from "@/routes/auth-provider"
 
 // ---------------------------------------------------------------------------
 // Accent color presets
@@ -39,6 +42,7 @@ interface Config {
     default?: string
     claude?: { bin?: string; model?: string; effortLevel?: string }
     codex?: { bin?: string; model?: string; effortLevel?: string }
+    grok?: { bin?: string; model?: string; effortLevel?: string }
   }
   sessions?: {
     maxDurationMinutes?: number
@@ -119,7 +123,7 @@ function Section({
         {title}
       </div>
       <div
-        className="bg-[var(--material-regular)] rounded-[var(--radius-md)] border border-[var(--separator)] p-[var(--space-4)]"
+        className="rounded-[var(--radius-lg)] bg-[var(--material-regular)] p-[var(--space-4)] shadow-[inset_0_0_0_1px_var(--separator)]"
       >
         {children}
       </div>
@@ -136,14 +140,14 @@ function FieldRow({
 }) {
   return (
     <div
-      className="flex items-center justify-between py-[var(--space-2)] gap-[var(--space-4)]"
+      className="flex flex-col items-stretch gap-[var(--space-2)] py-[var(--space-2)] sm:flex-row sm:items-center sm:justify-between sm:gap-[var(--space-4)]"
     >
       <label
-        className="text-[length:var(--text-subheadline)] text-[var(--text-secondary)] shrink-0"
+        className="shrink-0 text-[length:var(--text-subheadline)] text-[var(--text-secondary)]"
       >
         {label}
       </label>
-      <div className="w-[240px] shrink-0">{children}</div>
+      <div className="min-w-0 w-full sm:w-[240px] sm:shrink-0">{children}</div>
     </div>
   )
 }
@@ -439,6 +443,7 @@ export default function SettingsPage() {
     resetAll,
   } = useSettings()
   const { theme, setTheme } = useTheme()
+  const auth = useAuth()
 
   // Local branding inputs
   const [nameValue, setNameValue] = useState(settings.portalName ?? "")
@@ -448,6 +453,19 @@ export default function SettingsPage() {
   const [languageValue, setLanguageValue] = useState(settings.language ?? "English")
   const [customHex, setCustomHex] = useState(settings.accentColor ?? "")
   const [showCooEmojiPicker, setShowCooEmojiPicker] = useState(false)
+
+  // Model/capability registry — drives the model + effort dropdowns (no hardcoded lists).
+  const { data: modelRegistry } = useModelRegistry()
+  const modelOptions = (engine: string, fallback: Array<{ value: string; label: string }>) => {
+    const models = modelRegistry?.engines?.[engine]?.models ?? []
+    return models.length ? models.map((m) => ({ value: m.id, label: m.label })) : fallback
+  }
+  const effortOptions = (engine: string, fallback: Array<{ value: string; label: string }>) => {
+    const levels = Array.from(new Set((modelRegistry?.engines?.[engine]?.models ?? []).flatMap((m) => m.effortLevels)))
+    return levels.length
+      ? [{ value: "default", label: "Default" }, ...levels.map((l) => ({ value: l, label: l.charAt(0).toUpperCase() + l.slice(1) }))]
+      : fallback
+  }
 
   // Gateway config state
   const [config, setConfig] = useState<Config>({})
@@ -597,7 +615,7 @@ export default function SettingsPage() {
               Theme
             </div>
             <div
-              className="grid grid-cols-5 gap-[var(--space-2)] mb-[var(--space-4)]"
+              className="grid grid-cols-3 gap-[var(--space-2)] mb-[var(--space-4)]"
             >
               {THEMES.map((t) => {
                 const isActive = theme === t.id
@@ -851,6 +869,17 @@ export default function SettingsPage() {
             </div>
           </Section>
 
+          {/* -- Pairing -- */}
+          <Section title="Pairing">
+            <RemoteAccessPanel
+              authState={auth.authState}
+              devices={auth.devices}
+              onCreatePairingCode={auth.createPairingCode}
+              onLogout={auth.logout}
+              onUnpairDevice={auth.unpairDevice}
+            />
+          </Section>
+
           {/* Gateway config feedback */}
           {feedback && (
             <div
@@ -923,6 +952,7 @@ export default function SettingsPage() {
                     options={[
                       { value: "claude", label: "Claude" },
                       { value: "codex", label: "Codex" },
+                      { value: "grok", label: "Grok" },
                     ]}
                   />
                 </FieldRow>
@@ -950,11 +980,12 @@ export default function SettingsPage() {
                     onChange={(v) =>
                       updateConfig(["engines", "claude", "model"], v)
                     }
-                    options={[
-                      { value: "opus", label: "Opus (claude-opus-4-6)" },
-                      { value: "sonnet", label: "Sonnet (claude-sonnet-4-6)" },
-                      { value: "haiku", label: "Haiku (claude-haiku-4-5)" },
-                    ]}
+                    options={modelOptions("claude", [
+                      { value: "claude-fable-5", label: "Fable 5" },
+                      { value: "opus", label: "Opus" },
+                      { value: "sonnet", label: "Sonnet" },
+                      { value: "haiku", label: "Haiku" },
+                    ])}
                   />
                 </FieldRow>
                 <FieldRow label="Effort Level">
@@ -963,12 +994,12 @@ export default function SettingsPage() {
                     onChange={(v) =>
                       updateConfig(["engines", "claude", "effortLevel"], v)
                     }
-                    options={[
+                    options={effortOptions("claude", [
                       { value: "default", label: "Default" },
                       { value: "low", label: "Low" },
                       { value: "medium", label: "Medium" },
                       { value: "high", label: "High" },
-                    ]}
+                    ])}
                   />
                 </FieldRow>
 
@@ -992,18 +1023,19 @@ export default function SettingsPage() {
                 </FieldRow>
                 <FieldRow label="Model">
                   <SettingsSelect
-                    value={config.engines?.codex?.model ?? "gpt-5.4"}
+                    value={config.engines?.codex?.model ?? "gpt-5.5"}
                     onChange={(v) =>
                       updateConfig(["engines", "codex", "model"], v)
                     }
-                    options={[
+                    options={modelOptions("codex", [
+                      { value: "gpt-5.5", label: "GPT-5.5" },
                       { value: "gpt-5.4", label: "GPT-5.4" },
                       { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
                       { value: "gpt-5.2-codex", label: "GPT-5.2 Codex" },
                       { value: "gpt-5.2", label: "GPT-5.2" },
                       { value: "gpt-5.1-codex-max", label: "GPT-5.1 Codex Max" },
                       { value: "gpt-5.1-codex-mini", label: "GPT-5.1 Codex Mini" },
-                    ]}
+                    ])}
                   />
                 </FieldRow>
                 <FieldRow label="Effort Level">
@@ -1012,13 +1044,44 @@ export default function SettingsPage() {
                     onChange={(v) =>
                       updateConfig(["engines", "codex", "effortLevel"], v)
                     }
-                    options={[
+                    options={effortOptions("codex", [
                       { value: "default", label: "Default" },
                       { value: "low", label: "Low" },
                       { value: "medium", label: "Medium" },
                       { value: "high", label: "High" },
                       { value: "xhigh", label: "Extra High" },
-                    ]}
+                    ])}
+                  />
+                </FieldRow>
+
+                <div
+                  className="border-t border-[var(--separator)] mt-[var(--space-3)] pt-[var(--space-3)]"
+                />
+
+                <div
+                  className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]"
+                >
+                  Grok
+                </div>
+                <FieldRow label="Binary Path">
+                  <SettingsInput
+                    value={config.engines?.grok?.bin ?? ""}
+                    onChange={(v) =>
+                      updateConfig(["engines", "grok", "bin"], v)
+                    }
+                    placeholder="grok"
+                  />
+                </FieldRow>
+                <FieldRow label="Model">
+                  <SettingsSelect
+                    value={config.engines?.grok?.model ?? "grok-build"}
+                    onChange={(v) =>
+                      updateConfig(["engines", "grok", "model"], v)
+                    }
+                    options={modelOptions("grok", [
+                      { value: "grok-build", label: "Grok Build" },
+                      { value: "grok-composer-2.5-fast", label: "Grok Composer 2.5 Fast" },
+                    ])}
                   />
                 </FieldRow>
               </Section>
